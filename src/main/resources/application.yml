@@ -1,0 +1,29 @@
+server:
+  port: 8080
+  servlet:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+
+spring:
+  application:
+    name: spring-ai-agent-platform
+  web:
+    resources:
+      static-locations: classpath:/static/
+  ai:
+    openai:
+      # 可在环境变量中指定，若未配置则系统会自动使用智能仿真推理引擎，开箱即用
+      api-key: ${OPENAI_API_KEY:demo-key}
+      base-url: ${OPENAI_BASE_URL:https://api.openai.com}
+      chat:
+        options:
+          model: gpt-4o-mini
+          temperature: 0.7
+
+logging:
+  level:
+    root: INFO
+    org.springframework.ai: INFO
+    com.example.agentplatform: DEBUG

@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 - 企业级 AI 智能体协同管理平台</title>
+  <link rel="stylesheet" href="/css/common.css">
+  <link rel="stylesheet" href="/css/login.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body class="login-page-wrapper">
+
+  <!-- Ambient background glow elements -->
+  <div class="ambient-glow glow-left"></div>
+  <div class="ambient-glow glow-right"></div>
+
+  <!-- Toast Notification Area -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- Top Enterprise Global Nav -->
+  <header class="commercial-top-nav">
+    <a href="/login.html" class="nav-brand">
+      <div class="brand-icon-square">
+        <i class="fa-solid fa-brain"></i>
+      </div>
+      <span class="brand-name">AgentMatrix</span>
+      <span class="brand-tag">Enterprise v2.6</span>
+    </a>
+
+    <div class="nav-right-items">
+      <div class="nav-status-indicator">
+        <span class="status-dot-pulse"></span>
+        <span>集群运行正常 · SLA 99.99%</span>
+      </div>
+
+      <button class="btn-theme-toggle" onclick="toggleTheme()" title="切换明亮/暗黑主题">
+        <i id="themeIcon" class="fa-solid fa-moon"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Split-Screen Container -->
+  <main class="login-split-container">
+
+    <!-- Left Side: Enterprise Platform Showcase & Architecture Preview -->
+    <div class="login-showcase-pane">
+      <div class="showcase-badge-pill">
+        <i class="fa-solid fa-sparkles"></i>
+        <span>企业级智能体统一运营与协同中枢</span>
+      </div>
+
+      <h1 class="showcase-title">
+        让每一个核心业务场景<br>拥有专属智能体协作网络
+      </h1>
+
+      <p class="showcase-desc">
+        构建覆盖自主多步推理、全栈工具生态调用与企业私有知识库检索增强的生产级 Agent 调度枢纽，全面释放大模型协同生产力。
+      </p>
+
+      <!-- 3 Live Telemetry Metric Cards -->
+      <div class="metrics-row">
+        <div class="metric-stat-card">
+          <div class="metric-val">18.4M+</div>
+          <div class="metric-lbl">日均 Agent 调度调用</div>
+        </div>
+        <div class="metric-stat-card">
+          <div class="metric-val" style="color: var(--accent-emerald);">99.99%</div>
+          <div class="metric-lbl">生产环境可用性 SLA</div>
+        </div>
+        <div class="metric-stat-card">
+          <div class="metric-val" style="color: var(--accent-blue);">&lt; 260ms</div>
+          <div class="metric-lbl">全链路推理响应耗时</div>
+        </div>
+      </div>
+
+      <!-- Agent Pipeline Flow Widget Card -->
+      <div class="pipeline-flow-card">
+        <div class="pipeline-header">
+          <div class="pipeline-title">
+            <i class="fa-solid fa-diagram-project" style="color: var(--accent-blue);"></i>
+            <span>Agent 协同调度架构链路</span>
+          </div>
+          <span class="pipeline-badge">实时活跃流水线</span>
+        </div>
+
+        <div class="pipeline-nodes-track">
+          <div class="flow-node">
+            <div class="node-icon-box"><i class="fa-solid fa-user-gear"></i></div>
+            <span class="node-text">业务指令</span>
+          </div>
+          <div class="flow-connector"><i class="fa-solid fa-chevron-right"></i></div>
+          <div class="flow-node">
+            <div class="node-icon-box" style="color: var(--accent-purple); border-color: rgba(139, 92, 246, 0.4);"><i class="fa-solid fa-brain"></i></div>
+            <span class="node-text">路由调度中枢</span>
+          </div>
+          <div class="flow-connector"><i class="fa-solid fa-chevron-right"></i></div>
+          <div class="flow-node">
+            <div class="node-icon-box" style="color: var(--accent-amber); border-color: rgba(245, 158, 11, 0.4);"><i class="fa-solid fa-bolt"></i></div>
+            <span class="node-text">工具插件链</span>
+          </div>
+          <div class="flow-connector"><i class="fa-solid fa-chevron-right"></i></div>
+          <div class="flow-node">
+            <div class="node-icon-box" style="color: var(--accent-emerald); border-color: rgba(16, 185, 129, 0.4);"><i class="fa-solid fa-layer-group"></i></div>
+            <span class="node-text">私有知识库</span>
+          </div>
+          <div class="flow-connector"><i class="fa-solid fa-chevron-right"></i></div>
+          <div class="flow-node">
+            <div class="node-icon-box" style="color: #06b6d4; border-color: rgba(6, 182, 212, 0.4);"><i class="fa-solid fa-circle-check"></i></div>
+            <span class="node-text">确定性决策</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Compliance Trust Badges -->
+      <div class="compliance-trust-bar">
+        <span class="trust-item"><i class="fa-solid fa-shield-halved"></i> SOC2 Type II 认证</span>
+        <span class="trust-item"><i class="fa-solid fa-lock"></i> 256-bit 端到端传输加密</span>
+        <span class="trust-item"><i class="fa-solid fa-building-shield"></i> 多租户物理隔离</span>
+        <span class="trust-item"><i class="fa-solid fa-scale-balanced"></i> 内容合规安全护栏</span>
+      </div>
+    </div>
+
+    <!-- Right Side: Commercial Authentication Card -->
+    <div class="login-form-pane">
+      <div class="login-glass-card">
+        <div class="login-card-header">
+          <h3 class="login-card-title">登录控制台</h3>
+          <p class="login-card-subtitle">企业统一身份认证中心 (Enterprise IAM)</p>
+        </div>
+
+        <!-- Auth Mode Tabs -->
+        <div class="auth-tabs-row">
+          <button type="button" class="auth-tab-btn active" onclick="switchAuthTab('password')">
+            <i class="fa-solid fa-key" style="font-size: 11px; margin-right: 4px;"></i> 账号密码认证
+          </button>
+          <button type="button" class="auth-tab-btn" onclick="switchAuthTab('sso')">
+            <i class="fa-solid fa-building-user" style="font-size: 11px; margin-right: 4px;"></i> 企业 SSO / LDAP
+          </button>
+        </div>
+
+        <form id="loginForm" onsubmit="handleLogin(event)">
+          <div class="form-group-item">
+            <label class="form-label-text" for="username">账号 / 邮箱</label>
+            <div class="input-icon-wrapper">
+              <i class="fa-regular fa-envelope input-prefix-icon"></i>
+              <input 
+                type="text" 
+                id="username" 
+                class="styled-login-input" 
+                placeholder="请输入企业账号或邮箱" 
+                value="admin"
+                required 
+                autocomplete="username"
+              />
+            </div>
+          </div>
+
+          <div class="form-group-item">
+            <label class="form-label-text" for="password">安全密码</label>
+            <div class="input-icon-wrapper">
+              <i class="fa-solid fa-lock input-prefix-icon"></i>
+              <input 
+                type="password" 
+                id="password" 
+                class="styled-login-input" 
+                placeholder="请输入访问凭据" 
+                value="admin123"
+                required 
+                autocomplete="current-password"
+              />
+              <button type="button" class="password-toggle-btn" onclick="togglePasswordVisibility()" title="显示/隐藏密码">
+                <i id="passwordEyeIcon" class="fa-regular fa-eye"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="form-remember-row">
+            <label class="checkbox-label-styled">
+              <input type="checkbox" id="rememberMe" class="checkbox-custom" checked>
+              <span>记住登录设备 (30天)</span>
+            </label>
+            <a href="javascript:void(0)" onclick="showToast('如需重置凭据，请联系企业 IT 管理员', 'info')" class="link-styled">忘记凭据?</a>
+          </div>
+
+          <button type="submit" id="submitBtn" class="btn-submit-login">
+            <span>进入工作台</span>
+            <i class="fa-solid fa-arrow-right"></i>
+          </button>
+        </form>
+
+        <!-- Discreet Demo Helper Chips -->
+        <div class="commercial-demo-helper">
+          <span class="demo-helper-title">演示体验凭据：</span>
+          <div class="demo-chips-list">
+            <button type="button" class="demo-chip-badge" onclick="fillQuickAccount('admin', 'admin123')">
+              <i class="fa-solid fa-shield-halved"></i> admin (管理员)
+            </button>
+            <button type="button" class="demo-chip-badge" onclick="fillQuickAccount('developer', 'dev123456')">
+              <i class="fa-solid fa-code"></i> developer (开发者)
+            </button>
+          </div>
+        </div>
+
+        <div class="login-card-footer">
+          🔒 Protected by Zero-Trust IAM Architecture.
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/login.js"></script>
+  <script>
+    function togglePasswordVisibility() {
+      const pwdInput = document.getElementById('password');
+      const eyeIcon = document.getElementById('passwordEyeIcon');
+      if (pwdInput.type === 'password') {
+        pwdInput.type = 'text';
+        eyeIcon.classList.replace('fa-eye', 'fa-eye-slash');
+      } else {
+        pwdInput.type = 'password';
+        eyeIcon.classList.replace('fa-eye-slash', 'fa-eye');
+      }
+    }
+
+    function switchAuthTab(mode) {
+      if (mode === 'sso') {
+        showToast('已接入企业 SSO / LDAP 单点登录通道，请直接验证进入', 'info');
+      }
+    }
+  </script>
+</body>
+</html>

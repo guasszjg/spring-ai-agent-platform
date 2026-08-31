@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>智能体编排与调试 - Spring AI</title>
+  <link rel="stylesheet" href="/css/common.css">
+  <link rel="stylesheet" href="/css/debug.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body class="debug-page">
+
+  <!-- Toast Notification Area -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- Top Header Navigation -->
+  <header class="debug-header">
+    <div class="debug-header-left">
+      <a href="/index.html" class="btn-back-nav">
+        <i class="fa-solid fa-arrow-left"></i>
+        <span>返回智能体列表</span>
+      </a>
+
+      <div class="header-agent-badge">
+        <h2 class="header-agent-title">
+          <span>编排</span>
+        </h2>
+        <span id="headerAgentName" style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">
+          🤖 智能体加载中...
+        </span>
+      </div>
+    </div>
+
+    <div class="debug-header-right">
+      <!-- Theme Switcher -->
+      <button class="btn-theme-toggle" onclick="toggleTheme()" title="切换明亮/暗黑主题">
+        <i id="themeIcon" class="fa-solid fa-moon"></i>
+      </button>
+
+      <!-- Model Selector -->
+      <div class="model-selector-pill">
+        <i class="fa-solid fa-microchip" style="color: var(--accent-purple);"></i>
+        <select id="debugModelSelect" class="model-dropdown-select" onchange="handleModelChange(this.value)">
+          <option value="deepseek-chat">DeepSeek-V4-Flash</option>
+          <option value="gpt-4o">GPT-4o</option>
+          <option value="gpt-4o-mini">GPT-4o-Mini</option>
+          <option value="claude-3-5-sonnet">Claude-3-5-Sonnet</option>
+          <option value="deepseek-coder">DeepSeek-Coder</option>
+          <option value="qwen-max">Qwen-Max</option>
+        </select>
+        <span class="model-type-badge">CHAT</span>
+      </div>
+
+      <!-- Publish / Save Button -->
+      <button class="btn-publish" onclick="handlePublishConfig()">
+        <span>发布</span>
+        <i class="fa-solid fa-chevron-down" style="font-size: 11px;"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Two Column Split Layout with Resizable Divider -->
+  <main class="debug-main-layout" id="debugMainLayout">
+
+    <!-- Left Pane: Orchestration Configuration -->
+    <section class="orchestration-pane" id="leftPane">
+
+      <!-- 1. System Prompt Box -->
+      <div class="config-card-section prompt-editor-card">
+        <div class="section-header-row">
+          <div class="section-title">
+            <span>提示词</span>
+            <i class="fa-regular fa-circle-question" title="提示词定义智能体的人设、背景、工作流程与限制"></i>
+          </div>
+          <button class="btn-section-action" onclick="handleAiOptimizePrompt()">
+            <i class="fa-solid fa-wand-magic-sparkles"></i>
+            <span>✨ 生成</span>
+          </button>
+        </div>
+
+        <textarea 
+          id="promptInput" 
+          class="prompt-textarea" 
+          placeholder="请输入智能体的角色设定与工作流程..."
+          oninput="updateCharCount()"
+        ></textarea>
+
+        <div class="prompt-footer">
+          <span id="promptCharCount">0 字</span>
+          <span style="font-size: 11px;">支持变量语法如 {{input}}</span>
+        </div>
+      </div>
+
+      <!-- 2. Variables Section -->
+      <div class="config-card-section">
+        <div class="section-header-row">
+          <div class="section-title">
+            <span>变量</span>
+            <i class="fa-regular fa-circle-question" title="变量能使用户输入表单引入提示词或开场白"></i>
+          </div>
+          <button class="btn-section-action" onclick="showToast('已默认挂载 {{input}} 表单变量', 'info')">
+            <i class="fa-solid fa-plus"></i>
+            <span>添加</span>
+          </button>
+        </div>
+        <p class="section-hint">变量能使用户输入表单引入提示词或开场白，你可以试在提示词中输入 {{input}}</p>
+        <div class="var-tag-list">
+          <span class="var-chip"><i class="fa-solid fa-code" style="color: var(--accent-blue);"></i> {{input}} (用户输入)</span>
+          <span class="var-chip"><i class="fa-solid fa-clock" style="color: var(--accent-amber);"></i> {{system_time}}</span>
+        </div>
+      </div>
+
+      <!-- 3. Knowledge Base Section -->
+      <div class="config-card-section">
+        <div class="section-header-row">
+          <div class="section-title">
+            <span>知识库</span>
+            <i class="fa-regular fa-circle-question" title="知识库检索增强"></i>
+          </div>
+          <button class="btn-section-action" onclick="showToast('已挂载企业知识库检索增强索引', 'info')">
+            <i class="fa-solid fa-plus"></i>
+            <span>添加</span>
+          </button>
+        </div>
+
+        <div class="knowledge-item-card">
+          <div class="knowledge-meta">
+            <i class="fa-solid fa-book" style="color: #ec4899; font-size: 15px;"></i>
+            <span>ShiMeta数字标牌V7.0.0使用手册.pdf</span>
+          </div>
+          <span class="knowledge-badge">高质量 · 混合检索</span>
+        </div>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 10px; font-size: 12px; color: var(--text-secondary);">
+          <span>元数据过滤 <i class="fa-regular fa-circle-question"></i></span>
+          <span style="color: var(--text-muted); cursor: pointer;">禁用 <i class="fa-solid fa-chevron-down"></i></span>
+        </div>
+      </div>
+
+      <!-- 4. Tools & Plugins Section -->
+      <div class="config-card-section">
+        <div class="section-header-row">
+          <div class="section-title">
+            <span>工具</span>
+            <i class="fa-regular fa-circle-question" title="配置智能体调用的 Function Calling 工具插件"></i>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 11.5px; color: var(--text-muted);">6/6 启用</span>
+            <button class="btn-section-action" onclick="showToast('已开启全部 Spring AI 2.0.1 内置工具链', 'info')">
+              <i class="fa-solid fa-plus"></i>
+              <span>添加</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="tools-grid">
+          <div class="tool-item-card">
+            <div class="tool-left">
+              <div class="tool-icon icon-orange"><i class="fa-solid fa-clock"></i></div>
+              <span>time 时区转换</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" checked onchange="toggleTool('时区转换', this.checked)">
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+
+          <div class="tool-item-card">
+            <div class="tool-left">
+              <div class="tool-icon icon-orange"><i class="fa-solid fa-clock"></i></div>
+              <span>time 时间戳转换</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" checked onchange="toggleTool('时间戳转换', this.checked)">
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+
+          <div class="tool-item-card">
+            <div class="tool-left">
+              <div class="tool-icon icon-orange"><i class="fa-solid fa-clock"></i></div>
+              <span>time 获取当前时间</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" checked onchange="toggleTool('获取当前时间', this.checked)">
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+
+          <div class="tool-item-card">
+            <div class="tool-left">
+              <div class="tool-icon icon-orange"><i class="fa-solid fa-clock"></i></div>
+              <span>time 获取时间戳</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" checked onchange="toggleTool('获取时间戳', this.checked)">
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+
+          <div class="tool-item-card">
+            <div class="tool-left">
+              <div class="tool-icon icon-orange"><i class="fa-solid fa-calendar-days"></i></div>
+              <span>time 星期几计算器</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" checked onchange="toggleTool('星期几计算器', this.checked)">
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+
+          <div class="tool-item-card">
+            <div class="tool-left">
+              <div class="tool-icon icon-blue-tool"><i class="fa-solid fa-globe"></i></div>
+              <span>bocha Bocha Web Search</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" checked onchange="toggleTool('联网检索', this.checked)">
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Draggable Resizable Splitter Handle -->
+    <div class="resize-divider" id="resizeDivider" title="按住左右拖动调整两栏宽度">
+      <div class="resize-handle-pill"></div>
+    </div>
+
+    <!-- Right Pane: Debug & Preview Sandbox -->
+    <section class="preview-pane" id="rightPane">
+
+      <!-- Preview Header -->
+      <div class="preview-header">
+        <h3 class="preview-title">调试与预览</h3>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button class="btn-icon-round" onclick="clearDebugChat()" title="清空会话并重置">
+            <i class="fa-solid fa-rotate-right"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Live Chat Stream -->
+      <div class="chat-history-scroll" id="debugChatStream">
+        <!-- Injected by JavaScript -->
+      </div>
+
+      <!-- Chat Input Area -->
+      <div class="preview-input-container">
+        <!-- Preset Prompt Pills -->
+        <div class="preset-pills-row">
+          <span class="preset-chip" onclick="sendDebugQuickText('请介绍你的核心人设与工作流程')">💡 介绍工作流程</span>
+          <span class="preset-chip" onclick="sendDebugQuickText('现在系统时间是几点？星期几？')">🕒 查询当前时间与星期</span>
+          <span class="preset-chip" onclick="sendDebugQuickText('帮我写一个 Spring AI 2.0.1 动态提示词编排代码')">💻 生成 Spring AI 代码</span>
+        </div>
+
+        <!-- Chat Input Bar -->
+        <form class="input-bar-wrapper" onsubmit="handleSendDebugChat(event)">
+          <input 
+            type="text" 
+            id="debugChatInput" 
+            class="main-chat-input" 
+            placeholder="和 Bot 聊天" 
+            autocomplete="off"
+          />
+          <button type="submit" id="btnDebugSend" class="btn-input-send" title="发送消息">
+            <i class="fa-solid fa-paper-plane"></i>
+          </button>
+        </form>
+
+        <!-- Bottom Status Bar -->
+        <div class="bottom-statusbar">
+          <div class="status-left-tag">
+            <i class="fa-solid fa-quote-left"></i>
+            <span style="color: var(--text-secondary); font-weight: 500;">功能已开启</span>
+            <a href="javascript:void(0)" onclick="showToast('已同步 Spring AI 编排管道', 'info')" style="color: var(--accent-blue); text-decoration: none; margin-left: 6px;">管理 →</a>
+          </div>
+
+          <div class="speed-meter-pill">
+            <span id="speedMetricText">↑ 0 K/s  ↓ 2 K/s</span>
+            <span style="color: var(--accent-emerald); font-weight: 700;">40%</span>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+  </main>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/debug.js"></script>
+</body>
+</html>
