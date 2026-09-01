@@ -1,0 +1,5 @@
+# Copy this file to application-local.properties (gitignored).
+# Do not commit application-local.properties.
+# Uncomment and fill in a real key. Empty values here would override the demo-key fallback.
+# spring.ai.openai.api-key=sk-your-real-key
+# spring.ai.openai.base-url=https://api.openai.com

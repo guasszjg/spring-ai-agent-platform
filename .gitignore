@@ -32,3 +32,13 @@ Desktop.ini
 *.key
 credentials.json
 secrets.yml
+secrets.yaml
+secrets.properties
+application-local.yml
+application-local.properties
+application-secret.yml
+application-secret.properties
+src/main/resources/application-local.yml
+src/main/resources/application-local.properties
+src/main/resources/application-secret.yml
+src/main/resources/application-secret.properties
