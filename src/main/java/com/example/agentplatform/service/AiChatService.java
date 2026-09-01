@@ -48,7 +48,7 @@ public class AiChatService {
 
         try {
             OpenAiCompatibleClient.ChatResult routed = invokeViaGateway(agent, userMessage, request.getHistory(),
-                    request.getGeneration(), routedModel);
+                    request.getGeneration(), request.getPrompt(), routedModel);
             if (routed != null && routed.content() != null && !routed.content().isBlank()) {
                 reply = routed.content();
                 executionModel = routedModel[0];
@@ -59,8 +59,9 @@ public class AiChatService {
             } else if (chatClient != null) {
                 log.info("Invoking Spring AI ChatClient for Agent: [{}] with model: [{}]", agent.getName(), executionModel);
                 
+                String instruction = firstNonBlank(request.getPrompt(), agent.getSystemPrompt(), "你是一个通用智能助手。");
                 var clientRequest = chatClient.prompt()
-                        .system(agent.getSystemPrompt() != null ? agent.getSystemPrompt() : "你是一个通用智能助手。");
+                        .system(instruction);
 
                 // 添加历史记录
                 if (request.getHistory() != null && !request.getHistory().isEmpty()) {
@@ -114,11 +115,12 @@ public class AiChatService {
 
     private OpenAiCompatibleClient.ChatResult invokeViaGateway(Agent agent, String userMessage,
                                                                List<ChatMessage> history, ChatGeneration generation,
-                                                               String[] routedModel) {
+                                                               String livePrompt, String[] routedModel) {
         ChatGeneration effective = generation != null ? generation : fromAgent(agent);
+        String instruction = firstNonBlank(livePrompt, agent.getSystemPrompt(), null);
         return gatewayService.resolveRoute(agent.getModelName()).map(route -> {
             var messages = OpenAiCompatibleClient.toMessages(
-                    agent.getSystemPrompt() != null ? agent.getSystemPrompt() : "你是一个通用智能助手。",
+                    instruction,
                     userMessage,
                     history
             );
@@ -176,6 +178,18 @@ public class AiChatService {
             return provider.getDefaultModel();
         }
         return requested;
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private String generateSmartSimulationReply(Agent agent, String userMessage, List<ChatMessage> history) {

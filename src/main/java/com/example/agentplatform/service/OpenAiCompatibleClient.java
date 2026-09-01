@@ -236,7 +236,7 @@ public class OpenAiCompatibleClient {
                                                        List<com.example.agentplatform.model.ChatMessage> history) {
         List<Map<String, String>> messages = new ArrayList<>();
         if (systemPrompt != null && !systemPrompt.isBlank()) {
-            messages.add(Map.of("role", "system", "content", systemPrompt));
+            messages.add(Map.of("role", "system", "content", systemPrompt.trim()));
         }
         if (history != null) {
             for (com.example.agentplatform.model.ChatMessage item : history) {

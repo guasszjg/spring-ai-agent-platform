@@ -7,6 +7,7 @@ public class ChatRequest {
     private String message;
     private List<ChatMessage> history;
     private ChatGeneration generation;
+    private String prompt;
 
     public ChatRequest() {
     }
@@ -41,5 +42,13 @@ public class ChatRequest {
 
     public void setGeneration(ChatGeneration generation) {
         this.generation = generation;
+    }
+
+    public String getPrompt() {
+        return prompt;
+    }
+
+    public void setPrompt(String prompt) {
+        this.prompt = prompt;
     }
 }
