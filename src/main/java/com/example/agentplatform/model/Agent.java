@@ -1,22 +1,54 @@
 package com.example.agentplatform.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import jakarta.persistence.CollectionTable;
+import jakarta.persistence.Column;
+import jakarta.persistence.ElementCollection;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
+import jakarta.persistence.Table;
+
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
+@Entity
+@Table(name = "agents")
+@JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
 public class Agent {
+    @Id
+    @Column(length = 64)
     private String id;
+    @Column(nullable = false, length = 200)
     private String name;
+    @Column(unique = true, length = 100)
     private String code;
+    @Column(length = 64)
     private String avatar;
+    @Column(length = 64)
     private String category;
+    @Column(columnDefinition = "TEXT")
     private String description;
+    @Column(length = 100)
     private String modelName;
+    @Column(columnDefinition = "TEXT")
     private String systemPrompt;
     private Double temperature;
     private Double topP;
     private Integer maxTokens;
+    @ElementCollection(fetch = FetchType.EAGER)
+    @CollectionTable(name = "agent_tags", joinColumns = @JoinColumn(name = "agent_id"))
+    @Column(name = "tag", length = 64)
     private List<String> tags = new ArrayList<>();
+    @Enumerated(EnumType.STRING)
+    @Column(length = 32)
     private AgentStatus status;
     private Long callCount;
     private Double avgResponseTimeMs;
@@ -168,5 +200,37 @@ public class Agent {
 
     public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    @PrePersist
+    void onCreate() {
+        if (id == null || id.isBlank()) {
+            id = "agent-" + UUID.randomUUID().toString().substring(0, 8);
+        }
+        LocalDateTime now = LocalDateTime.now();
+        if (createdAt == null) {
+            createdAt = now;
+        }
+        updatedAt = now;
+        if (status == null) {
+            status = AgentStatus.RUNNING;
+        }
+        if (callCount == null) {
+            callCount = 0L;
+        }
+        if (avgResponseTimeMs == null) {
+            avgResponseTimeMs = 300.0;
+        }
+        if (avatar == null || avatar.isBlank()) {
+            avatar = "🤖";
+        }
+        if (tags == null) {
+            tags = new ArrayList<>();
+        }
+    }
+
+    @PreUpdate
+    void onUpdate() {
+        updatedAt = LocalDateTime.now();
     }
 }

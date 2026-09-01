@@ -82,7 +82,9 @@ public class AiChatService {
             tokens = (userMessage.length() + reply.length()) / 2 + 35;
         }
 
-        agentService.incrementCallCount(agent.getId(), latencyMs);
+        int promptTokens = (int) Math.round(tokens * 0.57);
+        int completionTokens = Math.max(0, tokens - promptTokens);
+        agentService.recordInvocation(agent.getId(), latencyMs, promptTokens, completionTokens, true);
 
         return new ChatResponse(
                 agent.getId(),

@@ -1,26 +1,39 @@
 package com.example.agentplatform.service;
 
 import com.example.agentplatform.model.Agent;
+import com.example.agentplatform.model.AgentDailyStat;
 import com.example.agentplatform.model.AgentStatus;
 import com.example.agentplatform.model.DashboardStats;
 import com.example.agentplatform.model.PageResult;
+import com.example.agentplatform.repository.AgentDailyStatRepository;
 import com.example.agentplatform.repository.AgentRepository;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
+@Transactional
 public class AgentService {
 
-    private final AgentRepository agentRepository;
+    private static final DateTimeFormatter TREND_LABEL = DateTimeFormatter.ofPattern("M/d");
+    private static final double USD_PER_MILLION_TOKENS = 1.55;
 
-    public AgentService(AgentRepository agentRepository) {
+    private final AgentRepository agentRepository;
+    private final AgentDailyStatRepository dailyStatRepository;
+
+    public AgentService(AgentRepository agentRepository, AgentDailyStatRepository dailyStatRepository) {
         this.agentRepository = agentRepository;
+        this.dailyStatRepository = dailyStatRepository;
     }
 
+    @Transactional(readOnly = true)
     public PageResult<Agent> searchAgents(String keyword, String category, AgentStatus status, int page, int size) {
-        List<Agent> all = agentRepository.findAll();
+        List<Agent> all = agentRepository.findAll(Sort.by(Sort.Direction.DESC, "updatedAt"));
 
         List<Agent> filtered = all.stream()
                 .filter(a -> {
@@ -58,11 +71,13 @@ public class AgentService {
         return new PageResult<>(pageRecords, total, safePage, safeSize);
     }
 
+    @Transactional(readOnly = true)
     public Optional<Agent> getById(String id) {
         return agentRepository.findById(id);
     }
 
     public Agent create(Agent agent) {
+        agent.setId(null);
         return agentRepository.save(agent);
     }
 
@@ -80,31 +95,34 @@ public class AgentService {
         if (agentUpdate.getTemperature() != null) existing.setTemperature(agentUpdate.getTemperature());
         if (agentUpdate.getTopP() != null) existing.setTopP(agentUpdate.getTopP());
         if (agentUpdate.getMaxTokens() != null) existing.setMaxTokens(agentUpdate.getMaxTokens());
-        if (agentUpdate.getTags() != null) existing.setTags(agentUpdate.getTags());
+        if (agentUpdate.getTags() != null) {
+            existing.getTags().clear();
+            existing.getTags().addAll(agentUpdate.getTags());
+        }
         if (agentUpdate.getStatus() != null) existing.setStatus(agentUpdate.getStatus());
 
         return agentRepository.save(existing);
     }
 
     public boolean delete(String id) {
-        return agentRepository.deleteById(id);
+        if (!agentRepository.existsById(id)) {
+            return false;
+        }
+        agentRepository.deleteById(id);
+        return true;
     }
 
-    public Agent toggleStatus(String id) {
+    public Agent updateStatus(String id, AgentStatus status) {
+        if (status == null) {
+            throw new IllegalArgumentException("状态不能为空");
+        }
         Agent agent = agentRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("智能体不存在: " + id));
-
-        if (agent.getStatus() == AgentStatus.RUNNING) {
-            agent.setStatus(AgentStatus.DISABLED);
-        } else if (agent.getStatus() == AgentStatus.DISABLED) {
-            agent.setStatus(AgentStatus.RUNNING);
-        } else {
-            agent.setStatus(AgentStatus.RUNNING);
-        }
+        agent.setStatus(status);
         return agentRepository.save(agent);
     }
 
-    public void incrementCallCount(String id, long latencyMs) {
+    public void recordInvocation(String id, long latencyMs, long promptTokens, long completionTokens, boolean success) {
         agentRepository.findById(id).ifPresent(agent -> {
             long currentCount = agent.getCallCount() == null ? 0 : agent.getCallCount();
             agent.setCallCount(currentCount + 1);
@@ -112,10 +130,46 @@ public class AgentService {
             agent.setAvgResponseTimeMs(Math.round((currentAvg * 0.8 + latencyMs * 0.2) * 10.0) / 10.0);
             agentRepository.save(agent);
         });
+
+        LocalDate today = LocalDate.now();
+        AgentDailyStat stat = dailyStatRepository.findByAgentIdAndStatDate(id, today)
+                .orElseGet(() -> {
+                    AgentDailyStat created = new AgentDailyStat();
+                    created.setId(id + "-" + today);
+                    created.setAgentId(id);
+                    created.setStatDate(today);
+                    return created;
+                });
+        stat.setCallCount(stat.getCallCount() + 1);
+        stat.setPromptTokens(stat.getPromptTokens() + Math.max(0, promptTokens));
+        stat.setCompletionTokens(stat.getCompletionTokens() + Math.max(0, completionTokens));
+        stat.setTotalLatencyMs(stat.getTotalLatencyMs() + Math.max(0, latencyMs));
+        if (success) {
+            stat.setSuccessCount(stat.getSuccessCount() + 1);
+        }
+        dailyStatRepository.save(stat);
     }
 
+    @Transactional(readOnly = true)
     public DashboardStats getDashboardStats() {
+        return getDashboardStats("7days");
+    }
+
+    @Transactional(readOnly = true)
+    public DashboardStats getDashboardStats(String range) {
+        int days = resolveRangeDays(range);
+        LocalDate end = LocalDate.now();
+        LocalDate start = end.minusDays(days - 1L);
+        LocalDate prevEnd = start.minusDays(1);
+        LocalDate prevStart = prevEnd.minusDays(days - 1L);
+
         List<Agent> all = agentRepository.findAll();
+        Map<String, Agent> agentById = all.stream()
+                .filter(a -> a.getId() != null)
+                .collect(Collectors.toMap(Agent::getId, a -> a, (a, b) -> a));
+
+        List<AgentDailyStat> current = dailyStatRepository.findByStatDateBetween(start, end);
+        List<AgentDailyStat> previous = dailyStatRepository.findByStatDateBetween(prevStart, prevEnd);
 
         DashboardStats stats = new DashboardStats();
         stats.setTotalAgents(all.size());
@@ -123,29 +177,129 @@ public class AgentService {
         stats.setIdleAgents(all.stream().filter(a -> a.getStatus() == AgentStatus.IDLE).count());
         stats.setDisabledAgents(all.stream().filter(a -> a.getStatus() == AgentStatus.DISABLED).count());
 
-        long totalCalls = all.stream().mapToLong(a -> a.getCallCount() == null ? 0 : a.getCallCount()).sum();
+        long totalCalls = current.stream().mapToLong(AgentDailyStat::getCallCount).sum();
+        if (totalCalls == 0) {
+            totalCalls = all.stream().mapToLong(a -> a.getCallCount() == null ? 0 : a.getCallCount()).sum();
+        }
         stats.setTotalCalls(totalCalls);
 
-        double avgLatency = all.stream()
-                .mapToDouble(a -> a.getAvgResponseTimeMs() == null ? 300.0 : a.getAvgResponseTimeMs())
-                .average()
-                .orElse(320.0);
+        long latencyCalls = current.stream().mapToLong(AgentDailyStat::getCallCount).sum();
+        long latencySum = current.stream().mapToLong(AgentDailyStat::getTotalLatencyMs).sum();
+        double avgLatency;
+        if (latencyCalls > 0) {
+            avgLatency = latencySum * 1.0 / latencyCalls;
+        } else {
+            avgLatency = all.stream()
+                    .mapToDouble(a -> a.getAvgResponseTimeMs() == null ? 300.0 : a.getAvgResponseTimeMs())
+                    .average()
+                    .orElse(320.0);
+        }
         stats.setAvgResponseTimeMs(Math.round(avgLatency * 10.0) / 10.0);
-        stats.setSuccessRate(99.4);
 
-        // 分类分布
+        long successCount = current.stream().mapToLong(AgentDailyStat::getSuccessCount).sum();
+        long successCalls = current.stream().mapToLong(AgentDailyStat::getCallCount).sum();
+        double successRate = successCalls == 0 ? 0.0 : Math.round(successCount * 1000.0 / successCalls) / 10.0;
+        stats.setSuccessRate(successRate);
+
         Map<String, Long> categoryCount = all.stream()
                 .collect(Collectors.groupingBy(a -> a.getCategory() == null ? "其它" : a.getCategory(), Collectors.counting()));
         stats.setCategoryDistribution(categoryCount);
 
-        // 模型分布
-        Map<String, Long> modelCount = all.stream()
-                .collect(Collectors.groupingBy(a -> a.getModelName() == null ? "未指定" : a.getModelName(), Collectors.counting()));
-        stats.setModelDistribution(modelCount);
+        long promptTokens = current.stream().mapToLong(AgentDailyStat::getPromptTokens).sum();
+        long completionTokens = current.stream().mapToLong(AgentDailyStat::getCompletionTokens).sum();
+        stats.setPromptTokens(promptTokens);
+        stats.setCompletionTokens(completionTokens);
+        long totalTokens = promptTokens + completionTokens;
+        stats.setEstimatedCostUsd(Math.round(totalTokens / 1_000_000.0 * USD_PER_MILLION_TOKENS * 100.0) / 100.0);
+
+        long prevTokens = previous.stream()
+                .mapToLong(s -> s.getPromptTokens() + s.getCompletionTokens())
+                .sum();
+        double change = prevTokens == 0 ? 0.0 : (totalTokens - prevTokens) * 100.0 / prevTokens;
+        stats.setTokenChangePercent(Math.round(change * 10.0) / 10.0);
+
+        Map<LocalDate, long[]> byDay = new TreeMap<>();
+        for (LocalDate d = start; !d.isAfter(end); d = d.plusDays(1)) {
+            byDay.put(d, new long[]{0L, 0L});
+        }
+        for (AgentDailyStat row : current) {
+            long[] bucket = byDay.computeIfAbsent(row.getStatDate(), k -> new long[]{0L, 0L});
+            bucket[0] += row.getPromptTokens();
+            bucket[1] += row.getCompletionTokens();
+        }
+        List<DashboardStats.TrendPoint> trend = new ArrayList<>();
+        byDay.forEach((date, values) ->
+                trend.add(new DashboardStats.TrendPoint(date.format(TREND_LABEL), values[0], values[1])));
+        stats.setTokenTrend(trend);
+
+        Map<String, Long> modelTokens = new LinkedHashMap<>();
+        for (AgentDailyStat row : current) {
+            Agent agent = agentById.get(row.getAgentId());
+            String model = agent != null && agent.getModelName() != null ? agent.getModelName() : "未指定";
+            modelTokens.merge(model, row.getPromptTokens() + row.getCompletionTokens(), Long::sum);
+        }
+        if (modelTokens.isEmpty()) {
+            modelTokens = all.stream()
+                    .collect(Collectors.groupingBy(a -> a.getModelName() == null ? "未指定" : a.getModelName(), Collectors.counting()));
+        }
+        stats.setModelDistribution(modelTokens);
+
+        Map<String, long[]> rankAgg = new HashMap<>();
+        for (AgentDailyStat row : current) {
+            long[] agg = rankAgg.computeIfAbsent(row.getAgentId(), k -> new long[]{0L, 0L});
+            agg[0] += row.getCallCount();
+            agg[1] += row.getPromptTokens() + row.getCompletionTokens();
+        }
+        List<DashboardStats.RankingItem> ranking = rankAgg.entrySet().stream()
+                .sorted((a, b) -> Long.compare(b.getValue()[0], a.getValue()[0]))
+                .limit(4)
+                .map(entry -> {
+                    Agent agent = agentById.get(entry.getKey());
+                    DashboardStats.RankingItem item = new DashboardStats.RankingItem();
+                    item.setAvatar(agent != null && agent.getAvatar() != null ? agent.getAvatar() : "🤖");
+                    item.setName(agent != null ? agent.getName() : entry.getKey());
+                    item.setModel(agent != null && agent.getModelName() != null ? agent.getModelName() : "未指定");
+                    item.setCalls(entry.getValue()[0]);
+                    item.setTokens(entry.getValue()[1]);
+                    return item;
+                })
+                .collect(Collectors.toList());
+        for (int i = 0; i < ranking.size(); i++) {
+            ranking.get(i).setRank(i + 1);
+        }
+        stats.setRanking(ranking);
+
+        Map<String, long[]> latencyAgg = new LinkedHashMap<>();
+        for (AgentDailyStat row : current) {
+            Agent agent = agentById.get(row.getAgentId());
+            String category = agent != null && agent.getCategory() != null ? agent.getCategory() : "其它";
+            long[] agg = latencyAgg.computeIfAbsent(category, k -> new long[]{0L, 0L});
+            agg[0] += row.getTotalLatencyMs();
+            agg[1] += row.getCallCount();
+        }
+        List<DashboardStats.CategoryLatency> latencies = latencyAgg.entrySet().stream()
+                .map(entry -> {
+                    long calls = entry.getValue()[1];
+                    double avg = calls == 0 ? 0 : Math.round(entry.getValue()[0] * 10.0 / calls) / 10.0;
+                    return new DashboardStats.CategoryLatency(entry.getKey(), avg);
+                })
+                .collect(Collectors.toList());
+        stats.setLatencyByCategory(latencies);
 
         return stats;
     }
 
+    private int resolveRangeDays(String range) {
+        if ("today".equalsIgnoreCase(range)) {
+            return 1;
+        }
+        if ("30days".equalsIgnoreCase(range)) {
+            return 30;
+        }
+        return 7;
+    }
+
+    @Transactional(readOnly = true)
     public List<Map<String, Object>> getPresetTemplates() {
         List<Map<String, Object>> templates = new ArrayList<>();
 
