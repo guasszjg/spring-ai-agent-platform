@@ -4,9 +4,16 @@ import com.example.agentplatform.model.Agent;
 import com.example.agentplatform.model.AgentDailyStat;
 import com.example.agentplatform.model.AgentStatus;
 import com.example.agentplatform.model.AppUser;
+import com.example.agentplatform.model.GatewayPolicy;
+import com.example.agentplatform.model.LlmProvider;
+import com.example.agentplatform.model.LlmProviderType;
 import com.example.agentplatform.repository.AgentDailyStatRepository;
 import com.example.agentplatform.repository.AgentRepository;
+import com.example.agentplatform.repository.GatewayPolicyRepository;
+import com.example.agentplatform.repository.LlmProviderRepository;
 import com.example.agentplatform.repository.UserRepository;
+import com.example.agentplatform.service.LlmGatewayService;
+import com.example.agentplatform.service.LlmVendorCatalog;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -24,15 +31,21 @@ public class DataInitializer implements ApplicationRunner {
     private final UserRepository userRepository;
     private final AgentRepository agentRepository;
     private final AgentDailyStatRepository dailyStatRepository;
+    private final LlmProviderRepository llmProviderRepository;
+    private final GatewayPolicyRepository gatewayPolicyRepository;
     private final PasswordEncoder passwordEncoder;
 
     public DataInitializer(UserRepository userRepository,
                            AgentRepository agentRepository,
                            AgentDailyStatRepository dailyStatRepository,
+                           LlmProviderRepository llmProviderRepository,
+                           GatewayPolicyRepository gatewayPolicyRepository,
                            PasswordEncoder passwordEncoder) {
         this.userRepository = userRepository;
         this.agentRepository = agentRepository;
         this.dailyStatRepository = dailyStatRepository;
+        this.llmProviderRepository = llmProviderRepository;
+        this.gatewayPolicyRepository = gatewayPolicyRepository;
         this.passwordEncoder = passwordEncoder;
     }
 
@@ -42,6 +55,7 @@ public class DataInitializer implements ApplicationRunner {
         seedUsers();
         seedAgents();
         seedDailyStats();
+        seedLlmGateway();
     }
 
     private void seedUsers() {
@@ -272,5 +286,43 @@ public class DataInitializer implements ApplicationRunner {
         if (!rows.isEmpty()) {
             dailyStatRepository.saveAll(rows);
         }
+    }
+
+    private void seedLlmGateway() {
+        seedBuiltinProvider("llm-deepseek", LlmProviderType.DEEPSEEK);
+        seedBuiltinProvider("llm-qianwen", LlmProviderType.QIANWEN);
+        seedBuiltinProvider("llm-tencent", LlmProviderType.TENCENT);
+        seedBuiltinProvider("llm-bytedance", LlmProviderType.BYTEDANCE);
+
+        if (gatewayPolicyRepository.findById(LlmGatewayService.POLICY_ID).isEmpty()) {
+            GatewayPolicy policy = new GatewayPolicy();
+            policy.setId(LlmGatewayService.POLICY_ID);
+            policy.setDefaultProviderId("llm-deepseek");
+            policy.setFailoverEnabled(true);
+            policy.setTimeoutMs(30000);
+            policy.setMaxRetries(1);
+            gatewayPolicyRepository.save(policy);
+        }
+    }
+
+    private void seedBuiltinProvider(String id, LlmProviderType vendor) {
+        if (llmProviderRepository.existsById(id)) {
+            return;
+        }
+        LlmVendorCatalog.VendorPreset preset = LlmVendorCatalog.preset(vendor);
+        LlmProvider provider = new LlmProvider();
+        provider.setId(id);
+        provider.setVendor(vendor);
+        provider.setName(preset.name());
+        provider.setBaseUrl(preset.baseUrl());
+        provider.setDefaultModel(preset.defaultModel());
+        provider.setModels(String.join(",", preset.models()));
+        provider.setEnabled(false);
+        provider.setBuiltin(true);
+        provider.setTimeoutMs(30000);
+        provider.setMaxRetries(1);
+        provider.setRemark(preset.hint());
+        provider.setLastProbeStatus("UNTESTED");
+        llmProviderRepository.save(provider);
     }
 }

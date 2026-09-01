@@ -1,6 +1,7 @@
 package com.example.agentplatform.service;
 
 import com.example.agentplatform.model.Agent;
+import com.example.agentplatform.model.ChatGeneration;
 import com.example.agentplatform.model.ChatMessage;
 import com.example.agentplatform.model.ChatRequest;
 import com.example.agentplatform.model.ChatResponse;
@@ -19,12 +20,17 @@ public class AiChatService {
     private static final Logger log = LoggerFactory.getLogger(AiChatService.class);
 
     private final AgentService agentService;
-    private final ChatModel chatModel;
+    private final LlmGatewayService gatewayService;
+    private final OpenAiCompatibleClient openAiClient;
     private final ChatClient chatClient;
 
-    public AiChatService(AgentService agentService, @Autowired(required = false) ChatModel chatModel) {
+    public AiChatService(AgentService agentService,
+                         LlmGatewayService gatewayService,
+                         OpenAiCompatibleClient openAiClient,
+                         @Autowired(required = false) ChatModel chatModel) {
         this.agentService = agentService;
-        this.chatModel = chatModel;
+        this.gatewayService = gatewayService;
+        this.openAiClient = openAiClient;
         this.chatClient = (chatModel != null) ? ChatClient.builder(chatModel).build() : null;
     }
 
@@ -38,9 +44,19 @@ public class AiChatService {
         String reply;
         String executionModel = agent.getModelName() != null ? agent.getModelName() : "gpt-4o";
         int tokens = 0;
+        String[] routedModel = { executionModel };
 
         try {
-            if (chatClient != null) {
+            OpenAiCompatibleClient.ChatResult routed = invokeViaGateway(agent, userMessage, request.getHistory(),
+                    request.getGeneration(), routedModel);
+            if (routed != null && routed.content() != null && !routed.content().isBlank()) {
+                reply = routed.content();
+                executionModel = routedModel[0];
+                tokens = routed.totalTokens();
+                if (tokens == 0) {
+                    tokens = routed.promptTokens() + routed.completionTokens();
+                }
+            } else if (chatClient != null) {
                 log.info("Invoking Spring AI ChatClient for Agent: [{}] with model: [{}]", agent.getName(), executionModel);
                 
                 var clientRequest = chatClient.prompt()
@@ -94,6 +110,72 @@ public class AiChatService {
                 executionModel,
                 tokens
         );
+    }
+
+    private OpenAiCompatibleClient.ChatResult invokeViaGateway(Agent agent, String userMessage,
+                                                               List<ChatMessage> history, ChatGeneration generation,
+                                                               String[] routedModel) {
+        ChatGeneration effective = generation != null ? generation : fromAgent(agent);
+        return gatewayService.resolveRoute(agent.getModelName()).map(route -> {
+            var messages = OpenAiCompatibleClient.toMessages(
+                    agent.getSystemPrompt() != null ? agent.getSystemPrompt() : "你是一个通用智能助手。",
+                    userMessage,
+                    history
+            );
+            OpenAiCompatibleClient.ChatResult result = callProvider(route.primary(), route.primaryKey(),
+                    agent.getModelName(), effective, route.timeoutMs(), route.maxRetries(), messages, routedModel);
+            if (result != null) {
+                return result;
+            }
+            if (route.fallback() != null && route.fallbackKey() != null) {
+                log.warn("Primary LLM channel [{}] failed, switching to fallback [{}]",
+                        route.primary().getName(), route.fallback().getName());
+                return callProvider(route.fallback(), route.fallbackKey(),
+                        agent.getModelName(), effective, route.timeoutMs(), route.maxRetries(), messages, routedModel);
+            }
+            return null;
+        }).orElse(null);
+    }
+
+    private ChatGeneration fromAgent(Agent agent) {
+        ChatGeneration generation = new ChatGeneration();
+        generation.setTemperature(agent.getTemperature());
+        generation.setTopP(agent.getTopP());
+        generation.setMaxTokens(agent.getMaxTokens());
+        return generation;
+    }
+
+    private OpenAiCompatibleClient.ChatResult callProvider(com.example.agentplatform.model.LlmProvider provider,
+                                                           String apiKey, String requestedModel, ChatGeneration generation,
+                                                           int timeoutMs, int maxRetries,
+                                                           List<java.util.Map<String, String>> messages,
+                                                           String[] routedModel) {
+        String model = pickModel(provider, requestedModel);
+        routedModel[0] = model;
+        int attempts = Math.max(1, maxRetries + 1);
+        for (int i = 0; i < attempts; i++) {
+            try {
+                log.info("Gateway routing agent chat via [{}] model [{}]", provider.getName(), model);
+                return openAiClient.chat(provider.getBaseUrl(), apiKey, model, messages, generation, timeoutMs);
+            } catch (Exception ex) {
+                log.warn("Gateway channel [{}] attempt {} failed: {}", provider.getName(), i + 1, ex.getMessage());
+            }
+        }
+        return null;
+    }
+
+    private String pickModel(com.example.agentplatform.model.LlmProvider provider, String requested) {
+        if (requested != null && !requested.isBlank()
+                && provider.getModels() != null
+                && java.util.Arrays.stream(provider.getModels().split("[,，]"))
+                .map(String::trim)
+                .anyMatch(item -> item.equalsIgnoreCase(requested.trim()))) {
+            return requested.trim();
+        }
+        if (provider.getDefaultModel() != null && !provider.getDefaultModel().isBlank()) {
+            return provider.getDefaultModel();
+        }
+        return requested;
     }
 
     private String generateSmartSimulationReply(Agent agent, String userMessage, List<ChatMessage> history) {

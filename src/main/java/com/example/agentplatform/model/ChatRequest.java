@@ -6,6 +6,7 @@ public class ChatRequest {
     private String agentId;
     private String message;
     private List<ChatMessage> history;
+    private ChatGeneration generation;
 
     public ChatRequest() {
     }
@@ -32,5 +33,13 @@ public class ChatRequest {
 
     public void setHistory(List<ChatMessage> history) {
         this.history = history;
+    }
+
+    public ChatGeneration getGeneration() {
+        return generation;
+    }
+
+    public void setGeneration(ChatGeneration generation) {
+        this.generation = generation;
     }
 }
