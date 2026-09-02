@@ -1,7 +1,9 @@
 package com.example.agentplatform.service;
 
 import com.example.agentplatform.model.Agent;
+import com.example.agentplatform.model.AgentConversation;
 import com.example.agentplatform.model.AgentDailyStat;
+import com.example.agentplatform.model.AgentMonitorStats;
 import com.example.agentplatform.model.AgentStatus;
 import com.example.agentplatform.model.DashboardStats;
 import com.example.agentplatform.model.PageResult;
@@ -25,10 +27,14 @@ public class AgentService {
 
     private final AgentRepository agentRepository;
     private final AgentDailyStatRepository dailyStatRepository;
+    private final AgentConversationService conversationService;
 
-    public AgentService(AgentRepository agentRepository, AgentDailyStatRepository dailyStatRepository) {
+    public AgentService(AgentRepository agentRepository,
+                        AgentDailyStatRepository dailyStatRepository,
+                        AgentConversationService conversationService) {
         this.agentRepository = agentRepository;
         this.dailyStatRepository = dailyStatRepository;
+        this.conversationService = conversationService;
     }
 
     @Transactional(readOnly = true)
@@ -126,8 +132,11 @@ public class AgentService {
         agentRepository.findById(id).ifPresent(agent -> {
             long currentCount = agent.getCallCount() == null ? 0 : agent.getCallCount();
             agent.setCallCount(currentCount + 1);
-            double currentAvg = agent.getAvgResponseTimeMs() == null ? 300.0 : agent.getAvgResponseTimeMs();
-            agent.setAvgResponseTimeMs(Math.round((currentAvg * 0.8 + latencyMs * 0.2) * 10.0) / 10.0);
+            double currentAvg = agent.getAvgResponseTimeMs() == null ? 0.0 : agent.getAvgResponseTimeMs();
+            double nextAvg = currentCount == 0
+                    ? latencyMs
+                    : (currentAvg * currentCount + latencyMs) / (currentCount + 1);
+            agent.setAvgResponseTimeMs(Math.round(nextAvg * 10.0) / 10.0);
             agentRepository.save(agent);
         });
 
@@ -190,9 +199,10 @@ public class AgentService {
             avgLatency = latencySum * 1.0 / latencyCalls;
         } else {
             avgLatency = all.stream()
-                    .mapToDouble(a -> a.getAvgResponseTimeMs() == null ? 300.0 : a.getAvgResponseTimeMs())
+                    .filter(a -> a.getAvgResponseTimeMs() != null && a.getAvgResponseTimeMs() > 0)
+                    .mapToDouble(Agent::getAvgResponseTimeMs)
                     .average()
-                    .orElse(320.0);
+                    .orElse(0.0);
         }
         stats.setAvgResponseTimeMs(Math.round(avgLatency * 10.0) / 10.0);
 
@@ -286,6 +296,75 @@ public class AgentService {
                 .collect(Collectors.toList());
         stats.setLatencyByCategory(latencies);
 
+        return stats;
+    }
+
+    @Transactional(readOnly = true)
+    public AgentMonitorStats getAgentMonitor(String agentId, String range) {
+        if (!agentRepository.existsById(agentId)) {
+            throw new IllegalArgumentException("智能体不存在: " + agentId);
+        }
+        LocalDate[] bounds = TimeRange.resolve(range);
+        LocalDate end = bounds[1] != null ? bounds[1] : LocalDate.now();
+        boolean allTime = bounds[0] == null;
+        LocalDate start = allTime ? null : bounds[0];
+
+        List<AgentDailyStat> current = allTime
+                ? dailyStatRepository.findByAgentId(agentId)
+                : dailyStatRepository.findByAgentIdAndStatDateBetween(agentId, start, end);
+
+        List<AgentDailyStat> previous = List.of();
+        if (!allTime && start != null) {
+            long span = java.time.temporal.ChronoUnit.DAYS.between(start, end) + 1;
+            LocalDate prevEnd = start.minusDays(1);
+            LocalDate prevStart = prevEnd.minusDays(span - 1);
+            previous = dailyStatRepository.findByAgentIdAndStatDateBetween(agentId, prevStart, prevEnd);
+        }
+
+        AgentMonitorStats stats = new AgentMonitorStats();
+        long promptTokens = current.stream().mapToLong(AgentDailyStat::getPromptTokens).sum();
+        long completionTokens = current.stream().mapToLong(AgentDailyStat::getCompletionTokens).sum();
+        long totalTokens = promptTokens + completionTokens;
+        stats.setPromptTokens(promptTokens);
+        stats.setCompletionTokens(completionTokens);
+        stats.setTotalTokens(totalTokens);
+        stats.setEstimatedCostUsd(Math.round(totalTokens / 1_000_000.0 * USD_PER_MILLION_TOKENS * 100.0) / 100.0);
+
+        long prevTokens = previous.stream()
+                .mapToLong(s -> s.getPromptTokens() + s.getCompletionTokens())
+                .sum();
+        double change = prevTokens == 0 ? 0.0 : (totalTokens - prevTokens) * 100.0 / prevTokens;
+        stats.setTokenChangePercent(Math.round(change * 10.0) / 10.0);
+
+        long calls = current.stream().mapToLong(AgentDailyStat::getCallCount).sum();
+        long latencySum = current.stream().mapToLong(AgentDailyStat::getTotalLatencyMs).sum();
+        stats.setCallCount(calls);
+        stats.setAvgResponseTimeMs(calls == 0 ? 0 : Math.round(latencySum * 10.0 / calls) / 10.0);
+
+        List<AgentConversation> sessions = conversationService.listInRange(agentId, range);
+        stats.setSessionCount(sessions.size());
+        stats.setMessageCount(sessions.stream().mapToLong(AgentConversation::getMessageCount).sum());
+
+        LocalDate trendStart = start;
+        if (allTime) {
+            trendStart = current.stream()
+                    .map(AgentDailyStat::getStatDate)
+                    .min(LocalDate::compareTo)
+                    .orElse(end.minusDays(6));
+        }
+        Map<LocalDate, long[]> byDay = new TreeMap<>();
+        for (LocalDate d = trendStart; !d.isAfter(end); d = d.plusDays(1)) {
+            byDay.put(d, new long[]{0L, 0L});
+        }
+        for (AgentDailyStat row : current) {
+            long[] bucket = byDay.computeIfAbsent(row.getStatDate(), k -> new long[]{0L, 0L});
+            bucket[0] += row.getPromptTokens();
+            bucket[1] += row.getCompletionTokens();
+        }
+        List<DashboardStats.TrendPoint> trend = new ArrayList<>();
+        byDay.forEach((date, values) ->
+                trend.add(new DashboardStats.TrendPoint(date.format(TREND_LABEL), values[0], values[1])));
+        stats.setTokenTrend(trend);
         return stats;
     }
 

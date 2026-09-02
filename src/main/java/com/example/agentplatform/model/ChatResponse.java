@@ -9,6 +9,7 @@ public class ChatResponse {
     private Long latencyMs;
     private String model;
     private Integer tokensUsed;
+    private String conversationId;
     private LocalDateTime timestamp;
 
     public ChatResponse() {
@@ -71,6 +72,14 @@ public class ChatResponse {
 
     public void setTokensUsed(Integer tokensUsed) {
         this.tokensUsed = tokensUsed;
+    }
+
+    public String getConversationId() {
+        return conversationId;
+    }
+
+    public void setConversationId(String conversationId) {
+        this.conversationId = conversationId;
     }
 
     public LocalDateTime getTimestamp() {

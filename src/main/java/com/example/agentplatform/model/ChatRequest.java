@@ -8,6 +8,8 @@ public class ChatRequest {
     private List<ChatMessage> history;
     private ChatGeneration generation;
     private String prompt;
+    private String conversationId;
+    private String account;
 
     public ChatRequest() {
     }
@@ -50,5 +52,21 @@ public class ChatRequest {
 
     public void setPrompt(String prompt) {
         this.prompt = prompt;
+    }
+
+    public String getConversationId() {
+        return conversationId;
+    }
+
+    public void setConversationId(String conversationId) {
+        this.conversationId = conversationId;
+    }
+
+    public String getAccount() {
+        return account;
+    }
+
+    public void setAccount(String account) {
+        this.account = account;
     }
 }

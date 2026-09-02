@@ -1,13 +1,11 @@
 package com.example.agentplatform.config;
 
 import com.example.agentplatform.model.Agent;
-import com.example.agentplatform.model.AgentDailyStat;
 import com.example.agentplatform.model.AgentStatus;
 import com.example.agentplatform.model.AppUser;
 import com.example.agentplatform.model.GatewayPolicy;
 import com.example.agentplatform.model.LlmProvider;
 import com.example.agentplatform.model.LlmProviderType;
-import com.example.agentplatform.repository.AgentDailyStatRepository;
 import com.example.agentplatform.repository.AgentRepository;
 import com.example.agentplatform.repository.GatewayPolicyRepository;
 import com.example.agentplatform.repository.LlmProviderRepository;
@@ -20,9 +18,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.List;
 
 @Component
@@ -30,20 +26,17 @@ public class DataInitializer implements ApplicationRunner {
 
     private final UserRepository userRepository;
     private final AgentRepository agentRepository;
-    private final AgentDailyStatRepository dailyStatRepository;
     private final LlmProviderRepository llmProviderRepository;
     private final GatewayPolicyRepository gatewayPolicyRepository;
     private final PasswordEncoder passwordEncoder;
 
     public DataInitializer(UserRepository userRepository,
                            AgentRepository agentRepository,
-                           AgentDailyStatRepository dailyStatRepository,
                            LlmProviderRepository llmProviderRepository,
                            GatewayPolicyRepository gatewayPolicyRepository,
                            PasswordEncoder passwordEncoder) {
         this.userRepository = userRepository;
         this.agentRepository = agentRepository;
-        this.dailyStatRepository = dailyStatRepository;
         this.llmProviderRepository = llmProviderRepository;
         this.gatewayPolicyRepository = gatewayPolicyRepository;
         this.passwordEncoder = passwordEncoder;
@@ -54,7 +47,6 @@ public class DataInitializer implements ApplicationRunner {
     public void run(ApplicationArguments args) {
         seedUsers();
         seedAgents();
-        seedDailyStats();
         seedLlmGateway();
     }
 
@@ -101,8 +93,6 @@ public class DataInitializer implements ApplicationRunner {
         a1.setMaxTokens(4096);
         a1.setTags(List.of("分布式", "微服务", "高并发", "架构治理"));
         a1.setStatus(AgentStatus.RUNNING);
-        a1.setCallCount(1582L);
-        a1.setAvgResponseTimeMs(420.0);
         a1.setCreatedAt(LocalDateTime.now().minusDays(30));
         a1.setUpdatedAt(LocalDateTime.now().minusHours(3));
 
@@ -120,8 +110,6 @@ public class DataInitializer implements ApplicationRunner {
         a2.setMaxTokens(3000);
         a2.setTags(List.of("MySQL", "PostgreSQL", "SQL优化", "索引设计"));
         a2.setStatus(AgentStatus.RUNNING);
-        a2.setCallCount(964L);
-        a2.setAvgResponseTimeMs(280.0);
         a2.setCreatedAt(LocalDateTime.now().minusDays(25));
         a2.setUpdatedAt(LocalDateTime.now().minusHours(5));
 
@@ -139,8 +127,6 @@ public class DataInitializer implements ApplicationRunner {
         a3.setMaxTokens(1500);
         a3.setTags(List.of("RAG问答", "知识库", "客户服务", "7x24h"));
         a3.setStatus(AgentStatus.RUNNING);
-        a3.setCallCount(3420L);
-        a3.setAvgResponseTimeMs(195.0);
         a3.setCreatedAt(LocalDateTime.now().minusDays(40));
         a3.setUpdatedAt(LocalDateTime.now().minusMinutes(45));
 
@@ -158,8 +144,6 @@ public class DataInitializer implements ApplicationRunner {
         a4.setMaxTokens(3500);
         a4.setTags(List.of("K8s", "Docker", "DevOps", "故障排查"));
         a4.setStatus(AgentStatus.IDLE);
-        a4.setCallCount(610L);
-        a4.setAvgResponseTimeMs(510.0);
         a4.setCreatedAt(LocalDateTime.now().minusDays(18));
         a4.setUpdatedAt(LocalDateTime.now().minusDays(1));
 
@@ -177,8 +161,6 @@ public class DataInitializer implements ApplicationRunner {
         a5.setMaxTokens(3000);
         a5.setTags(List.of("文案营销", "爆款创作", "自媒体", "品牌策划"));
         a5.setStatus(AgentStatus.RUNNING);
-        a5.setCallCount(1280L);
-        a5.setAvgResponseTimeMs(360.0);
         a5.setCreatedAt(LocalDateTime.now().minusDays(15));
         a5.setUpdatedAt(LocalDateTime.now().minusHours(12));
 
@@ -196,8 +178,6 @@ public class DataInitializer implements ApplicationRunner {
         a6.setMaxTokens(4000);
         a6.setTags(List.of("Vue3", "React", "TailwindCSS", "UI设计"));
         a6.setStatus(AgentStatus.DISABLED);
-        a6.setCallCount(430L);
-        a6.setAvgResponseTimeMs(410.0);
         a6.setCreatedAt(LocalDateTime.now().minusDays(10));
         a6.setUpdatedAt(LocalDateTime.now().minusDays(2));
 
@@ -215,8 +195,6 @@ public class DataInitializer implements ApplicationRunner {
         a7.setMaxTokens(3500);
         a7.setTags(List.of("PRD文档", "用户故事", "敏捷开发", "需求分析"));
         a7.setStatus(AgentStatus.RUNNING);
-        a7.setCallCount(880L);
-        a7.setAvgResponseTimeMs(380.0);
         a7.setCreatedAt(LocalDateTime.now().minusDays(8));
         a7.setUpdatedAt(LocalDateTime.now().minusHours(8));
 
@@ -234,58 +212,10 @@ public class DataInitializer implements ApplicationRunner {
         a8.setMaxTokens(2500);
         a8.setTags(List.of("多语言", "学术翻译", "本地化", "信达雅"));
         a8.setStatus(AgentStatus.RUNNING);
-        a8.setCallCount(2150L);
-        a8.setAvgResponseTimeMs(220.0);
         a8.setCreatedAt(LocalDateTime.now().minusDays(5));
         a8.setUpdatedAt(LocalDateTime.now().minusHours(1));
 
         agentRepository.saveAll(List.of(a1, a2, a3, a4, a5, a6, a7, a8));
-    }
-
-    private void seedDailyStats() {
-        if (dailyStatRepository.count() > 0) {
-            return;
-        }
-
-        LocalDate today = LocalDate.now();
-        int days = 30;
-        List<AgentDailyStat> rows = new ArrayList<>();
-
-        for (Agent agent : agentRepository.findAll()) {
-            long totalCalls = agent.getCallCount() == null ? 0 : agent.getCallCount();
-            if (totalCalls <= 0) {
-                continue;
-            }
-            long avgLatency = Math.round(agent.getAvgResponseTimeMs() == null ? 300.0 : agent.getAvgResponseTimeMs());
-            long base = totalCalls / days;
-            long remainder = totalCalls % days;
-
-            for (int i = 0; i < days; i++) {
-                long calls = base + (i >= days - remainder ? 1 : 0);
-                if (calls == 0) {
-                    continue;
-                }
-                LocalDate date = today.minusDays(days - 1L - i);
-                long tokens = calls * 2000L;
-                long prompt = Math.round(tokens * 0.57);
-                long completion = tokens - prompt;
-
-                AgentDailyStat stat = new AgentDailyStat();
-                stat.setId(agent.getId() + "-" + date);
-                stat.setAgentId(agent.getId());
-                stat.setStatDate(date);
-                stat.setCallCount(calls);
-                stat.setPromptTokens(prompt);
-                stat.setCompletionTokens(completion);
-                stat.setTotalLatencyMs(calls * avgLatency);
-                stat.setSuccessCount(Math.round(calls * 0.994));
-                rows.add(stat);
-            }
-        }
-
-        if (!rows.isEmpty()) {
-            dailyStatRepository.saveAll(rows);
-        }
     }
 
     private void seedLlmGateway() {

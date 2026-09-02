@@ -1,6 +1,7 @@
 package com.example.agentplatform.service;
 
 import com.example.agentplatform.model.Agent;
+import com.example.agentplatform.model.AgentConversation;
 import com.example.agentplatform.model.ChatGeneration;
 import com.example.agentplatform.model.ChatMessage;
 import com.example.agentplatform.model.ChatRequest;
@@ -20,15 +21,18 @@ public class AiChatService {
     private static final Logger log = LoggerFactory.getLogger(AiChatService.class);
 
     private final AgentService agentService;
+    private final AgentConversationService conversationService;
     private final LlmGatewayService gatewayService;
     private final OpenAiCompatibleClient openAiClient;
     private final ChatClient chatClient;
 
     public AiChatService(AgentService agentService,
+                         AgentConversationService conversationService,
                          LlmGatewayService gatewayService,
                          OpenAiCompatibleClient openAiClient,
                          @Autowired(required = false) ChatModel chatModel) {
         this.agentService = agentService;
+        this.conversationService = conversationService;
         this.gatewayService = gatewayService;
         this.openAiClient = openAiClient;
         this.chatClient = (chatModel != null) ? ChatClient.builder(chatModel).build() : null;
@@ -43,7 +47,9 @@ public class AiChatService {
         String userMessage = request.getMessage();
         String reply;
         String executionModel = agent.getModelName() != null ? agent.getModelName() : "gpt-4o";
-        int tokens = 0;
+        int promptTokens = 0;
+        int completionTokens = 0;
+        boolean realModelReply = false;
         String[] routedModel = { executionModel };
 
         try {
@@ -52,10 +58,12 @@ public class AiChatService {
             if (routed != null && routed.content() != null && !routed.content().isBlank()) {
                 reply = routed.content();
                 executionModel = routedModel[0];
-                tokens = routed.totalTokens();
-                if (tokens == 0) {
-                    tokens = routed.promptTokens() + routed.completionTokens();
+                promptTokens = Math.max(0, routed.promptTokens());
+                completionTokens = Math.max(0, routed.completionTokens());
+                if (promptTokens + completionTokens == 0 && routed.totalTokens() > 0) {
+                    completionTokens = routed.totalTokens();
                 }
+                realModelReply = true;
             } else if (chatClient != null) {
                 log.info("Invoking Spring AI ChatClient for Agent: [{}] with model: [{}]", agent.getName(), executionModel);
                 
@@ -77,8 +85,11 @@ public class AiChatService {
 
                 if (aiResponse != null && aiResponse.getResult() != null && aiResponse.getResult().getOutput() != null) {
                     reply = aiResponse.getResult().getOutput().getText();
+                    realModelReply = true;
                     if (aiResponse.getMetadata() != null && aiResponse.getMetadata().getUsage() != null) {
-                        tokens = aiResponse.getMetadata().getUsage().getTotalTokens();
+                        var usage = aiResponse.getMetadata().getUsage();
+                        promptTokens = usage.getPromptTokens() == null ? 0 : usage.getPromptTokens();
+                        completionTokens = usage.getCompletionTokens() == null ? 0 : usage.getCompletionTokens();
                     }
                 } else {
                     reply = generateSmartSimulationReply(agent, userMessage, request.getHistory());
@@ -92,18 +103,10 @@ public class AiChatService {
         }
 
         long latencyMs = System.currentTimeMillis() - startTime;
-        if (latencyMs < 120) {
-            latencyMs = 150 + (long) (Math.random() * 200);
-        }
-        if (tokens == 0) {
-            tokens = (userMessage.length() + reply.length()) / 2 + 35;
-        }
+        int tokens = promptTokens + completionTokens;
+        agentService.recordInvocation(agent.getId(), latencyMs, promptTokens, completionTokens, realModelReply);
 
-        int promptTokens = (int) Math.round(tokens * 0.57);
-        int completionTokens = Math.max(0, tokens - promptTokens);
-        agentService.recordInvocation(agent.getId(), latencyMs, promptTokens, completionTokens, true);
-
-        return new ChatResponse(
+        ChatResponse response = new ChatResponse(
                 agent.getId(),
                 agent.getName(),
                 reply,
@@ -111,6 +114,18 @@ public class AiChatService {
                 executionModel,
                 tokens
         );
+        AgentConversation conversation = conversationService.appendTurn(
+                agent.getId(),
+                request.getConversationId(),
+                request.getAccount(),
+                userMessage,
+                reply,
+                executionModel,
+                latencyMs,
+                tokens
+        );
+        response.setConversationId(conversation.getId());
+        return response;
     }
 
     private OpenAiCompatibleClient.ChatResult invokeViaGateway(Agent agent, String userMessage,

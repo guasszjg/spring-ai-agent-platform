@@ -60,7 +60,7 @@ public class Agent {
         this.updatedAt = LocalDateTime.now();
         this.status = AgentStatus.RUNNING;
         this.callCount = 0L;
-        this.avgResponseTimeMs = 350.0;
+        this.avgResponseTimeMs = 0.0;
         this.temperature = 0.7;
         this.topP = 0.9;
         this.maxTokens = 2048;
@@ -219,7 +219,7 @@ public class Agent {
             callCount = 0L;
         }
         if (avgResponseTimeMs == null) {
-            avgResponseTimeMs = 300.0;
+            avgResponseTimeMs = 0.0;
         }
         if (avatar == null || avatar.isBlank()) {
             avatar = "🤖";
