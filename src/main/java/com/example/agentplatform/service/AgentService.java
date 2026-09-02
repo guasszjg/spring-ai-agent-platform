@@ -175,24 +175,15 @@ public class AgentService {
         stats.setIdleAgents(all.stream().filter(a -> a.getStatus() == AgentStatus.IDLE).count());
         stats.setDisabledAgents(all.stream().filter(a -> a.getStatus() == AgentStatus.DISABLED).count());
 
-        long totalCalls = current.stream().mapToLong(AgentDailyStat::getCallCount).sum();
-        if (totalCalls == 0) {
-            totalCalls = all.stream().mapToLong(a -> a.getCallCount() == null ? 0 : a.getCallCount()).sum();
-        }
+        long totalCalls = all.stream().mapToLong(a -> a.getCallCount() == null ? 0 : a.getCallCount()).sum();
         stats.setTotalCalls(totalCalls);
 
-        long latencyCalls = current.stream().mapToLong(AgentDailyStat::getCallCount).sum();
-        long latencySum = current.stream().mapToLong(AgentDailyStat::getTotalLatencyMs).sum();
-        double avgLatency;
-        if (latencyCalls > 0) {
-            avgLatency = latencySum * 1.0 / latencyCalls;
-        } else {
-            avgLatency = all.stream()
-                    .filter(a -> a.getAvgResponseTimeMs() != null && a.getAvgResponseTimeMs() > 0)
-                    .mapToDouble(Agent::getAvgResponseTimeMs)
-                    .average()
-                    .orElse(0.0);
-        }
+        long latencyCalls = all.stream().mapToLong(a -> a.getCallCount() == null ? 0 : a.getCallCount()).sum();
+        double latencySum = all.stream()
+                .filter(a -> a.getCallCount() != null && a.getCallCount() > 0)
+                .mapToDouble(a -> (a.getAvgResponseTimeMs() == null ? 0.0 : a.getAvgResponseTimeMs()) * a.getCallCount())
+                .sum();
+        double avgLatency = latencyCalls == 0 ? 0.0 : latencySum / latencyCalls;
         stats.setAvgResponseTimeMs(Math.round(avgLatency * 10.0) / 10.0);
 
         long successCount = current.stream().mapToLong(AgentDailyStat::getSuccessCount).sum();
@@ -244,10 +235,18 @@ public class AgentService {
         stats.setModelDistribution(modelTokens);
 
         Map<String, long[]> rankAgg = new HashMap<>();
+        for (Agent agent : all) {
+            long calls = agent.getCallCount() == null ? 0 : agent.getCallCount();
+            if (calls <= 0) {
+                continue;
+            }
+            rankAgg.put(agent.getId(), new long[]{calls, 0L});
+        }
         for (AgentDailyStat row : current) {
-            long[] agg = rankAgg.computeIfAbsent(row.getAgentId(), k -> new long[]{0L, 0L});
-            agg[0] += row.getCallCount();
-            agg[1] += row.getPromptTokens() + row.getCompletionTokens();
+            long[] agg = rankAgg.get(row.getAgentId());
+            if (agg != null) {
+                agg[1] += row.getPromptTokens() + row.getCompletionTokens();
+            }
         }
         List<DashboardStats.RankingItem> ranking = rankAgg.entrySet().stream()
                 .sorted((a, b) -> Long.compare(b.getValue()[0], a.getValue()[0]))
