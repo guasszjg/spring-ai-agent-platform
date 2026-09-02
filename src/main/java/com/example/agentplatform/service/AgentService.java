@@ -129,17 +129,6 @@ public class AgentService {
     }
 
     public void recordInvocation(String id, long latencyMs, long promptTokens, long completionTokens, boolean success) {
-        agentRepository.findById(id).ifPresent(agent -> {
-            long currentCount = agent.getCallCount() == null ? 0 : agent.getCallCount();
-            agent.setCallCount(currentCount + 1);
-            double currentAvg = agent.getAvgResponseTimeMs() == null ? 0.0 : agent.getAvgResponseTimeMs();
-            double nextAvg = currentCount == 0
-                    ? latencyMs
-                    : (currentAvg * currentCount + latencyMs) / (currentCount + 1);
-            agent.setAvgResponseTimeMs(Math.round(nextAvg * 10.0) / 10.0);
-            agentRepository.save(agent);
-        });
-
         LocalDate today = LocalDate.now();
         AgentDailyStat stat = dailyStatRepository.findByAgentIdAndStatDate(id, today)
                 .orElseGet(() -> {
