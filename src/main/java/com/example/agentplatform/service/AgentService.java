@@ -23,7 +23,6 @@ import java.util.stream.Collectors;
 public class AgentService {
 
     private static final DateTimeFormatter TREND_LABEL = DateTimeFormatter.ofPattern("M/d");
-    private static final double USD_PER_MILLION_TOKENS = 1.55;
 
     private final AgentRepository agentRepository;
     private final AgentDailyStatRepository dailyStatRepository;
@@ -200,7 +199,9 @@ public class AgentService {
         stats.setPromptTokens(promptTokens);
         stats.setCompletionTokens(completionTokens);
         long totalTokens = promptTokens + completionTokens;
-        stats.setEstimatedCostUsd(Math.round(totalTokens / 1_000_000.0 * USD_PER_MILLION_TOKENS * 100.0) / 100.0);
+        Map<String, Long> modelTokens = conversationService.tokenUsageByModel(start, end);
+        stats.setModelDistribution(modelTokens);
+        stats.setEstimatedCostCny(LlmPriceCatalog.estimateCny(modelTokens, promptTokens, completionTokens));
 
         long prevTokens = previous.stream()
                 .mapToLong(s -> s.getPromptTokens() + s.getCompletionTokens())
@@ -221,18 +222,6 @@ public class AgentService {
         byDay.forEach((date, values) ->
                 trend.add(new DashboardStats.TrendPoint(date.format(TREND_LABEL), values[0], values[1])));
         stats.setTokenTrend(trend);
-
-        Map<String, Long> modelTokens = new LinkedHashMap<>();
-        for (AgentDailyStat row : current) {
-            Agent agent = agentById.get(row.getAgentId());
-            String model = agent != null && agent.getModelName() != null ? agent.getModelName() : "未指定";
-            modelTokens.merge(model, row.getPromptTokens() + row.getCompletionTokens(), Long::sum);
-        }
-        if (modelTokens.isEmpty()) {
-            modelTokens = all.stream()
-                    .collect(Collectors.groupingBy(a -> a.getModelName() == null ? "未指定" : a.getModelName(), Collectors.counting()));
-        }
-        stats.setModelDistribution(modelTokens);
 
         Map<String, long[]> rankAgg = new HashMap<>();
         for (Agent agent : all) {
@@ -316,7 +305,8 @@ public class AgentService {
         stats.setPromptTokens(promptTokens);
         stats.setCompletionTokens(completionTokens);
         stats.setTotalTokens(totalTokens);
-        stats.setEstimatedCostUsd(Math.round(totalTokens / 1_000_000.0 * USD_PER_MILLION_TOKENS * 100.0) / 100.0);
+        stats.setEstimatedCostCny(LlmPriceCatalog.estimateCny(
+                conversationService.tokenUsageByModel(agentId, start, end), promptTokens, completionTokens));
 
         long prevTokens = previous.stream()
                 .mapToLong(s -> s.getPromptTokens() + s.getCompletionTokens())

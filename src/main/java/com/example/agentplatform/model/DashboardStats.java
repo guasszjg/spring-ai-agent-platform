@@ -17,6 +17,7 @@ public class DashboardStats {
     private long promptTokens;
     private long completionTokens;
     private double estimatedCostUsd;
+    private double estimatedCostCny;
     private double tokenChangePercent;
     private List<TrendPoint> tokenTrend = new ArrayList<>();
     private List<RankingItem> ranking = new ArrayList<>();
@@ -119,6 +120,14 @@ public class DashboardStats {
 
     public void setEstimatedCostUsd(double estimatedCostUsd) {
         this.estimatedCostUsd = estimatedCostUsd;
+    }
+
+    public double getEstimatedCostCny() {
+        return estimatedCostCny;
+    }
+
+    public void setEstimatedCostCny(double estimatedCostCny) {
+        this.estimatedCostCny = estimatedCostCny;
     }
 
     public double getTokenChangePercent() {

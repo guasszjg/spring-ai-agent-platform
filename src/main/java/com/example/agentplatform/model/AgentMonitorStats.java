@@ -14,6 +14,7 @@ public class AgentMonitorStats {
     private long callCount;
     private double avgResponseTimeMs;
     private double estimatedCostUsd;
+    private double estimatedCostCny;
     private List<DashboardStats.TrendPoint> tokenTrend = new ArrayList<>();
 
     public long getPromptTokens() {
@@ -86,6 +87,14 @@ public class AgentMonitorStats {
 
     public void setEstimatedCostUsd(double estimatedCostUsd) {
         this.estimatedCostUsd = estimatedCostUsd;
+    }
+
+    public double getEstimatedCostCny() {
+        return estimatedCostCny;
+    }
+
+    public void setEstimatedCostCny(double estimatedCostCny) {
+        this.estimatedCostCny = estimatedCostCny;
     }
 
     public List<DashboardStats.TrendPoint> getTokenTrend() {

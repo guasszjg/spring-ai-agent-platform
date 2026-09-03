@@ -12,8 +12,10 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -100,6 +102,36 @@ public class AgentConversationService {
                         item,
                         messageRepository.findByConversationIdOrderByCreatedAtAsc(conversationId)
                 ));
+    }
+
+    @Transactional(readOnly = true)
+    public Map<String, Long> tokenUsageByModel(LocalDate start, LocalDate end) {
+        return tokenUsageByModel(null, start, end);
+    }
+
+    @Transactional(readOnly = true)
+    public Map<String, Long> tokenUsageByModel(String agentId, LocalDate start, LocalDate end) {
+        LocalDateTime from = (start == null ? LocalDate.of(2020, 1, 1) : start).atStartOfDay();
+        LocalDateTime to = (end == null ? LocalDate.now() : end).plusDays(1).atStartOfDay();
+        Map<String, Long> usage = new LinkedHashMap<>();
+        List<AgentConversationMessage> messages = messageRepository
+                .findByRoleAndCreatedAtGreaterThanEqualAndCreatedAtLessThan("assistant", from, to);
+        if (agentId != null && !agentId.isBlank()) {
+            java.util.Set<String> ids = conversationRepository.findByAgentIdOrderByUpdatedAtDesc(agentId).stream()
+                    .map(AgentConversation::getId)
+                    .collect(Collectors.toSet());
+            messages = messages.stream().filter(item -> ids.contains(item.getConversationId())).collect(Collectors.toList());
+        }
+        for (AgentConversationMessage message : messages) {
+            if (message.getTokensUsed() == null || message.getTokensUsed() <= 0) {
+                continue;
+            }
+            String model = message.getModel() == null || message.getModel().isBlank()
+                    ? "未指定"
+                    : message.getModel().trim();
+            usage.merge(model, message.getTokensUsed().longValue(), Long::sum);
+        }
+        return usage;
     }
 
     @Transactional(readOnly = true)
