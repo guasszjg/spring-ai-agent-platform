@@ -51,27 +51,38 @@ public class DataInitializer implements ApplicationRunner {
     }
 
     private void seedUsers() {
-        if (userRepository.count() > 0) {
-            return;
+        if (userRepository.count() == 0) {
+            AppUser admin = new AppUser();
+            admin.setId("user-admin");
+            admin.setUsername("admin");
+            admin.setPassword(passwordEncoder.encode("admin123"));
+            admin.setNickname("超级管理员");
+            admin.setRole("System Admin");
+            admin.setAvatar("/avatar-admin.jpg");
+            userRepository.save(admin);
+
+            AppUser developer = new AppUser();
+            developer.setId("user-developer");
+            developer.setUsername("developer");
+            developer.setPassword(passwordEncoder.encode("dev123456"));
+            developer.setNickname("智能体工程师 (developer)");
+            developer.setRole("Agent Developer");
+            developer.setAvatar("/avatar-dev.jpg");
+            userRepository.save(developer);
+        } else {
+            userRepository.findByUsernameIgnoreCase("admin").ifPresent(admin -> {
+                if (admin.getAvatar() == null || admin.getAvatar().contains("dicebear") || admin.getAvatar().contains("bottts")) {
+                    admin.setAvatar("/avatar-admin.jpg");
+                    userRepository.save(admin);
+                }
+            });
+            userRepository.findByUsernameIgnoreCase("developer").ifPresent(dev -> {
+                if (dev.getAvatar() == null || dev.getAvatar().contains("dicebear") || dev.getAvatar().contains("bottts")) {
+                    dev.setAvatar("/avatar-dev.jpg");
+                    userRepository.save(dev);
+                }
+            });
         }
-
-        AppUser admin = new AppUser();
-        admin.setId("user-admin");
-        admin.setUsername("admin");
-        admin.setPassword(passwordEncoder.encode("admin123"));
-        admin.setNickname("超级管理员");
-        admin.setRole("System Admin");
-        admin.setAvatar("https://api.dicebear.com/7.x/bottts/svg?seed=admin");
-        userRepository.save(admin);
-
-        AppUser developer = new AppUser();
-        developer.setId("user-developer");
-        developer.setUsername("developer");
-        developer.setPassword(passwordEncoder.encode("dev123456"));
-        developer.setNickname("智能体工程师 (developer)");
-        developer.setRole("Agent Developer");
-        developer.setAvatar("https://api.dicebear.com/7.x/bottts/svg?seed=developer");
-        userRepository.save(developer);
     }
 
     private void seedAgents() {
