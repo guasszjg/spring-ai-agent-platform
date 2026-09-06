@@ -28,9 +28,14 @@ public class AgentTemplateController {
     }
 
     @GetMapping
-    public ResponseEntity<ApiResponse<List<AgentTemplate>>> listTemplates(
+    public ResponseEntity<ApiResponse<?>> listTemplates(
             @RequestParam(required = false) String keyword,
-            @RequestParam(required = false) String category) {
+            @RequestParam(required = false) String category,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer size) {
+        if (page != null && size != null) {
+            return ResponseEntity.ok(ApiResponse.ok(templateService.searchTemplates(keyword, category, page, size)));
+        }
         return ResponseEntity.ok(ApiResponse.ok(templateService.list(keyword, category)));
     }
 

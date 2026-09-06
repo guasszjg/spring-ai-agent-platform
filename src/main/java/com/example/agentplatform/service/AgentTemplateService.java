@@ -1,6 +1,7 @@
 package com.example.agentplatform.service;
 
 import com.example.agentplatform.model.AgentTemplate;
+import com.example.agentplatform.model.PageResult;
 import com.example.agentplatform.repository.AgentTemplateRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,6 +22,18 @@ public class AgentTemplateService {
     @Transactional(readOnly = true)
     public List<AgentTemplate> list(String keyword, String category) {
         return templateRepository.searchTemplates(keyword, category);
+    }
+
+    @Transactional(readOnly = true)
+    public PageResult<AgentTemplate> searchTemplates(String keyword, String category, int page, int size) {
+        List<AgentTemplate> all = templateRepository.searchTemplates(keyword, category);
+        int total = all.size();
+        int safePage = Math.max(1, page);
+        int safeSize = Math.max(1, size);
+        int fromIndex = Math.min((safePage - 1) * safeSize, total);
+        int toIndex = Math.min(fromIndex + safeSize, total);
+        List<AgentTemplate> records = all.subList(fromIndex, toIndex);
+        return new PageResult<>(records, total, safePage, safeSize);
     }
 
     @Transactional(readOnly = true)
