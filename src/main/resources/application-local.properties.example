@@ -3,3 +3,6 @@
 # Uncomment and fill in a real key. Empty values here would override the demo-key fallback.
 # spring.ai.openai.api-key=sk-your-real-key
 # spring.ai.openai.base-url=https://api.openai.com
+
+# Local-only Bocha key. This file is gitignored and the key is never returned by an API.
+# app.bocha.api-key=your-bocha-api-key

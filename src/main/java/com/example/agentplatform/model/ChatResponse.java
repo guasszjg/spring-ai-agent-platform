@@ -11,6 +11,8 @@ public class ChatResponse {
     private Integer tokensUsed;
     private String conversationId;
     private String toolCalled;
+    private Boolean degraded;
+    private String source;
     private LocalDateTime timestamp;
 
     public ChatResponse() {
@@ -89,6 +91,22 @@ public class ChatResponse {
 
     public void setToolCalled(String toolCalled) {
         this.toolCalled = toolCalled;
+    }
+
+    public Boolean getDegraded() {
+        return degraded;
+    }
+
+    public void setDegraded(Boolean degraded) {
+        this.degraded = degraded;
+    }
+
+    public String getSource() {
+        return source;
+    }
+
+    public void setSource(String source) {
+        this.source = source;
     }
 
     public LocalDateTime getTimestamp() {

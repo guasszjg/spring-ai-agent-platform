@@ -1,6 +1,7 @@
 package com.example.agentplatform.service;
 
 import com.example.agentplatform.model.ChatGeneration;
+import com.example.agentplatform.config.OutboundUrlValidator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -27,11 +28,14 @@ public class OpenAiCompatibleClient {
             .connectTimeout(Duration.ofSeconds(8))
             .build();
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final OutboundUrlValidator outboundUrlValidator;
 
-    public OpenAiCompatibleClient() {
+    public OpenAiCompatibleClient(OutboundUrlValidator outboundUrlValidator) {
+        this.outboundUrlValidator = outboundUrlValidator;
     }
 
     public ProbeResult probe(String baseUrl, String apiKey, int timeoutMs) {
+        outboundUrlValidator.validateProviderBaseUrl(baseUrl);
         String url = normalizeBase(baseUrl) + "/models";
         try {
             HttpRequest request = HttpRequest.newBuilder(URI.create(url))
@@ -80,6 +84,7 @@ public class OpenAiCompatibleClient {
     public ChatResult chatWithTools(String baseUrl, String apiKey, String model, List<Map<String, Object>> messages,
                                     List<Map<String, Object>> tools, com.example.agentplatform.tool.AgentToolRegistry toolRegistry,
                                     ChatGeneration generation, int timeoutMs) {
+        outboundUrlValidator.validateProviderBaseUrl(baseUrl);
         String url = normalizeBase(baseUrl) + "/chat/completions";
         try {
             List<Map<String, Object>> currentMessages = new ArrayList<>(messages);

@@ -120,11 +120,25 @@ CREATE TABLE IF NOT EXISTS agent_daily_stats (
 
 CREATE INDEX IF NOT EXISTS idx_daily_stats_agent_date ON agent_daily_stats(agent_id, stat_date);
 
+-- 9. 智能体工具密钥表：密钥仅保存 AES-GCM 密文
+CREATE TABLE IF NOT EXISTS agent_tool_secrets (
+    agent_id VARCHAR(64) PRIMARY KEY,
+    bocha_api_key_encrypted TEXT,
+    updated_at TIMESTAMP,
+    CONSTRAINT fk_agent_tool_secret_agent FOREIGN KEY (agent_id) REFERENCES agents (id) ON DELETE CASCADE
+);
+
 -- ==========================================================
--- 9. 增量变更语句 (如果远程 192 或已有数据库已建过老表，直接执行此段补丁即可)
+-- 10. 增量变更语句 (如果远程 192 或已有数据库已建过老表，直接执行此段补丁即可)
 -- ==========================================================
--- 2026-09-06: agents 表增加 tools_config 字段，用于持久化工具配置与 Bocha Key
+-- 2026-09-06: agents 表增加 tools_config 字段，只保存非敏感工具配置
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS tools_config TEXT;
 
-COMMENT ON COLUMN agents.tools_config IS '智能体工具配置(JSON格式，包含插件开关、Bocha API Key、检索条数与时效等)';
+COMMENT ON COLUMN agents.tools_config IS '智能体非敏感工具配置(JSON格式，包含插件开关、检索条数与时效等，不含API Key)';
 
+CREATE TABLE IF NOT EXISTS agent_tool_secrets (
+    agent_id VARCHAR(64) PRIMARY KEY,
+    bocha_api_key_encrypted TEXT,
+    updated_at TIMESTAMP,
+    CONSTRAINT fk_agent_tool_secret_agent FOREIGN KEY (agent_id) REFERENCES agents (id) ON DELETE CASCADE
+);

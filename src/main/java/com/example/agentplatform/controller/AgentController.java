@@ -11,6 +11,7 @@ import com.example.agentplatform.model.ChatResponse;
 import com.example.agentplatform.model.ConversationDetail;
 import com.example.agentplatform.model.LoginResponse;
 import com.example.agentplatform.model.PageResult;
+import com.example.agentplatform.config.SessionAuthInterceptor;
 import com.example.agentplatform.service.AgentConversationService;
 import com.example.agentplatform.service.AgentService;
 import com.example.agentplatform.service.AiChatService;
@@ -34,8 +35,6 @@ import java.net.URI;
 @RestController
 @RequestMapping("/api/agents")
 public class AgentController {
-
-    private static final String SESSION_USER = "LOGGED_IN_USER";
 
     private final AgentService agentService;
     private final AiChatService aiChatService;
@@ -123,7 +122,7 @@ public class AgentController {
         }
         request.setAgentId(id);
         if (request.getAccount() == null || request.getAccount().isBlank()) {
-            LoginResponse user = (LoginResponse) session.getAttribute(SESSION_USER);
+            LoginResponse user = (LoginResponse) session.getAttribute(SessionAuthInterceptor.SESSION_USER);
             if (user != null && user.getUsername() != null) {
                 request.setAccount(user.getUsername());
             }
@@ -135,7 +134,7 @@ public class AgentController {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(ApiResponse.error("对话服务异常: " + e.getMessage()));
+                    .body(ApiResponse.error("当前无法完成模型调用，请检查模型网关配置或稍后重试"));
         }
     }
 

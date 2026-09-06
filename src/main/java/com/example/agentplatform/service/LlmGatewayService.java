@@ -1,6 +1,7 @@
 package com.example.agentplatform.service;
 
 import com.example.agentplatform.config.SecretCrypto;
+import com.example.agentplatform.config.OutboundUrlValidator;
 import com.example.agentplatform.model.GatewayModelOption;
 import com.example.agentplatform.model.GatewayOverview;
 import com.example.agentplatform.model.GatewayPolicy;
@@ -35,15 +36,18 @@ public class LlmGatewayService {
     private final GatewayPolicyRepository policyRepository;
     private final SecretCrypto secretCrypto;
     private final OpenAiCompatibleClient openAiClient;
+    private final OutboundUrlValidator outboundUrlValidator;
 
     public LlmGatewayService(LlmProviderRepository providerRepository,
                              GatewayPolicyRepository policyRepository,
                              SecretCrypto secretCrypto,
-                             OpenAiCompatibleClient openAiClient) {
+                             OpenAiCompatibleClient openAiClient,
+                             OutboundUrlValidator outboundUrlValidator) {
         this.providerRepository = providerRepository;
         this.policyRepository = policyRepository;
         this.secretCrypto = secretCrypto;
         this.openAiClient = openAiClient;
+        this.outboundUrlValidator = outboundUrlValidator;
     }
 
     @Transactional
@@ -96,6 +100,7 @@ public class LlmGatewayService {
         provider.setVendor(vendor);
         provider.setBuiltin(false);
         applyRequest(provider, request, preset, true);
+        outboundUrlValidator.validateProviderBaseUrl(provider.getBaseUrl());
         return toView(providerRepository.save(provider));
     }
 
@@ -105,6 +110,7 @@ public class LlmGatewayService {
                 .orElseThrow(() -> new IllegalArgumentException("未找到该模型通道"));
         LlmVendorCatalog.VendorPreset preset = LlmVendorCatalog.preset(provider.getVendor());
         applyRequest(provider, request, preset, false);
+        outboundUrlValidator.validateProviderBaseUrl(provider.getBaseUrl());
         return toView(providerRepository.save(provider));
     }
 
@@ -175,6 +181,8 @@ public class LlmGatewayService {
         if (apiKey == null || apiKey.isBlank()) {
             throw new IllegalArgumentException("请填写 API Key 后再测试");
         }
+
+        outboundUrlValidator.validateProviderBaseUrl(baseUrl);
 
         int timeoutMs = timeout != null ? timeout : 15000;
         OpenAiCompatibleClient.ProbeResult result = openAiClient.probe(baseUrl, apiKey, timeoutMs);

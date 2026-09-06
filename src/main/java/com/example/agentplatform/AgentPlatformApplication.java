@@ -11,7 +11,6 @@ public class AgentPlatformApplication {
         System.out.println("==========================================================");
         System.out.println("  🤖 Spring AI 智能体管理平台 已成功启动!");
         System.out.println("  🌐 访问地址: http://localhost:8080");
-        System.out.println("  🔑 默认体验账号: admin / admin123");
         System.out.println("==========================================================");
     }
 }

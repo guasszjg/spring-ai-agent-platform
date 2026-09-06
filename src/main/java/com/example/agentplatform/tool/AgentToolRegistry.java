@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -36,7 +37,11 @@ public class AgentToolRegistry {
             .build();
 
     private final ThreadLocal<String> currentContextBochaApiKey = new ThreadLocal<>();
-    private volatile String globalBochaApiKey = null;
+    private final String configuredBochaApiKey;
+
+    public AgentToolRegistry(@Value("${app.bocha.api-key:}") String configuredBochaApiKey) {
+        this.configuredBochaApiKey = configuredBochaApiKey == null ? "" : configuredBochaApiKey.trim();
+    }
 
     public void setCurrentContextBochaApiKey(String apiKey) {
         if (apiKey != null && !apiKey.isBlank()) {
@@ -48,16 +53,6 @@ public class AgentToolRegistry {
 
     public void clearCurrentContext() {
         currentContextBochaApiKey.remove();
-    }
-
-    public void setGlobalBochaApiKey(String apiKey) {
-        if (apiKey != null && !apiKey.isBlank()) {
-            this.globalBochaApiKey = apiKey.trim();
-        }
-    }
-
-    public String getGlobalBochaApiKey() {
-        return this.globalBochaApiKey;
     }
 
     public List<Map<String, Object>> getToolDefinitions(List<String> enabledToolNames) {
@@ -298,10 +293,7 @@ public class AgentToolRegistry {
             apiKey = currentContextBochaApiKey.get();
         }
         if (apiKey == null || apiKey.isBlank()) {
-            apiKey = globalBochaApiKey;
-        }
-        if (apiKey == null || apiKey.isBlank()) {
-            apiKey = System.getenv("BOCHA_API_KEY");
+            apiKey = configuredBochaApiKey;
         }
         if (apiKey == null || apiKey.isBlank()) {
             return String.format("【联网检索插件】已触发 Bocha Web Search，检索关键词: [%s]。提示：尚未检测到有效的 Bocha API Key，请在左侧插件列表点击「联网检索」齿轮配置 API Key 并保存。", query);
@@ -393,10 +385,7 @@ public class AgentToolRegistry {
                 : currentContextBochaApiKey.get();
 
         if (effectiveKey == null || effectiveKey.isBlank()) {
-            effectiveKey = globalBochaApiKey;
-        }
-        if (effectiveKey == null || effectiveKey.isBlank()) {
-            effectiveKey = System.getenv("BOCHA_API_KEY");
+            effectiveKey = configuredBochaApiKey;
         }
 
         if (effectiveKey == null || effectiveKey.isBlank()) {

@@ -7,6 +7,7 @@ import com.example.agentplatform.model.AgentMonitorStats;
 import com.example.agentplatform.model.AgentStatus;
 import com.example.agentplatform.model.DashboardStats;
 import com.example.agentplatform.model.PageResult;
+import com.example.agentplatform.config.ToolConfigSanitizer;
 import com.example.agentplatform.repository.AgentDailyStatRepository;
 import com.example.agentplatform.repository.AgentRepository;
 import org.springframework.data.domain.Sort;
@@ -27,13 +28,19 @@ public class AgentService {
     private final AgentRepository agentRepository;
     private final AgentDailyStatRepository dailyStatRepository;
     private final AgentConversationService conversationService;
+    private final ToolConfigSanitizer toolConfigSanitizer;
+    private final AgentToolSecretService toolSecretService;
 
     public AgentService(AgentRepository agentRepository,
                         AgentDailyStatRepository dailyStatRepository,
-                        AgentConversationService conversationService) {
+                        AgentConversationService conversationService,
+                        ToolConfigSanitizer toolConfigSanitizer,
+                        AgentToolSecretService toolSecretService) {
         this.agentRepository = agentRepository;
         this.dailyStatRepository = dailyStatRepository;
         this.conversationService = conversationService;
+        this.toolConfigSanitizer = toolConfigSanitizer;
+        this.toolSecretService = toolSecretService;
     }
 
     @Transactional(readOnly = true)
@@ -83,6 +90,7 @@ public class AgentService {
 
     public Agent create(Agent agent) {
         agent.setId(null);
+        agent.setToolsConfig(toolConfigSanitizer.sanitize(agent.getToolsConfig()));
         return agentRepository.save(agent);
     }
 
@@ -105,7 +113,9 @@ public class AgentService {
             existing.getTags().addAll(agentUpdate.getTags());
         }
         if (agentUpdate.getStatus() != null) existing.setStatus(agentUpdate.getStatus());
-        if (agentUpdate.getToolsConfig() != null) existing.setToolsConfig(agentUpdate.getToolsConfig());
+        if (agentUpdate.getToolsConfig() != null) {
+            existing.setToolsConfig(toolConfigSanitizer.sanitize(agentUpdate.getToolsConfig()));
+        }
 
         return agentRepository.save(existing);
     }
@@ -114,6 +124,7 @@ public class AgentService {
         if (!agentRepository.existsById(id)) {
             return false;
         }
+        toolSecretService.clearForDeletedAgent(id);
         agentRepository.deleteById(id);
         return true;
     }

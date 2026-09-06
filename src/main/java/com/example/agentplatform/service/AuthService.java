@@ -7,7 +7,6 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import java.util.Optional;
-import java.util.UUID;
 
 @Service
 public class AuthService {
@@ -27,7 +26,6 @@ public class AuthService {
     }
 
     private LoginResponse toLoginResponse(AppUser user) {
-        String token = "agt-token-" + UUID.randomUUID().toString().replace("-", "");
-        return new LoginResponse(token, user.getUsername(), user.getNickname(), user.getRole(), user.getAvatar());
+        return new LoginResponse(user.getUsername(), user.getNickname(), user.getRole(), user.getAvatar());
     }
 }

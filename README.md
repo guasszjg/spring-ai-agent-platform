@@ -31,9 +31,9 @@
      - 📚 **知识库 (RAG)**：支持检索增强知识库挂载与元数据过滤。
      - 🛠️ **工具 (Function Calling)**：集成时区转换、时间戳转换、联网检索等多项工具组件开关。
    - **右侧调试与预览区 (Preview Sandbox)**：
-     - 💬 实时会话流、Markdown 格式化与代码高亮。
+     - 💬 单次 HTTP 对话响应、Markdown 格式化与代码高亮。
      - ⚡ **Function Calling 工具调用气泡**：可视化展示工具触发与执行结果。
-     - ⏱️ 实时遥测指标监控（响应延迟、Token 消耗、传输速率）。
+     - ⏱️ 调用指标监控（真实响应延迟与 Token 消耗）。
      - 🚀 支持快捷测试 Prompt 注入与一键重置会话。
 
 5. **全站 Dark / Light 亮暗主题切换**
@@ -87,9 +87,9 @@ spring_ai/
 ## 🚀 快速启动指南
 
 ### 1. 运行服务
-在项目根目录 `H:\desk\guass_work\spring_ai` 下执行：
+在后端项目根目录执行（未指定时默认使用本地 `dev`）：
 ```bash
-mvn spring-boot:run
+mvn spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 或者执行编译打包生成的 Jar：
 ```bash
@@ -98,7 +98,17 @@ java -jar target/spring-ai-agent-platform-1.0.0.jar
 
 ### 2. 访问控制台
 * 🌐 **访问地址**：[http://localhost:8080](http://localhost:8080)
-* 🔑 **预设体验账号**：
+* 🔑 **仅 dev 环境的演示账号**：
   * **超级管理员**：`admin` / `admin123`
   * **开发者账号**：`developer` / `dev123456`
   *(支持页面一键点击快速填充)*
+
+### 安全配置
+
+生产环境必须设置 `DB_URL`、`DB_USERNAME`、`DB_PASSWORD`、`APP_CRYPTO_SECRET`，并使用
+`--spring.profiles.active=prod` 启动。生产环境不会创建演示用户，也不会在模型不可用时返回模拟回答。
+Bocha API Key 按智能体使用 AES-GCM 加密保存到独立密钥表，普通 API 永不返回密文或明文；
+也可以通过 `BOCHA_API_KEY` 环境变量或单次请求提供。
+本地 `dev` 环境允许连接 Ollama、LM Studio 等本机或内网模型服务；生产环境仍会拦截内网 Base URL。
+如需持久化本地 Bocha 联调 Key，可复制 `application-local.properties.example` 为
+`application-local.properties` 并设置 `app.bocha.api-key`，该文件已被 Git 忽略。

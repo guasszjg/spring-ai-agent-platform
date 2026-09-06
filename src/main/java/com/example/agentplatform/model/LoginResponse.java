@@ -1,7 +1,6 @@
 package com.example.agentplatform.model;
 
 public class LoginResponse {
-    private String token;
     private String username;
     private String nickname;
     private String role;
@@ -10,20 +9,11 @@ public class LoginResponse {
     public LoginResponse() {
     }
 
-    public LoginResponse(String token, String username, String nickname, String role, String avatar) {
-        this.token = token;
+    public LoginResponse(String username, String nickname, String role, String avatar) {
         this.username = username;
         this.nickname = nickname;
         this.role = role;
         this.avatar = avatar;
-    }
-
-    public String getToken() {
-        return token;
-    }
-
-    public void setToken(String token) {
-        this.token = token;
     }
 
     public String getUsername() {

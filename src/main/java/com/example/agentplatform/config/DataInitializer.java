@@ -14,6 +14,7 @@ import com.example.agentplatform.service.LlmGatewayService;
 import com.example.agentplatform.service.LlmVendorCatalog;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,17 +30,23 @@ public class DataInitializer implements ApplicationRunner {
     private final LlmProviderRepository llmProviderRepository;
     private final GatewayPolicyRepository gatewayPolicyRepository;
     private final PasswordEncoder passwordEncoder;
+    private final boolean seedDemoUsers;
+    private final ToolConfigSanitizer toolConfigSanitizer;
 
     public DataInitializer(UserRepository userRepository,
                            AgentRepository agentRepository,
                            LlmProviderRepository llmProviderRepository,
                            GatewayPolicyRepository gatewayPolicyRepository,
-                           PasswordEncoder passwordEncoder) {
+                           PasswordEncoder passwordEncoder,
+                           ToolConfigSanitizer toolConfigSanitizer,
+                           @Value("${app.seed.demo-users:false}") boolean seedDemoUsers) {
         this.userRepository = userRepository;
         this.agentRepository = agentRepository;
         this.llmProviderRepository = llmProviderRepository;
         this.gatewayPolicyRepository = gatewayPolicyRepository;
         this.passwordEncoder = passwordEncoder;
+        this.toolConfigSanitizer = toolConfigSanitizer;
+        this.seedDemoUsers = seedDemoUsers;
     }
 
     @Override
@@ -47,10 +54,25 @@ public class DataInitializer implements ApplicationRunner {
     public void run(ApplicationArguments args) {
         seedUsers();
         seedAgents();
+        scrubPersistedToolSecrets();
         seedLlmGateway();
     }
 
+    private void scrubPersistedToolSecrets() {
+        for (Agent agent : agentRepository.findAll()) {
+            String original = agent.getToolsConfig();
+            String sanitized = toolConfigSanitizer.sanitize(original);
+            if (original != null && !original.equals(sanitized)) {
+                agent.setToolsConfig(sanitized);
+                agentRepository.save(agent);
+            }
+        }
+    }
+
     private void seedUsers() {
+        if (!seedDemoUsers) {
+            return;
+        }
         if (userRepository.count() == 0) {
             AppUser admin = new AppUser();
             admin.setId("user-admin");

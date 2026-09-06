@@ -4,6 +4,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
+import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.ViewControllerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import org.springframework.web.servlet.resource.PathResourceResolver;
@@ -12,6 +13,19 @@ import java.io.IOException;
 
 @Configuration
 public class WebMvcConfig implements WebMvcConfigurer {
+
+    private final SessionAuthInterceptor sessionAuthInterceptor;
+
+    public WebMvcConfig(SessionAuthInterceptor sessionAuthInterceptor) {
+        this.sessionAuthInterceptor = sessionAuthInterceptor;
+    }
+
+    @Override
+    public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(sessionAuthInterceptor)
+                .addPathPatterns("/api/**")
+                .excludePathPatterns("/api/auth/login");
+    }
 
     @Override
     public void addViewControllers(ViewControllerRegistry registry) {

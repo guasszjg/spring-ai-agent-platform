@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -26,18 +27,24 @@ public class AiChatService {
     private final OpenAiCompatibleClient openAiClient;
     private final ChatClient chatClient;
     private final com.example.agentplatform.tool.AgentToolRegistry toolRegistry;
+    private final AgentToolSecretService toolSecretService;
+    private final boolean simulationFallbackEnabled;
 
     public AiChatService(AgentService agentService,
                          AgentConversationService conversationService,
                          LlmGatewayService gatewayService,
                          OpenAiCompatibleClient openAiClient,
                          com.example.agentplatform.tool.AgentToolRegistry toolRegistry,
-                         @Autowired(required = false) ChatModel chatModel) {
+                         AgentToolSecretService toolSecretService,
+                         @Autowired(required = false) ChatModel chatModel,
+                         @Value("${app.ai.simulation-fallback:false}") boolean simulationFallbackEnabled) {
         this.agentService = agentService;
         this.conversationService = conversationService;
         this.gatewayService = gatewayService;
         this.openAiClient = openAiClient;
         this.toolRegistry = toolRegistry;
+        this.toolSecretService = toolSecretService;
+        this.simulationFallbackEnabled = simulationFallbackEnabled;
         this.chatClient = (chatModel != null) ? ChatClient.builder(chatModel).build() : null;
     }
 
@@ -57,8 +64,11 @@ public class AiChatService {
         String[] toolCalledHolder = { null };
         List<java.util.Map<String, Object>> tools = toolRegistry.getToolDefinitions(request.getEnabledTools());
 
-        // 提取并动态绑定当前调用的 Bocha API Key (优先当前请求参数，其次智能体持久化 toolsConfig)
-        String bochaKey = extractBochaApiKey(request.getToolConfigs(), agent.getToolsConfig());
+        // 当前请求 Key 优先，否则使用该智能体在数据库中加密保存的 Key。
+        String bochaKey = firstNonBlank(
+                extractBochaApiKey(request.getToolConfigs()),
+                toolSecretService.getBochaApiKey(agent.getId())
+        );
         if (bochaKey != null && !bochaKey.isBlank()) {
             toolRegistry.setCurrentContextBochaApiKey(bochaKey);
         }
@@ -106,14 +116,14 @@ public class AiChatService {
                         completionTokens = usage.getCompletionTokens() == null ? 0 : usage.getCompletionTokens();
                     }
                 } else {
-                    reply = generateSmartSimulationReply(agent, userMessage, request.getHistory(), toolCalledHolder);
+                    reply = fallbackReply(agent, userMessage, request.getHistory(), toolCalledHolder, null);
                 }
             } else {
-                reply = generateSmartSimulationReply(agent, userMessage, request.getHistory(), toolCalledHolder);
+                reply = fallbackReply(agent, userMessage, request.getHistory(), toolCalledHolder, null);
             }
         } catch (Exception ex) {
-            log.warn("Spring AI 调用触发回退模式 (Fallback Simulation): {}", ex.getMessage());
-            reply = generateSmartSimulationReply(agent, userMessage, request.getHistory(), toolCalledHolder);
+            log.warn("模型调用失败: {}", ex.getMessage());
+            reply = fallbackReply(agent, userMessage, request.getHistory(), toolCalledHolder, ex);
         } finally {
             toolRegistry.clearCurrentContext();
         }
@@ -131,6 +141,8 @@ public class AiChatService {
                 tokens
         );
         response.setToolCalled(toolCalledHolder[0]);
+        response.setDegraded(!realModelReply);
+        response.setSource(realModelReply ? "MODEL" : "SIMULATION");
         AgentConversation conversation = conversationService.appendTurn(
                 agent.getId(),
                 request.getConversationId(),
@@ -331,7 +343,16 @@ public class AiChatService {
         }
     }
 
-    private String extractBochaApiKey(java.util.Map<String, Object> toolConfigs, String toolsConfigJson) {
+    private String fallbackReply(Agent agent, String userMessage, List<ChatMessage> history,
+                                 String[] toolCalledHolder, Exception cause) {
+        if (!simulationFallbackEnabled) {
+            throw new IllegalStateException("当前没有可用的模型通道，请检查模型网关配置", cause);
+        }
+        log.warn("Simulation fallback is enabled; returning a clearly marked non-model response");
+        return generateSmartSimulationReply(agent, userMessage, history, toolCalledHolder);
+    }
+
+    private String extractBochaApiKey(java.util.Map<String, Object> toolConfigs) {
         if (toolConfigs != null) {
             Object bochaObj = toolConfigs.get("bochaApiKey");
             if (bochaObj != null && !bochaObj.toString().isBlank()) {
@@ -340,35 +361,6 @@ public class AiChatService {
             Object apiObj = toolConfigs.get("apiKey");
             if (apiObj != null && !apiObj.toString().isBlank()) {
                 return apiObj.toString().trim();
-            }
-        }
-        if (toolsConfigJson != null && !toolsConfigJson.isBlank()) {
-            try {
-                com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-                com.fasterxml.jackson.databind.JsonNode root = mapper.readTree(toolsConfigJson);
-                if (root.isObject()) {
-                    if (root.hasNonNull("bochaApiKey") && !root.get("bochaApiKey").asText().isBlank()) {
-                        return root.get("bochaApiKey").asText().trim();
-                    }
-                    if (root.hasNonNull("apiKey") && !root.get("apiKey").asText().isBlank()) {
-                        return root.get("apiKey").asText().trim();
-                    }
-                } else if (root.isArray()) {
-                    for (com.fasterxml.jackson.databind.JsonNode item : root) {
-                        String prefix = item.path("prefix").asText("");
-                        String name = item.path("name").asText("");
-                        if ("bocha".equalsIgnoreCase(prefix) || name.contains("联网") || name.contains("Bocha")) {
-                            com.fasterxml.jackson.databind.JsonNode cfg = item.path("config");
-                            if (cfg.hasNonNull("apiKey") && !cfg.get("apiKey").asText().isBlank()) {
-                                return cfg.get("apiKey").asText().trim();
-                            }
-                            if (cfg.hasNonNull("bochaApiKey") && !cfg.get("bochaApiKey").asText().isBlank()) {
-                                return cfg.get("bochaApiKey").asText().trim();
-                            }
-                        }
-                    }
-                }
-            } catch (Exception ignored) {
             }
         }
         return null;
