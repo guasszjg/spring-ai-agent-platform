@@ -3,12 +3,14 @@ package com.example.agentplatform.config;
 import com.example.agentplatform.model.Agent;
 import com.example.agentplatform.model.AgentDailyStat;
 import com.example.agentplatform.model.AgentStatus;
+import com.example.agentplatform.model.AgentTemplate;
 import com.example.agentplatform.model.AppUser;
 import com.example.agentplatform.model.GatewayPolicy;
 import com.example.agentplatform.model.LlmProvider;
 import com.example.agentplatform.model.LlmProviderType;
 import com.example.agentplatform.repository.AgentDailyStatRepository;
 import com.example.agentplatform.repository.AgentRepository;
+import com.example.agentplatform.repository.AgentTemplateRepository;
 import com.example.agentplatform.repository.GatewayPolicyRepository;
 import com.example.agentplatform.repository.LlmProviderRepository;
 import com.example.agentplatform.repository.UserRepository;
@@ -29,6 +31,7 @@ public class DataInitializer implements ApplicationRunner {
 
     private final UserRepository userRepository;
     private final AgentRepository agentRepository;
+    private final AgentTemplateRepository templateRepository;
     private final AgentDailyStatRepository dailyStatRepository;
     private final LlmProviderRepository llmProviderRepository;
     private final GatewayPolicyRepository gatewayPolicyRepository;
@@ -38,6 +41,7 @@ public class DataInitializer implements ApplicationRunner {
 
     public DataInitializer(UserRepository userRepository,
                            AgentRepository agentRepository,
+                           AgentTemplateRepository templateRepository,
                            AgentDailyStatRepository dailyStatRepository,
                            LlmProviderRepository llmProviderRepository,
                            GatewayPolicyRepository gatewayPolicyRepository,
@@ -46,6 +50,7 @@ public class DataInitializer implements ApplicationRunner {
                            @Value("${app.seed.demo-users:false}") boolean seedDemoUsers) {
         this.userRepository = userRepository;
         this.agentRepository = agentRepository;
+        this.templateRepository = templateRepository;
         this.dailyStatRepository = dailyStatRepository;
         this.llmProviderRepository = llmProviderRepository;
         this.gatewayPolicyRepository = gatewayPolicyRepository;
@@ -59,6 +64,7 @@ public class DataInitializer implements ApplicationRunner {
     public void run(ApplicationArguments args) {
         seedUsers();
         seedAgents();
+        seedTemplates();
         ensureAgentApiKeys();
         syncAgentCallStats();
         scrubPersistedToolSecrets();
@@ -79,6 +85,41 @@ public class DataInitializer implements ApplicationRunner {
                 }
             }
         }
+    }
+
+    private void seedTemplates() {
+        if (templateRepository.count() > 0) {
+            return;
+        }
+
+        List<AgentTemplate> list = List.of(
+            new AgentTemplate("代码审计与重构专家", "代码研发", "💻",
+                "专注于识别代码坏味道、潜在安全隐患、并发竞态与性能瓶颈，并提供符合重构规范的最佳落地实现。",
+                "你是一名拥有十余年架构经验的资深代码审计专家与重构专家。请针对用户提交的源码进行细致分析，识别安全漏洞、性能瓶颈及不符合规范之处，并给出重构后的标准代码与设计解释。",
+                0.2, "代码审计, 架构重构, 安全合规, 最佳实践", true, 1),
+            new AgentTemplate("智能技术文档撰写者", "内容创作", "📚",
+                "根据接口代码、数据模型或产品需求，自动生成清晰、规范且易于阅读的 Markdown 架构与技术文档。",
+                "你是一名顶级技术作家（Technical Writer）。擅长使用清晰、严谨且易于阅读的 Markdown 规范撰写高质量的技术文档、架构设计说明书与标准 API 对接指南。",
+                0.4, "技术写作, Markdown, API手册, 架构文档", true, 2),
+            new AgentTemplate("数据分析与 BI 洞察助手", "数据分析", "📊",
+                "对业务数据进行多维度下钻拆解，洞察异动原因并提供高价值商业决策与运营策略建议。",
+                "你是一名资深商业数据分析师（BI Consultant）。擅长结合宏观商业逻辑与微观统计模型，对用户提供的业务指标、运营数据与销售流水进行趋势归因、异常值定位并提供科学决策方案。",
+                0.3, "数据分析, BI大屏, 商业洞察, 统计预测", true, 3),
+            new AgentTemplate("电商全能金牌智能客服", "客户服务", "🎧",
+                "解答售前售后疑问、物流查询与用户投诉抚平，提供温暖、专业的情绪价值与高效解决方案。",
+                "你是一名热情、专业、富有同理心的金牌电商智能客服。熟练掌握退换货规则、物流时效与促销活动说明，能用得体礼貌的语言安抚客户情绪并高效解决问题。",
+                0.5, "智能客服, 售后支持, 电商运营, 情绪安抚", true, 4),
+            new AgentTemplate("金融风控与合规顾问", "金融风控", "⚖️",
+                "协助审核信贷风控准则、反洗钱合规条款与金融合同法律风险点，严守业务合规红线。",
+                "你是一名严谨的金融机构合规官与信贷风控专家。请结合金融监管法规与内控要求，对用户提供的信贷审核要点、业务协议与合同条款进行多维合规审查与风险识别提示。",
+                0.2, "金融风控, 监管合规, 合同审查, 风险防范", true, 5),
+            new AgentTemplate("新媒体爆款文案导师", "内容创作", "🚀",
+                "擅长微信公众号、小红书、抖音即时短文的爆款选题策划、吸睛标题构思与高转化文案撰写。",
+                "你是一名拥有百万爆款孵化经验的新媒体内容操盘手与资深文案导师。熟谙各大社交平台流量逻辑与黄金开头法则，擅长根据用户主题构思极具吸引力的标题与结构化文案。",
+                0.8, "爆款文案, 社交媒体, 流量操盘, 营销创意", true, 6)
+        );
+
+        templateRepository.saveAll(list);
     }
 
     private void ensureAgentApiKeys() {

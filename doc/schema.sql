@@ -131,8 +131,30 @@ CREATE TABLE IF NOT EXISTS agent_tool_secrets (
     CONSTRAINT fk_agent_tool_secret_agent FOREIGN KEY (agent_id) REFERENCES agents (id) ON DELETE CASCADE
 );
 
+-- 10. 行业场景模板表 (agent_templates)
+CREATE TABLE IF NOT EXISTS agent_templates (
+    id VARCHAR(64) PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    category VARCHAR(64),
+    avatar VARCHAR(64),
+    description TEXT,
+    model_name VARCHAR(100),
+    system_prompt TEXT,
+    temperature DOUBLE PRECISION DEFAULT 0.7,
+    top_p DOUBLE PRECISION,
+    max_tokens INTEGER,
+    tags TEXT,
+    is_builtin BOOLEAN DEFAULT FALSE,
+    sort_order INTEGER DEFAULT 0,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_templates_category ON agent_templates(category);
+CREATE INDEX IF NOT EXISTS idx_templates_sort_order ON agent_templates(sort_order);
+
 -- ==========================================================
--- 10. 增量变更语句 (如果远程 192 或已有数据库已建过老表，直接执行此段补丁即可)
+-- 11. 增量变更语句 (如果远程 192 或已有数据库已建过老表，直接执行此段补丁即可)
 -- ==========================================================
 -- 2026-09-06: agents 表增加 tools_config 字段，只保存非敏感工具配置
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS tools_config TEXT;
@@ -145,3 +167,24 @@ CREATE TABLE IF NOT EXISTS agent_tool_secrets (
     updated_at TIMESTAMP,
     CONSTRAINT fk_agent_tool_secret_agent FOREIGN KEY (agent_id) REFERENCES agents (id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS agent_templates (
+    id VARCHAR(64) PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    category VARCHAR(64),
+    avatar VARCHAR(64),
+    description TEXT,
+    model_name VARCHAR(100),
+    system_prompt TEXT,
+    temperature DOUBLE PRECISION DEFAULT 0.7,
+    top_p DOUBLE PRECISION,
+    max_tokens INTEGER,
+    tags TEXT,
+    is_builtin BOOLEAN DEFAULT FALSE,
+    sort_order INTEGER DEFAULT 0,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_templates_category ON agent_templates(category);
+CREATE INDEX IF NOT EXISTS idx_templates_sort_order ON agent_templates(sort_order);
