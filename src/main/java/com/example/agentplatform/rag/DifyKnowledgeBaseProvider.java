@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.HttpHeaders;
@@ -36,12 +37,12 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
     private final ObjectMapper objectMapper;
 
     public DifyKnowledgeBaseProvider(
-            @Value("${app.dify.base-url:http://120.79.38.143/v1}") String baseUrl,
-            @Value("${app.dify.api-key:dataset-a3VpbnSF7lv9M74iec2AjA3N}") String apiKey,
-            ObjectMapper objectMapper) {
-        this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
-        this.apiKey = apiKey;
-        this.objectMapper = objectMapper;
+            @Value("${app.dify.base-url:}") String baseUrl,
+            @Value("${app.dify.api-key:}") String apiKey,
+            @Autowired(required = false) ObjectMapper objectMapper) {
+        this.baseUrl = (baseUrl != null && baseUrl.endsWith("/")) ? baseUrl.substring(0, baseUrl.length() - 1) : (baseUrl != null ? baseUrl : "");
+        this.apiKey = apiKey != null ? apiKey : "";
+        this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
 
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofSeconds(15));
