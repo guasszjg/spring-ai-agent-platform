@@ -38,6 +38,8 @@ public class DataInitializer implements ApplicationRunner {
     private final PasswordEncoder passwordEncoder;
     private final boolean seedDemoUsers;
     private final ToolConfigSanitizer toolConfigSanitizer;
+    private final com.example.agentplatform.repository.KnowledgeBaseRepository knowledgeBaseRepository;
+    private final com.example.agentplatform.service.KnowledgeBaseService knowledgeBaseService;
 
     public DataInitializer(UserRepository userRepository,
                            AgentRepository agentRepository,
@@ -47,6 +49,8 @@ public class DataInitializer implements ApplicationRunner {
                            GatewayPolicyRepository gatewayPolicyRepository,
                            PasswordEncoder passwordEncoder,
                            ToolConfigSanitizer toolConfigSanitizer,
+                           com.example.agentplatform.repository.KnowledgeBaseRepository knowledgeBaseRepository,
+                           com.example.agentplatform.service.KnowledgeBaseService knowledgeBaseService,
                            @Value("${app.seed.demo-users:false}") boolean seedDemoUsers) {
         this.userRepository = userRepository;
         this.agentRepository = agentRepository;
@@ -56,6 +60,8 @@ public class DataInitializer implements ApplicationRunner {
         this.gatewayPolicyRepository = gatewayPolicyRepository;
         this.passwordEncoder = passwordEncoder;
         this.toolConfigSanitizer = toolConfigSanitizer;
+        this.knowledgeBaseRepository = knowledgeBaseRepository;
+        this.knowledgeBaseService = knowledgeBaseService;
         this.seedDemoUsers = seedDemoUsers;
     }
 
@@ -69,6 +75,17 @@ public class DataInitializer implements ApplicationRunner {
         syncAgentCallStats();
         scrubPersistedToolSecrets();
         seedLlmGateway();
+        seedKnowledgeBases();
+    }
+
+    private void seedKnowledgeBases() {
+        if (knowledgeBaseRepository.count() == 0) {
+            try {
+                knowledgeBaseService.syncFromDify();
+            } catch (Exception e) {
+                // Ignore if Dify is temporarily unreachable on startup
+            }
+        }
     }
 
     private void syncAgentCallStats() {
