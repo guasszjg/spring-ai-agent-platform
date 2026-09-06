@@ -7,4 +7,5 @@ import java.util.Optional;
 
 public interface AgentRepository extends JpaRepository<Agent, String> {
     Optional<Agent> findByCode(String code);
+    Optional<Agent> findByApiKey(String apiKey);
 }

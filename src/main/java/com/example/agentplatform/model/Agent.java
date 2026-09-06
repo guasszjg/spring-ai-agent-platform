@@ -56,6 +56,8 @@ public class Agent {
     private LocalDateTime updatedAt;
     @Column(columnDefinition = "TEXT")
     private String toolsConfig;
+    @Column(unique = true, length = 128)
+    private String apiKey;
 
     public Agent() {
         this.createdAt = LocalDateTime.now();
@@ -212,10 +214,21 @@ public class Agent {
         this.toolsConfig = toolsConfig;
     }
 
+    public String getApiKey() {
+        return apiKey;
+    }
+
+    public void setApiKey(String apiKey) {
+        this.apiKey = apiKey;
+    }
+
     @PrePersist
     void onCreate() {
         if (id == null || id.isBlank()) {
             id = "agent-" + UUID.randomUUID().toString().substring(0, 8);
+        }
+        if (apiKey == null || apiKey.isBlank()) {
+            apiKey = "sk-agent-" + UUID.randomUUID().toString().replace("-", "");
         }
         LocalDateTime now = LocalDateTime.now();
         if (createdAt == null) {

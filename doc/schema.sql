@@ -27,12 +27,15 @@ CREATE TABLE IF NOT EXISTS agents (
     top_p DOUBLE PRECISION,
     max_tokens INTEGER,
     tools_config TEXT,
+    api_key VARCHAR(128) UNIQUE,
     status VARCHAR(32),
     call_count BIGINT DEFAULT 0,
     avg_response_time_ms DOUBLE PRECISION DEFAULT 0.0,
     created_at TIMESTAMP,
     updated_at TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_agents_api_key ON agents(api_key);
 
 -- 3. 智能体标签关联表 (agent_tags)
 CREATE TABLE IF NOT EXISTS agent_tags (

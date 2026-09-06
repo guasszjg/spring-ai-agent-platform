@@ -104,6 +104,17 @@ public class AgentController {
         }
     }
 
+    @PostMapping("/{id}/regenerate-api-key")
+    public ResponseEntity<ApiResponse<java.util.Map<String, String>>> regenerateApiKey(@PathVariable String id) {
+        return agentService.getById(id).map(agent -> {
+            String newKey = "sk-agent-" + java.util.UUID.randomUUID().toString().replace("-", "");
+            agent.setApiKey(newKey);
+            agentService.update(id, agent);
+            return ResponseEntity.ok(ApiResponse.ok("API Key 已重新生成", java.util.Map.of("apiKey", newKey)));
+        }).orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(ApiResponse.error("未找到指定的智能体: " + id)));
+    }
+
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<Void>> deleteAgent(@PathVariable String id) {
         boolean removed = agentService.delete(id);

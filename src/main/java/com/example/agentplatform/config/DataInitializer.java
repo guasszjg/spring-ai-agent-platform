@@ -54,8 +54,18 @@ public class DataInitializer implements ApplicationRunner {
     public void run(ApplicationArguments args) {
         seedUsers();
         seedAgents();
+        ensureAgentApiKeys();
         scrubPersistedToolSecrets();
         seedLlmGateway();
+    }
+
+    private void ensureAgentApiKeys() {
+        for (Agent agent : agentRepository.findAll()) {
+            if (agent.getApiKey() == null || agent.getApiKey().isBlank()) {
+                agent.setApiKey("sk-agent-" + java.util.UUID.randomUUID().toString().replace("-", ""));
+                agentRepository.save(agent);
+            }
+        }
     }
 
     private void scrubPersistedToolSecrets() {
