@@ -64,6 +64,18 @@ public class AgentToolSecretService {
         secretRepository.deleteById(agentId);
     }
 
+    public void copyForClonedAgent(String sourceAgentId, String targetAgentId) {
+        if (sourceAgentId == null || targetAgentId == null) {
+            return;
+        }
+        secretRepository.findById(sourceAgentId).ifPresent(sourceSecret -> {
+            AgentToolSecret copy = new AgentToolSecret();
+            copy.setAgentId(targetAgentId);
+            copy.setBochaApiKeyEncrypted(sourceSecret.getBochaApiKeyEncrypted());
+            secretRepository.save(copy);
+        });
+    }
+
     private void requireAgent(String agentId) {
         if (!agentRepository.existsById(agentId)) {
             throw new IllegalArgumentException("智能体不存在: " + agentId);

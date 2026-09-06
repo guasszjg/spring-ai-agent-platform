@@ -139,6 +139,54 @@ public class AgentService {
         return agentRepository.save(agent);
     }
 
+    public Agent copyAgent(String sourceId) {
+        Agent source = agentRepository.findById(sourceId)
+                .orElseThrow(() -> new IllegalArgumentException("未找到待复制的智能体: " + sourceId));
+
+        Agent clone = new Agent();
+        clone.setName(source.getName() != null ? source.getName() + " (副本)" : "未命名智能体 (副本)");
+        clone.setCode(generateUniqueCopyCode(source.getCode()));
+        clone.setAvatar(source.getAvatar());
+        clone.setCategory(source.getCategory() != null ? source.getCategory() : "通用智能");
+        clone.setDescription(source.getDescription());
+        clone.setModelName(source.getModelName());
+        clone.setSystemPrompt(source.getSystemPrompt());
+        clone.setTemperature(source.getTemperature());
+        clone.setTopP(source.getTopP());
+        clone.setMaxTokens(source.getMaxTokens());
+        clone.setStatus(source.getStatus() != null ? source.getStatus() : AgentStatus.RUNNING);
+        if (source.getTags() != null) {
+            clone.setTags(new ArrayList<>(source.getTags()));
+        }
+        clone.setToolsConfig(toolConfigSanitizer.sanitize(source.getToolsConfig()));
+        clone.setId(null);
+        clone.setApiKey(null);
+        clone.setCallCount(0L);
+        clone.setAvgResponseTimeMs(0.0);
+
+        Agent saved = agentRepository.save(clone);
+
+        toolSecretService.copyForClonedAgent(sourceId, saved.getId());
+
+        return saved;
+    }
+
+    private String generateUniqueCopyCode(String sourceCode) {
+        String base = (sourceCode != null && !sourceCode.isBlank()) ? sourceCode.trim() : "agent";
+        if (base.length() > 80) {
+            base = base.substring(0, 80);
+        }
+        String target = base + "_copy";
+        if (!agentRepository.existsByCode(target)) {
+            return target;
+        }
+        int idx = 1;
+        while (agentRepository.existsByCode(base + "_copy_" + idx)) {
+            idx++;
+        }
+        return base + "_copy_" + idx;
+    }
+
     public void recordInvocation(String id, long latencyMs, long promptTokens, long completionTokens, boolean success) {
         LocalDate today = LocalDate.now();
         AgentDailyStat stat = dailyStatRepository.findByAgentIdAndStatDate(id, today)

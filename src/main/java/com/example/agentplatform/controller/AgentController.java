@@ -115,6 +115,18 @@ public class AgentController {
                 .body(ApiResponse.error("未找到指定的智能体: " + id)));
     }
 
+    @PostMapping("/{id}/copy")
+    public ResponseEntity<ApiResponse<Agent>> copyAgent(@PathVariable String id) {
+        try {
+            Agent cloned = agentService.copyAgent(id);
+            return ResponseEntity.status(HttpStatus.CREATED)
+                    .body(ApiResponse.ok("智能体已成功复制", cloned));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<Void>> deleteAgent(@PathVariable String id) {
         boolean removed = agentService.delete(id);
