@@ -157,6 +157,19 @@ public class AgentService {
             stat.setSuccessCount(stat.getSuccessCount() + 1);
         }
         dailyStatRepository.save(stat);
+
+        // 同步更新 Agent 主表的调用总次数与平均响应耗时，确保智能体列表、概览大盘与卡片实时展示
+        agentRepository.findById(id).ifPresent(agent -> {
+            long currentCalls = agent.getCallCount() == null ? 0L : agent.getCallCount();
+            long newCalls = currentCalls + 1L;
+            agent.setCallCount(newCalls);
+
+            double currentAvg = agent.getAvgResponseTimeMs() == null ? 0.0 : agent.getAvgResponseTimeMs();
+            double newAvg = Math.round(((currentAvg * currentCalls + Math.max(0, latencyMs)) / (double) newCalls) * 10.0) / 10.0;
+            agent.setAvgResponseTimeMs(newAvg);
+
+            agentRepository.save(agent);
+        });
     }
 
     @Transactional(readOnly = true)

@@ -1,11 +1,13 @@
 package com.example.agentplatform.config;
 
 import com.example.agentplatform.model.Agent;
+import com.example.agentplatform.model.AgentDailyStat;
 import com.example.agentplatform.model.AgentStatus;
 import com.example.agentplatform.model.AppUser;
 import com.example.agentplatform.model.GatewayPolicy;
 import com.example.agentplatform.model.LlmProvider;
 import com.example.agentplatform.model.LlmProviderType;
+import com.example.agentplatform.repository.AgentDailyStatRepository;
 import com.example.agentplatform.repository.AgentRepository;
 import com.example.agentplatform.repository.GatewayPolicyRepository;
 import com.example.agentplatform.repository.LlmProviderRepository;
@@ -27,6 +29,7 @@ public class DataInitializer implements ApplicationRunner {
 
     private final UserRepository userRepository;
     private final AgentRepository agentRepository;
+    private final AgentDailyStatRepository dailyStatRepository;
     private final LlmProviderRepository llmProviderRepository;
     private final GatewayPolicyRepository gatewayPolicyRepository;
     private final PasswordEncoder passwordEncoder;
@@ -35,6 +38,7 @@ public class DataInitializer implements ApplicationRunner {
 
     public DataInitializer(UserRepository userRepository,
                            AgentRepository agentRepository,
+                           AgentDailyStatRepository dailyStatRepository,
                            LlmProviderRepository llmProviderRepository,
                            GatewayPolicyRepository gatewayPolicyRepository,
                            PasswordEncoder passwordEncoder,
@@ -42,6 +46,7 @@ public class DataInitializer implements ApplicationRunner {
                            @Value("${app.seed.demo-users:false}") boolean seedDemoUsers) {
         this.userRepository = userRepository;
         this.agentRepository = agentRepository;
+        this.dailyStatRepository = dailyStatRepository;
         this.llmProviderRepository = llmProviderRepository;
         this.gatewayPolicyRepository = gatewayPolicyRepository;
         this.passwordEncoder = passwordEncoder;
@@ -55,8 +60,25 @@ public class DataInitializer implements ApplicationRunner {
         seedUsers();
         seedAgents();
         ensureAgentApiKeys();
+        syncAgentCallStats();
         scrubPersistedToolSecrets();
         seedLlmGateway();
+    }
+
+    private void syncAgentCallStats() {
+        for (Agent agent : agentRepository.findAll()) {
+            List<AgentDailyStat> stats = dailyStatRepository.findByAgentId(agent.getId());
+            if (!stats.isEmpty()) {
+                long totalCalls = stats.stream().mapToLong(AgentDailyStat::getCallCount).sum();
+                long totalLatency = stats.stream().mapToLong(AgentDailyStat::getTotalLatencyMs).sum();
+                if (agent.getCallCount() == null || agent.getCallCount() < totalCalls) {
+                    agent.setCallCount(totalCalls);
+                    double avg = totalCalls == 0 ? 0.0 : Math.round((totalLatency / (double) totalCalls) * 10.0) / 10.0;
+                    agent.setAvgResponseTimeMs(avg);
+                    agentRepository.save(agent);
+                }
+            }
+        }
     }
 
     private void ensureAgentApiKeys() {
