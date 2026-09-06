@@ -105,6 +105,7 @@ public class AgentService {
             existing.getTags().addAll(agentUpdate.getTags());
         }
         if (agentUpdate.getStatus() != null) existing.setStatus(agentUpdate.getStatus());
+        if (agentUpdate.getToolsConfig() != null) existing.setToolsConfig(agentUpdate.getToolsConfig());
 
         return agentRepository.save(existing);
     }

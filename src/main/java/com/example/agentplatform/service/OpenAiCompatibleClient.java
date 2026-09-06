@@ -68,31 +68,92 @@ public class OpenAiCompatibleClient {
 
     public ChatResult chat(String baseUrl, String apiKey, String model, List<Map<String, String>> messages,
                            ChatGeneration generation, int timeoutMs) {
+        List<Map<String, Object>> objectMessages = new ArrayList<>();
+        if (messages != null) {
+            for (Map<String, String> m : messages) {
+                objectMessages.add(new LinkedHashMap<>(m));
+            }
+        }
+        return chatWithTools(baseUrl, apiKey, model, objectMessages, null, null, generation, timeoutMs);
+    }
+
+    public ChatResult chatWithTools(String baseUrl, String apiKey, String model, List<Map<String, Object>> messages,
+                                    List<Map<String, Object>> tools, com.example.agentplatform.tool.AgentToolRegistry toolRegistry,
+                                    ChatGeneration generation, int timeoutMs) {
         String url = normalizeBase(baseUrl) + "/chat/completions";
         try {
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("model", model);
-            payload.put("messages", messages);
-            applyGeneration(payload, generation);
-            String body = objectMapper.writeValueAsString(payload);
-            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
-                    .timeout(Duration.ofMillis(Math.max(5000, timeoutMs)))
-                    .header("Authorization", "Bearer " + apiKey)
-                    .header("Content-Type", "application/json");
-            applyExtraHeaders(builder, generation);
-            HttpRequest request = builder
-                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-                    .build();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new IllegalStateException("HTTP " + response.statusCode() + " " + truncate(response.body()));
+            List<Map<String, Object>> currentMessages = new ArrayList<>(messages);
+            int promptTokens = 0;
+            int completionTokens = 0;
+            int totalTokens = 0;
+            String toolCalled = null;
+
+            int maxTurns = 3;
+            for (int turn = 0; turn < maxTurns; turn++) {
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("model", model);
+                payload.put("messages", currentMessages);
+                if (tools != null && !tools.isEmpty()) {
+                    payload.put("tools", tools);
+                }
+                applyGeneration(payload, generation);
+                String body = objectMapper.writeValueAsString(payload);
+                HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
+                        .timeout(Duration.ofMillis(Math.max(5000, timeoutMs)))
+                        .header("Authorization", "Bearer " + apiKey)
+                        .header("Content-Type", "application/json");
+                applyExtraHeaders(builder, generation);
+                HttpRequest request = builder
+                        .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                        .build();
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                    throw new IllegalStateException("HTTP " + response.statusCode() + " " + truncate(response.body()));
+                }
+                JsonNode root = objectMapper.readTree(response.body());
+                JsonNode choice = root.path("choices").path(0);
+                JsonNode messageNode = choice.path("message");
+
+                promptTokens += root.path("usage").path("prompt_tokens").asInt(0);
+                completionTokens += root.path("usage").path("completion_tokens").asInt(0);
+                totalTokens = promptTokens + completionTokens;
+
+                JsonNode toolCalls = messageNode.path("tool_calls");
+                if (toolCalls.isArray() && !toolCalls.isEmpty() && toolRegistry != null) {
+                    Map<String, Object> assistantMsg = new LinkedHashMap<>();
+                    assistantMsg.put("role", "assistant");
+                    if (messageNode.has("content") && !messageNode.get("content").isNull()) {
+                        assistantMsg.put("content", messageNode.get("content").asText());
+                    }
+                    assistantMsg.put("tool_calls", objectMapper.convertValue(toolCalls, Object.class));
+                    currentMessages.add(assistantMsg);
+
+                    List<String> summaries = new ArrayList<>();
+                    for (JsonNode callNode : toolCalls) {
+                        String callId = callNode.path("id").asText();
+                        String fnName = callNode.path("function").path("name").asText();
+                        String fnArgs = callNode.path("function").path("arguments").asText("{}");
+
+                        log.info("LLM autonomously selected tool [{}], args: {}", fnName, fnArgs);
+                        String toolResult = toolRegistry.execute(fnName, fnArgs);
+                        summaries.add(toolRegistry.formatToolCallSummary(fnName, fnArgs));
+
+                        Map<String, Object> toolMsg = new LinkedHashMap<>();
+                        toolMsg.put("role", "tool");
+                        toolMsg.put("tool_call_id", callId);
+                        toolMsg.put("content", toolResult);
+                        currentMessages.add(toolMsg);
+                    }
+                    if (toolCalled == null) {
+                        toolCalled = String.join(" | ", summaries);
+                    }
+                    continue;
+                }
+
+                String content = messageNode.path("content").asText("");
+                return new ChatResult(content, promptTokens, completionTokens, totalTokens, toolCalled);
             }
-            JsonNode root = objectMapper.readTree(response.body());
-            String content = root.path("choices").path(0).path("message").path("content").asText("");
-            int promptTokens = root.path("usage").path("prompt_tokens").asInt(0);
-            int completionTokens = root.path("usage").path("completion_tokens").asInt(0);
-            int totalTokens = root.path("usage").path("total_tokens").asInt(promptTokens + completionTokens);
-            return new ChatResult(content, promptTokens, completionTokens, totalTokens);
+            return new ChatResult("工具调用轮次达到上限", promptTokens, completionTokens, totalTokens, toolCalled);
         } catch (IllegalStateException e) {
             throw e;
         } catch (Exception e) {
@@ -229,12 +290,15 @@ public class OpenAiCompatibleClient {
         }
     }
 
-    public record ChatResult(String content, int promptTokens, int completionTokens, int totalTokens) {
+    public record ChatResult(String content, int promptTokens, int completionTokens, int totalTokens, String toolCalled) {
+        public ChatResult(String content, int promptTokens, int completionTokens, int totalTokens) {
+            this(content, promptTokens, completionTokens, totalTokens, null);
+        }
     }
 
-    public static List<Map<String, String>> toMessages(String systemPrompt, String userMessage,
+    public static List<Map<String, Object>> toMessages(String systemPrompt, String userMessage,
                                                        List<com.example.agentplatform.model.ChatMessage> history) {
-        List<Map<String, String>> messages = new ArrayList<>();
+        List<Map<String, Object>> messages = new ArrayList<>();
         if (systemPrompt != null && !systemPrompt.isBlank()) {
             messages.add(Map.of("role", "system", "content", systemPrompt.trim()));
         }

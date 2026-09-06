@@ -25,16 +25,19 @@ public class AiChatService {
     private final LlmGatewayService gatewayService;
     private final OpenAiCompatibleClient openAiClient;
     private final ChatClient chatClient;
+    private final com.example.agentplatform.tool.AgentToolRegistry toolRegistry;
 
     public AiChatService(AgentService agentService,
                          AgentConversationService conversationService,
                          LlmGatewayService gatewayService,
                          OpenAiCompatibleClient openAiClient,
+                         com.example.agentplatform.tool.AgentToolRegistry toolRegistry,
                          @Autowired(required = false) ChatModel chatModel) {
         this.agentService = agentService;
         this.conversationService = conversationService;
         this.gatewayService = gatewayService;
         this.openAiClient = openAiClient;
+        this.toolRegistry = toolRegistry;
         this.chatClient = (chatModel != null) ? ChatClient.builder(chatModel).build() : null;
     }
 
@@ -51,10 +54,18 @@ public class AiChatService {
         int completionTokens = 0;
         boolean realModelReply = false;
         String[] routedModel = { executionModel };
+        String[] toolCalledHolder = { null };
+        List<java.util.Map<String, Object>> tools = toolRegistry.getToolDefinitions(request.getEnabledTools());
+
+        // 提取并动态绑定当前调用的 Bocha API Key (优先当前请求参数，其次智能体持久化 toolsConfig)
+        String bochaKey = extractBochaApiKey(request.getToolConfigs(), agent.getToolsConfig());
+        if (bochaKey != null && !bochaKey.isBlank()) {
+            toolRegistry.setCurrentContextBochaApiKey(bochaKey);
+        }
 
         try {
             OpenAiCompatibleClient.ChatResult routed = invokeViaGateway(agent, userMessage, request.getHistory(),
-                    request.getGeneration(), request.getPrompt(), routedModel);
+                    request.getGeneration(), request.getPrompt(), tools, routedModel);
             if (routed != null && routed.content() != null && !routed.content().isBlank()) {
                 reply = routed.content();
                 executionModel = routedModel[0];
@@ -64,6 +75,9 @@ public class AiChatService {
                     completionTokens = routed.totalTokens();
                 }
                 realModelReply = true;
+                if (routed.toolCalled() != null) {
+                    toolCalledHolder[0] = routed.toolCalled();
+                }
             } else if (chatClient != null) {
                 log.info("Invoking Spring AI ChatClient for Agent: [{}] with model: [{}]", agent.getName(), executionModel);
                 
@@ -92,14 +106,16 @@ public class AiChatService {
                         completionTokens = usage.getCompletionTokens() == null ? 0 : usage.getCompletionTokens();
                     }
                 } else {
-                    reply = generateSmartSimulationReply(agent, userMessage, request.getHistory());
+                    reply = generateSmartSimulationReply(agent, userMessage, request.getHistory(), toolCalledHolder);
                 }
             } else {
-                reply = generateSmartSimulationReply(agent, userMessage, request.getHistory());
+                reply = generateSmartSimulationReply(agent, userMessage, request.getHistory(), toolCalledHolder);
             }
         } catch (Exception ex) {
             log.warn("Spring AI 调用触发回退模式 (Fallback Simulation): {}", ex.getMessage());
-            reply = generateSmartSimulationReply(agent, userMessage, request.getHistory());
+            reply = generateSmartSimulationReply(agent, userMessage, request.getHistory(), toolCalledHolder);
+        } finally {
+            toolRegistry.clearCurrentContext();
         }
 
         long latencyMs = System.currentTimeMillis() - startTime;
@@ -114,6 +130,7 @@ public class AiChatService {
                 executionModel,
                 tokens
         );
+        response.setToolCalled(toolCalledHolder[0]);
         AgentConversation conversation = conversationService.appendTurn(
                 agent.getId(),
                 request.getConversationId(),
@@ -130,7 +147,8 @@ public class AiChatService {
 
     private OpenAiCompatibleClient.ChatResult invokeViaGateway(Agent agent, String userMessage,
                                                                List<ChatMessage> history, ChatGeneration generation,
-                                                               String livePrompt, String[] routedModel) {
+                                                               String livePrompt, List<java.util.Map<String, Object>> tools,
+                                                               String[] routedModel) {
         ChatGeneration effective = generation != null ? generation : fromAgent(agent);
         String instruction = firstNonBlank(livePrompt, agent.getSystemPrompt(), null);
         return gatewayService.resolveRoute(agent.getModelName()).map(route -> {
@@ -140,7 +158,7 @@ public class AiChatService {
                     history
             );
             OpenAiCompatibleClient.ChatResult result = callProvider(route.primary(), route.primaryKey(),
-                    agent.getModelName(), effective, route.timeoutMs(), route.maxRetries(), messages, routedModel);
+                    agent.getModelName(), effective, route.timeoutMs(), route.maxRetries(), messages, tools, routedModel);
             if (result != null) {
                 return result;
             }
@@ -148,7 +166,7 @@ public class AiChatService {
                 log.warn("Primary LLM channel [{}] failed, switching to fallback [{}]",
                         route.primary().getName(), route.fallback().getName());
                 return callProvider(route.fallback(), route.fallbackKey(),
-                        agent.getModelName(), effective, route.timeoutMs(), route.maxRetries(), messages, routedModel);
+                        agent.getModelName(), effective, route.timeoutMs(), route.maxRetries(), messages, tools, routedModel);
             }
             return null;
         }).orElse(null);
@@ -165,15 +183,16 @@ public class AiChatService {
     private OpenAiCompatibleClient.ChatResult callProvider(com.example.agentplatform.model.LlmProvider provider,
                                                            String apiKey, String requestedModel, ChatGeneration generation,
                                                            int timeoutMs, int maxRetries,
-                                                           List<java.util.Map<String, String>> messages,
+                                                           List<java.util.Map<String, Object>> messages,
+                                                           List<java.util.Map<String, Object>> tools,
                                                            String[] routedModel) {
         String model = pickModel(provider, requestedModel);
         routedModel[0] = model;
         int attempts = Math.max(1, maxRetries + 1);
         for (int i = 0; i < attempts; i++) {
             try {
-                log.info("Gateway routing agent chat via [{}] model [{}]", provider.getName(), model);
-                return openAiClient.chat(provider.getBaseUrl(), apiKey, model, messages, generation, timeoutMs);
+                log.info("Gateway routing agent chat via [{}] model [{}] with {} tools", provider.getName(), model, tools != null ? tools.size() : 0);
+                return openAiClient.chatWithTools(provider.getBaseUrl(), apiKey, model, messages, tools, toolRegistry, generation, timeoutMs);
             } catch (Exception ex) {
                 log.warn("Gateway channel [{}] attempt {} failed: {}", provider.getName(), i + 1, ex.getMessage());
             }
@@ -207,9 +226,44 @@ public class AiChatService {
         return null;
     }
 
-    private String generateSmartSimulationReply(Agent agent, String userMessage, List<ChatMessage> history) {
+    private String generateSmartSimulationReply(Agent agent, String userMessage, List<ChatMessage> history, String[] toolCalledHolder) {
         String name = agent.getName();
         String category = agent.getCategory() != null ? agent.getCategory() : "通用智能";
+
+        // 优先检查是否有智能时间/工具意图并调用对应真实工具
+        if (userMessage.contains("星期") || userMessage.contains("周几")) {
+            toolCalledHolder[0] = "time.calculate_weekday (星期几计算器)";
+            String dateParam = java.time.LocalDate.now().toString();
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\d{4}[-/年]\\d{1,2}[-/月]\\d{1,2}").matcher(userMessage);
+            if (m.find()) {
+                dateParam = m.group().replace('年', '-').replace('月', '-').replace("日", "").trim();
+            }
+            String toolResult = toolRegistry.execute("time_calculate_weekday", "{\"date\":\"" + dateParam + "\"}");
+            return "### 🤖 [" + name + "] 智能工具调度结果\n\n" +
+                    "已识别时间计算意图，调用工具 `time.calculate_weekday` 完成运算：\n\n" +
+                    "> " + toolResult + "\n\n" +
+                    "*(注：当前运行在智能模拟回退模式。在网关配置真实模型后，将由 LLM 自主执行 Function Calling 解析复杂日期语义)*";
+        } else if (userMessage.contains("时间") || userMessage.contains("几点") || userMessage.contains("时区")) {
+            String tz = "Asia/Shanghai";
+            if (userMessage.contains("纽约")) tz = "America/New_York";
+            else if (userMessage.contains("伦敦")) tz = "Europe/London";
+            else if (userMessage.contains("东京")) tz = "Asia/Tokyo";
+            else if (userMessage.contains("巴黎")) tz = "Europe/Paris";
+
+            toolCalledHolder[0] = "time.get_current_time (timezone=" + tz + ")";
+            String toolResult = toolRegistry.execute("time_get_current_time", "{\"timezone\":\"" + tz + "\"}");
+            return "### 🤖 [" + name + "] 智能工具调度结果\n\n" +
+                    "已识别时间查询意图，调用工具 `time.get_current_time` 获取当前即时时间：\n\n" +
+                    "> " + toolResult + "\n\n" +
+                    "*(注：当前运行在智能模拟回退模式。在网关配置真实模型后，将由 LLM 自主执行 Function Calling 自动识别全球时区)*";
+        } else if (userMessage.contains("搜索") || userMessage.contains("联网") || userMessage.contains("最新")
+                || userMessage.contains("天气") || userMessage.contains("气温") || userMessage.contains("下雨") || userMessage.contains("雨")) {
+            toolCalledHolder[0] = "bocha.web_search (联网检索)";
+            String toolResult = toolRegistry.execute("bocha_web_search", "{\"query\":\"" + userMessage + "\"}");
+            return "### 🌐 [" + name + "] 联网检索响应\n\n" +
+                    toolResult + "\n\n" +
+                    "*(注：已调用 Bocha 联网检索实时信息并整合最新权威来源)*";
+        }
 
         // 基于智能体角色产生高质量模拟响应
         if ("Spring Boot 架构专家".equals(name) || "代码研发".equals(category)) {
@@ -275,5 +329,48 @@ public class AiChatService {
                     "- 当前调度引擎：`" + (agent.getModelName() != null ? agent.getModelName() : "GPT-4o") + "`，采样温度：`" + agent.getTemperature() + "`。\n\n" +
                     "如果你有更详细的上下文或特定需求，请直接告诉我，我将为你继续深度处理！";
         }
+    }
+
+    private String extractBochaApiKey(java.util.Map<String, Object> toolConfigs, String toolsConfigJson) {
+        if (toolConfigs != null) {
+            Object bochaObj = toolConfigs.get("bochaApiKey");
+            if (bochaObj != null && !bochaObj.toString().isBlank()) {
+                return bochaObj.toString().trim();
+            }
+            Object apiObj = toolConfigs.get("apiKey");
+            if (apiObj != null && !apiObj.toString().isBlank()) {
+                return apiObj.toString().trim();
+            }
+        }
+        if (toolsConfigJson != null && !toolsConfigJson.isBlank()) {
+            try {
+                com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                com.fasterxml.jackson.databind.JsonNode root = mapper.readTree(toolsConfigJson);
+                if (root.isObject()) {
+                    if (root.hasNonNull("bochaApiKey") && !root.get("bochaApiKey").asText().isBlank()) {
+                        return root.get("bochaApiKey").asText().trim();
+                    }
+                    if (root.hasNonNull("apiKey") && !root.get("apiKey").asText().isBlank()) {
+                        return root.get("apiKey").asText().trim();
+                    }
+                } else if (root.isArray()) {
+                    for (com.fasterxml.jackson.databind.JsonNode item : root) {
+                        String prefix = item.path("prefix").asText("");
+                        String name = item.path("name").asText("");
+                        if ("bocha".equalsIgnoreCase(prefix) || name.contains("联网") || name.contains("Bocha")) {
+                            com.fasterxml.jackson.databind.JsonNode cfg = item.path("config");
+                            if (cfg.hasNonNull("apiKey") && !cfg.get("apiKey").asText().isBlank()) {
+                                return cfg.get("apiKey").asText().trim();
+                            }
+                            if (cfg.hasNonNull("bochaApiKey") && !cfg.get("bochaApiKey").asText().isBlank()) {
+                                return cfg.get("bochaApiKey").asText().trim();
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
     }
 }

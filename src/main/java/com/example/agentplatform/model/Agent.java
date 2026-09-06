@@ -54,6 +54,8 @@ public class Agent {
     private Double avgResponseTimeMs;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+    @Column(columnDefinition = "TEXT")
+    private String toolsConfig;
 
     public Agent() {
         this.createdAt = LocalDateTime.now();
@@ -200,6 +202,14 @@ public class Agent {
 
     public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public String getToolsConfig() {
+        return toolsConfig;
+    }
+
+    public void setToolsConfig(String toolsConfig) {
+        this.toolsConfig = toolsConfig;
     }
 
     @PrePersist

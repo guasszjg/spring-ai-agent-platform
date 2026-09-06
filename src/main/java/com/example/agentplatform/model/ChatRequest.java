@@ -10,6 +10,8 @@ public class ChatRequest {
     private String prompt;
     private String conversationId;
     private String account;
+    private List<String> enabledTools;
+    private java.util.Map<String, Object> toolConfigs;
 
     public ChatRequest() {
     }
@@ -68,5 +70,21 @@ public class ChatRequest {
 
     public void setAccount(String account) {
         this.account = account;
+    }
+
+    public List<String> getEnabledTools() {
+        return enabledTools;
+    }
+
+    public void setEnabledTools(List<String> enabledTools) {
+        this.enabledTools = enabledTools;
+    }
+
+    public java.util.Map<String, Object> getToolConfigs() {
+        return toolConfigs;
+    }
+
+    public void setToolConfigs(java.util.Map<String, Object> toolConfigs) {
+        this.toolConfigs = toolConfigs;
     }
 }

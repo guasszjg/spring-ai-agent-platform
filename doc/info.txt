@@ -1,6 +1,40 @@
-测试数据库 -
-url:jdbc:postgresql://192.9.51.198:5432/guass_test
-username:postgres
-password:zwk-nur-jaz3NXZ@ktv
+========================================
+1. 本地开发数据库 (127.0.0.1) - G:\pgsql 便携版
+========================================
+Profile  : dev
+URL      : jdbc:postgresql://127.0.0.1:5432/guass_test
+Username : postgres
+Password : (免密 trust 模式，密码留空)
 
+========================================
+2. 远程公司测试数据库 (192.9.51.198)
+========================================
+Profile  : remote (或 192 / test)
+URL      : jdbc:postgresql://192.9.51.198:5432/guass_test
+Username : postgres
+Password : zwk-nur-jaz3NXZ@ktv
 
+========================================
+3. 明天在公司电脑启动与建表指南
+========================================
+A. 数据库初始化方式（二选一）：
+   【方式 1 - 全自动（推荐）】：
+   项目配置了 `spring.jpa.hibernate.ddl-auto=update`，
+   只要在 192 环境启动项目，Hibernate 会自动检查并建表，
+   同时 DataInitializer 会自动创建初始账号与内置智能体，无需手动建表。
+
+   【方式 2 - 手动执行 SQL（如有权限限制）】：
+   - 全新建库：用 Navicat / DBeaver 连接 192 数据库，执行 doc/schema.sql 即可一次性建好 8 张表。
+   - 老库增量升级（已有老表）：
+     直接在 192 库执行增量补丁：
+     ALTER TABLE agents ADD COLUMN IF NOT EXISTS tools_config TEXT;
+
+B. 公司电脑启动命令：
+   mvn spring-boot:run -Dspring-boot.run.profiles=192
+   或：
+   mvn clean package -DskipTests
+   java -jar target/spring-ai-agent-platform-1.0.0.jar --spring.profiles.active=192
+
+C. 默认登录账号：
+   - 超级管理员: admin / admin123
+   - 普通开发者: dev   / dev123

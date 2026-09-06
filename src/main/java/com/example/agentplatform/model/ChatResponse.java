@@ -10,6 +10,7 @@ public class ChatResponse {
     private String model;
     private Integer tokensUsed;
     private String conversationId;
+    private String toolCalled;
     private LocalDateTime timestamp;
 
     public ChatResponse() {
@@ -80,6 +81,14 @@ public class ChatResponse {
 
     public void setConversationId(String conversationId) {
         this.conversationId = conversationId;
+    }
+
+    public String getToolCalled() {
+        return toolCalled;
+    }
+
+    public void setToolCalled(String toolCalled) {
+        this.toolCalled = toolCalled;
     }
 
     public LocalDateTime getTimestamp() {
