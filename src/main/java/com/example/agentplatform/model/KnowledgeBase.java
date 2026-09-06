@@ -68,6 +68,19 @@ public class KnowledgeBase {
 
     private Boolean rerankEnabled = true;
 
+    @Column(length = 32)
+    private String rerankMode = "weighted_score";
+
+    @Column(length = 64)
+    private String rerankModel = "qwen3-rerank";
+
+    @Column(length = 64)
+    private String rerankModelProvider = "langgenius/tongyi/tongyi";
+
+    private Double vectorWeight = 0.7;
+
+    private Double keywordWeight = 0.3;
+
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;
@@ -115,6 +128,21 @@ public class KnowledgeBase {
         }
         if (this.rerankEnabled == null) {
             this.rerankEnabled = true;
+        }
+        if (this.rerankMode == null || this.rerankMode.isBlank()) {
+            this.rerankMode = "weighted_score";
+        }
+        if (this.rerankModel == null || this.rerankModel.isBlank()) {
+            this.rerankModel = "qwen3-rerank";
+        }
+        if (this.rerankModelProvider == null || this.rerankModelProvider.isBlank()) {
+            this.rerankModelProvider = "langgenius/tongyi/tongyi";
+        }
+        if (this.vectorWeight == null || this.vectorWeight <= 0) {
+            this.vectorWeight = 0.7;
+        }
+        if (this.keywordWeight == null || this.keywordWeight <= 0) {
+            this.keywordWeight = 0.3;
         }
         LocalDateTime now = LocalDateTime.now();
         this.createdAt = now;
@@ -287,5 +315,45 @@ public class KnowledgeBase {
 
     public void setRerankEnabled(Boolean rerankEnabled) {
         this.rerankEnabled = rerankEnabled;
+    }
+
+    public String getRerankMode() {
+        return rerankMode;
+    }
+
+    public void setRerankMode(String rerankMode) {
+        this.rerankMode = rerankMode;
+    }
+
+    public String getRerankModel() {
+        return rerankModel;
+    }
+
+    public void setRerankModel(String rerankModel) {
+        this.rerankModel = rerankModel;
+    }
+
+    public String getRerankModelProvider() {
+        return rerankModelProvider;
+    }
+
+    public void setRerankModelProvider(String rerankModelProvider) {
+        this.rerankModelProvider = rerankModelProvider;
+    }
+
+    public Double getVectorWeight() {
+        return vectorWeight;
+    }
+
+    public void setVectorWeight(Double vectorWeight) {
+        this.vectorWeight = vectorWeight;
+    }
+
+    public Double getKeywordWeight() {
+        return keywordWeight;
+    }
+
+    public void setKeywordWeight(Double keywordWeight) {
+        this.keywordWeight = keywordWeight;
     }
 }

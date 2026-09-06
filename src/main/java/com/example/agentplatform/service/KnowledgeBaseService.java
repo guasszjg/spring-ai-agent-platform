@@ -123,8 +123,13 @@ public class KnowledgeBaseService {
         String searchMethod = (req.getSearchMethod() != null && !req.getSearchMethod().isBlank()) ? req.getSearchMethod() : "hybrid_search";
         Integer topK = (req.getTopK() != null && req.getTopK() > 0) ? req.getTopK() : 3;
         Boolean rerankEnabled = req.getRerankEnabled() != null ? req.getRerankEnabled() : true;
+        String rerankMode = (req.getRerankMode() != null && !req.getRerankMode().isBlank()) ? req.getRerankMode() : "weighted_score";
+        String rerankModel = (req.getRerankModel() != null && !req.getRerankModel().isBlank()) ? req.getRerankModel() : "qwen3-rerank";
+        String rerankModelProvider = (req.getRerankModelProvider() != null && !req.getRerankModelProvider().isBlank()) ? req.getRerankModelProvider() : "langgenius/tongyi/tongyi";
+        Double vectorWeight = req.getVectorWeight() != null ? req.getVectorWeight() : 0.7;
+        Double keywordWeight = req.getKeywordWeight() != null ? req.getKeywordWeight() : 0.3;
 
-        // 1. 调用底层 RAG 引擎（Dify）同步创建数据集
+        // 1. 调用底层 RAG 引擎（Dify）同步创建数据集（带完整权重与重排配置）
         DifyDatasetDto externalDataset = provider.createDataset(
                 req.getName().trim(),
                 req.getDescription(),
@@ -134,7 +139,12 @@ public class KnowledgeBaseService {
                 embeddingProvider,
                 searchMethod,
                 topK,
-                rerankEnabled
+                rerankEnabled,
+                rerankMode,
+                rerankModel,
+                rerankModelProvider,
+                vectorWeight,
+                keywordWeight
         );
 
         // 2. 入本地 Spring AI 数据库管理
@@ -151,6 +161,11 @@ public class KnowledgeBaseService {
         kb.setSearchMethod(searchMethod);
         kb.setTopK(topK);
         kb.setRerankEnabled(rerankEnabled);
+        kb.setRerankMode(rerankMode);
+        kb.setRerankModel(rerankModel);
+        kb.setRerankModelProvider(rerankModelProvider);
+        kb.setVectorWeight(vectorWeight);
+        kb.setKeywordWeight(keywordWeight);
         kb.setDocumentCount(0);
         kb.setWordCount(0L);
         kb.setFaqCount(0);
@@ -184,13 +199,27 @@ public class KnowledgeBaseService {
         if (req.getRerankEnabled() != null) {
             kb.setRerankEnabled(req.getRerankEnabled());
         }
+        if (req.getRerankMode() != null && !req.getRerankMode().isBlank()) {
+            kb.setRerankMode(req.getRerankMode());
+        }
+        if (req.getRerankModel() != null && !req.getRerankModel().isBlank()) {
+            kb.setRerankModel(req.getRerankModel());
+        }
+        if (req.getVectorWeight() != null) {
+            kb.setVectorWeight(req.getVectorWeight());
+        }
+        if (req.getKeywordWeight() != null) {
+            kb.setKeywordWeight(req.getKeywordWeight());
+        }
 
-        // 同步更新外部 Dify 数据集元数据及检索模式
+        // 同步更新外部 Dify 数据集元数据及检索模式与权重
         if (kb.getExternalDatasetId() != null) {
             try {
                 KnowledgeBaseProvider provider = resolveProvider(kb.getProvider());
                 provider.updateDataset(kb.getExternalDatasetId(), kb.getName(), kb.getDescription(),
-                        kb.getSearchMethod(), kb.getTopK(), kb.getRerankEnabled());
+                        kb.getSearchMethod(), kb.getTopK(), kb.getRerankEnabled(),
+                        kb.getRerankMode(), kb.getRerankModel(), kb.getRerankModelProvider(),
+                        kb.getVectorWeight(), kb.getKeywordWeight());
             } catch (Exception e) {
                 log.warn("同步更新底层 RAG 数据集信息失败: {}", e.getMessage());
             }
@@ -247,14 +276,7 @@ public class KnowledgeBaseService {
                 kb.setAvatar("📚");
                 if (ext.getEmbeddingModel() != null) kb.setEmbeddingModel(ext.getEmbeddingModel());
                 if (ext.getEmbeddingModelProvider() != null) kb.setEmbeddingProvider(ext.getEmbeddingModelProvider());
-                if (ext.getRetrievalModelDict() != null) {
-                    Object sm = ext.getRetrievalModelDict().get("search_method");
-                    if (sm != null) kb.setSearchMethod(String.valueOf(sm));
-                    Object tk = ext.getRetrievalModelDict().get("top_k");
-                    if (tk instanceof Number) kb.setTopK(((Number) tk).intValue());
-                    Object re = ext.getRetrievalModelDict().get("reranking_enable");
-                    if (re instanceof Boolean) kb.setRerankEnabled((Boolean) re);
-                }
+                populateRetrievalModel(kb, ext.getRetrievalModelDict());
                 kb = knowledgeBaseRepository.save(kb);
                 importedKb++;
             } else {
@@ -264,14 +286,7 @@ public class KnowledgeBaseService {
                 if (ext.getWordCount() != null) kb.setWordCount(ext.getWordCount());
                 if (ext.getEmbeddingModel() != null) kb.setEmbeddingModel(ext.getEmbeddingModel());
                 if (ext.getEmbeddingModelProvider() != null) kb.setEmbeddingProvider(ext.getEmbeddingModelProvider());
-                if (ext.getRetrievalModelDict() != null) {
-                    Object sm = ext.getRetrievalModelDict().get("search_method");
-                    if (sm != null) kb.setSearchMethod(String.valueOf(sm));
-                    Object tk = ext.getRetrievalModelDict().get("top_k");
-                    if (tk instanceof Number) kb.setTopK(((Number) tk).intValue());
-                    Object re = ext.getRetrievalModelDict().get("reranking_enable");
-                    if (re instanceof Boolean) kb.setRerankEnabled((Boolean) re);
-                }
+                populateRetrievalModel(kb, ext.getRetrievalModelDict());
                 kb = knowledgeBaseRepository.save(kb);
             }
 
@@ -636,5 +651,41 @@ public class KnowledgeBaseService {
     private String getFileExtension(String filename) {
         if (filename == null || !filename.contains(".")) return "";
         return filename.substring(filename.lastIndexOf(".") + 1);
+    }
+
+    private void populateRetrievalModel(KnowledgeBase kb, Map<String, Object> rDict) {
+        if (rDict == null) return;
+        Object sm = rDict.get("search_method");
+        if (sm != null) kb.setSearchMethod(String.valueOf(sm));
+        Object tk = rDict.get("top_k");
+        if (tk instanceof Number) kb.setTopK(((Number) tk).intValue());
+        Object re = rDict.get("reranking_enable");
+        if (re instanceof Boolean) kb.setRerankEnabled((Boolean) re);
+        Object rm = rDict.get("reranking_mode");
+        if (rm != null) kb.setRerankMode(String.valueOf(rm));
+
+        Object rModel = rDict.get("reranking_model");
+        if (rModel instanceof Map) {
+            Map<?, ?> rmMap = (Map<?, ?>) rModel;
+            if (rmMap.get("reranking_model_name") != null) {
+                kb.setRerankModel(String.valueOf(rmMap.get("reranking_model_name")));
+            }
+            if (rmMap.get("reranking_provider_name") != null) {
+                kb.setRerankModelProvider(String.valueOf(rmMap.get("reranking_provider_name")));
+            }
+        }
+
+        Object weights = rDict.get("weights");
+        if (weights instanceof Map) {
+            Map<?, ?> wMap = (Map<?, ?>) weights;
+            Object kwObj = wMap.get("keyword_setting");
+            if (kwObj instanceof Map && ((Map<?, ?>) kwObj).get("keyword_weight") instanceof Number) {
+                kb.setKeywordWeight(((Number) ((Map<?, ?>) kwObj).get("keyword_weight")).doubleValue());
+            }
+            Object vecObj = wMap.get("vector_setting");
+            if (vecObj instanceof Map && ((Map<?, ?>) vecObj).get("vector_weight") instanceof Number) {
+                kb.setVectorWeight(((Number) ((Map<?, ?>) vecObj).get("vector_weight")).doubleValue());
+            }
+        }
     }
 }

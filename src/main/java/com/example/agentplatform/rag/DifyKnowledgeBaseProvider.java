@@ -62,7 +62,9 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
 
     @Override
     public DifyDatasetDto createDataset(String name, String description, String indexingTechnique, String permission,
-                                        String embeddingModel, String embeddingProvider, String searchMethod, Integer topK, Boolean rerankEnabled) {
+                                        String embeddingModel, String embeddingProvider, String searchMethod, Integer topK, Boolean rerankEnabled,
+                                        String rerankMode, String rerankModel, String rerankModelProvider,
+                                        Double vectorWeight, Double keywordWeight) {
         try {
             Map<String, Object> req = new HashMap<>();
             req.put("name", name);
@@ -77,13 +79,13 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
             req.put("embedding_model", embModel);
             req.put("embedding_model_provider", embProvider);
 
-            // 2. 检索模式设置（默认 hybrid_search 混合检索）
-            Map<String, Object> retrievalModel = new HashMap<>();
-            retrievalModel.put("search_method", (searchMethod != null && !searchMethod.isBlank()) ? searchMethod : "hybrid_search");
-            retrievalModel.put("reranking_enable", rerankEnabled != null ? rerankEnabled : true);
-            retrievalModel.put("top_k", (topK != null && topK > 0) ? topK : 3);
-            retrievalModel.put("score_threshold_enabled", false);
-            retrievalModel.put("score_threshold", 0.0);
+            // 2. 检索模式及权重设置（包含混合检索的权重与重排模型）
+            Map<String, Object> retrievalModel = buildRetrievalModelMap(
+                    searchMethod, topK, rerankEnabled,
+                    rerankMode, rerankModel, rerankModelProvider,
+                    vectorWeight, keywordWeight,
+                    embModel, embProvider
+            );
             req.put("retrieval_model", retrievalModel);
 
             String response = restClient.post()
@@ -101,20 +103,23 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
     }
 
     @Override
-    public void updateDataset(String externalDatasetId, String name, String description, String searchMethod, Integer topK, Boolean rerankEnabled) {
+    public void updateDataset(String externalDatasetId, String name, String description,
+                              String searchMethod, Integer topK, Boolean rerankEnabled,
+                              String rerankMode, String rerankModel, String rerankModelProvider,
+                              Double vectorWeight, Double keywordWeight) {
         if (externalDatasetId == null || externalDatasetId.isBlank()) return;
         try {
             Map<String, Object> req = new HashMap<>();
             if (name != null) req.put("name", name);
             if (description != null) req.put("description", description);
 
-            if (searchMethod != null || topK != null || rerankEnabled != null) {
-                Map<String, Object> retrievalModel = new HashMap<>();
-                retrievalModel.put("search_method", (searchMethod != null && !searchMethod.isBlank()) ? searchMethod : "hybrid_search");
-                retrievalModel.put("reranking_enable", rerankEnabled != null ? rerankEnabled : true);
-                retrievalModel.put("top_k", (topK != null && topK > 0) ? topK : 3);
-                retrievalModel.put("score_threshold_enabled", false);
-                retrievalModel.put("score_threshold", 0.0);
+            if (searchMethod != null || topK != null || rerankEnabled != null || rerankMode != null || vectorWeight != null) {
+                Map<String, Object> retrievalModel = buildRetrievalModelMap(
+                        searchMethod, topK, rerankEnabled,
+                        rerankMode, rerankModel, rerankModelProvider,
+                        vectorWeight, keywordWeight,
+                        "text-embedding-v3", "langgenius/tongyi/tongyi"
+                );
                 req.put("retrieval_model", retrievalModel);
             }
 
@@ -127,6 +132,53 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
         } catch (Exception e) {
             log.warn("Dify 更新知识库数据集失败 (id: {}): {}", externalDatasetId, e.getMessage());
         }
+    }
+
+    private Map<String, Object> buildRetrievalModelMap(String searchMethod, Integer topK, Boolean rerankEnabled,
+                                                       String rerankMode, String rerankModel, String rerankModelProvider,
+                                                       Double vectorWeight, Double keywordWeight,
+                                                       String embeddingModel, String embeddingProvider) {
+        Map<String, Object> retrievalModel = new HashMap<>();
+        String effectiveSearchMethod = (searchMethod != null && !searchMethod.isBlank()) ? searchMethod : "hybrid_search";
+        retrievalModel.put("search_method", effectiveSearchMethod);
+        retrievalModel.put("top_k", (topK != null && topK > 0) ? topK : 3);
+        retrievalModel.put("score_threshold_enabled", false);
+        retrievalModel.put("score_threshold", 0.0);
+
+        boolean isRerank = rerankEnabled != null ? rerankEnabled : true;
+        retrievalModel.put("reranking_enable", isRerank);
+
+        if ("hybrid_search".equalsIgnoreCase(effectiveSearchMethod)) {
+            String mode = (rerankMode != null && !rerankMode.isBlank()) ? rerankMode : "weighted_score";
+            retrievalModel.put("reranking_mode", mode);
+
+            // 1. Rerank 模型（通义千问 qwen3-rerank）
+            Map<String, Object> rerankModelMap = new HashMap<>();
+            rerankModelMap.put("reranking_provider_name", (rerankModelProvider != null && !rerankModelProvider.isBlank()) ? rerankModelProvider : "langgenius/tongyi/tongyi");
+            rerankModelMap.put("reranking_model_name", (rerankModel != null && !rerankModel.isBlank()) ? rerankModel : "qwen3-rerank");
+            retrievalModel.put("reranking_model", rerankModelMap);
+
+            // 2. 权重设置 (vector_weight + keyword_weight)
+            double vWeight = (vectorWeight != null && vectorWeight >= 0 && vectorWeight <= 1.0) ? vectorWeight : 0.7;
+            double kWeight = (keywordWeight != null && keywordWeight >= 0 && keywordWeight <= 1.0) ? keywordWeight : Math.round((1.0 - vWeight) * 10.0) / 10.0;
+
+            Map<String, Object> weightsMap = new HashMap<>();
+            weightsMap.put("weight_type", "customized");
+
+            Map<String, Object> kwSetting = new HashMap<>();
+            kwSetting.put("keyword_weight", kWeight);
+            weightsMap.put("keyword_setting", kwSetting);
+
+            Map<String, Object> vecSetting = new HashMap<>();
+            vecSetting.put("vector_weight", vWeight);
+            vecSetting.put("embedding_model_name", (embeddingModel != null && !embeddingModel.isBlank()) ? embeddingModel : "text-embedding-v3");
+            vecSetting.put("embedding_provider_name", (embeddingProvider != null && !embeddingProvider.isBlank()) ? embeddingProvider : "langgenius/tongyi/tongyi");
+            weightsMap.put("vector_setting", vecSetting);
+
+            retrievalModel.put("weights", weightsMap);
+        }
+
+        return retrievalModel;
     }
 
     @Override

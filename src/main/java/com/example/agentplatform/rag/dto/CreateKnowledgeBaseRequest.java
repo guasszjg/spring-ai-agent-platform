@@ -12,6 +12,11 @@ public class CreateKnowledgeBaseRequest {
     private String searchMethod = "hybrid_search";
     private Integer topK = 3;
     private Boolean rerankEnabled = true;
+    private String rerankMode = "weighted_score";
+    private String rerankModel = "qwen3-rerank";
+    private String rerankModelProvider = "langgenius/tongyi/tongyi";
+    private Double vectorWeight = 0.7;
+    private Double keywordWeight = 0.3;
 
     public String getName() {
         return name;
@@ -99,5 +104,45 @@ public class CreateKnowledgeBaseRequest {
 
     public void setRerankEnabled(Boolean rerankEnabled) {
         this.rerankEnabled = rerankEnabled;
+    }
+
+    public String getRerankMode() {
+        return rerankMode;
+    }
+
+    public void setRerankMode(String rerankMode) {
+        this.rerankMode = rerankMode;
+    }
+
+    public String getRerankModel() {
+        return rerankModel;
+    }
+
+    public void setRerankModel(String rerankModel) {
+        this.rerankModel = rerankModel;
+    }
+
+    public String getRerankModelProvider() {
+        return rerankModelProvider;
+    }
+
+    public void setRerankModelProvider(String rerankModelProvider) {
+        this.rerankModelProvider = rerankModelProvider;
+    }
+
+    public Double getVectorWeight() {
+        return vectorWeight;
+    }
+
+    public void setVectorWeight(Double vectorWeight) {
+        this.vectorWeight = vectorWeight;
+    }
+
+    public Double getKeywordWeight() {
+        return keywordWeight;
+    }
+
+    public void setKeywordWeight(Double keywordWeight) {
+        this.keywordWeight = keywordWeight;
     }
 }
