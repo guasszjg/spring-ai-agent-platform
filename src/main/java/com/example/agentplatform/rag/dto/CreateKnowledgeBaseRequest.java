@@ -7,6 +7,11 @@ public class CreateKnowledgeBaseRequest {
     private String provider = "DIFY";
     private String indexingTechnique = "high_quality";
     private String permission = "only_me";
+    private String embeddingModel = "text-embedding-v3";
+    private String embeddingProvider = "langgenius/tongyi/tongyi";
+    private String searchMethod = "hybrid_search";
+    private Integer topK = 3;
+    private Boolean rerankEnabled = true;
 
     public String getName() {
         return name;
@@ -54,5 +59,45 @@ public class CreateKnowledgeBaseRequest {
 
     public void setPermission(String permission) {
         this.permission = permission;
+    }
+
+    public String getEmbeddingModel() {
+        return embeddingModel;
+    }
+
+    public void setEmbeddingModel(String embeddingModel) {
+        this.embeddingModel = embeddingModel;
+    }
+
+    public String getEmbeddingProvider() {
+        return embeddingProvider;
+    }
+
+    public void setEmbeddingProvider(String embeddingProvider) {
+        this.embeddingProvider = embeddingProvider;
+    }
+
+    public String getSearchMethod() {
+        return searchMethod;
+    }
+
+    public void setSearchMethod(String searchMethod) {
+        this.searchMethod = searchMethod;
+    }
+
+    public Integer getTopK() {
+        return topK;
+    }
+
+    public void setTopK(Integer topK) {
+        this.topK = topK;
+    }
+
+    public Boolean getRerankEnabled() {
+        return rerankEnabled;
+    }
+
+    public void setRerankEnabled(Boolean rerankEnabled) {
+        this.rerankEnabled = rerankEnabled;
     }
 }

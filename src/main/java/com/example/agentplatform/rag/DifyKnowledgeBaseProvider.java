@@ -61,13 +61,30 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
     }
 
     @Override
-    public DifyDatasetDto createDataset(String name, String description, String indexingTechnique, String permission) {
+    public DifyDatasetDto createDataset(String name, String description, String indexingTechnique, String permission,
+                                        String embeddingModel, String embeddingProvider, String searchMethod, Integer topK, Boolean rerankEnabled) {
         try {
             Map<String, Object> req = new HashMap<>();
             req.put("name", name);
             req.put("description", description != null ? description : "");
             req.put("indexing_technique", (indexingTechnique != null && !indexingTechnique.isBlank()) ? indexingTechnique : "high_quality");
             req.put("permission", (permission != null && !permission.isBlank()) ? permission : "only_me");
+            req.put("provider", "vendor");
+
+            // 1. Embedding 向量模型设置 (默认通义千问 text-embedding-v3)
+            String embModel = (embeddingModel != null && !embeddingModel.isBlank()) ? embeddingModel : "text-embedding-v3";
+            String embProvider = (embeddingProvider != null && !embeddingProvider.isBlank()) ? embeddingProvider : "langgenius/tongyi/tongyi";
+            req.put("embedding_model", embModel);
+            req.put("embedding_model_provider", embProvider);
+
+            // 2. 检索模式设置（默认 hybrid_search 混合检索）
+            Map<String, Object> retrievalModel = new HashMap<>();
+            retrievalModel.put("search_method", (searchMethod != null && !searchMethod.isBlank()) ? searchMethod : "hybrid_search");
+            retrievalModel.put("reranking_enable", rerankEnabled != null ? rerankEnabled : true);
+            retrievalModel.put("top_k", (topK != null && topK > 0) ? topK : 3);
+            retrievalModel.put("score_threshold_enabled", false);
+            retrievalModel.put("score_threshold", 0.0);
+            req.put("retrieval_model", retrievalModel);
 
             String response = restClient.post()
                     .uri("/datasets")
@@ -84,12 +101,22 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
     }
 
     @Override
-    public void updateDataset(String externalDatasetId, String name, String description) {
+    public void updateDataset(String externalDatasetId, String name, String description, String searchMethod, Integer topK, Boolean rerankEnabled) {
         if (externalDatasetId == null || externalDatasetId.isBlank()) return;
         try {
             Map<String, Object> req = new HashMap<>();
             if (name != null) req.put("name", name);
             if (description != null) req.put("description", description);
+
+            if (searchMethod != null || topK != null || rerankEnabled != null) {
+                Map<String, Object> retrievalModel = new HashMap<>();
+                retrievalModel.put("search_method", (searchMethod != null && !searchMethod.isBlank()) ? searchMethod : "hybrid_search");
+                retrievalModel.put("reranking_enable", rerankEnabled != null ? rerankEnabled : true);
+                retrievalModel.put("top_k", (topK != null && topK > 0) ? topK : 3);
+                retrievalModel.put("score_threshold_enabled", false);
+                retrievalModel.put("score_threshold", 0.0);
+                req.put("retrieval_model", retrievalModel);
+            }
 
             restClient.patch()
                     .uri("/datasets/{datasetId}", externalDatasetId)

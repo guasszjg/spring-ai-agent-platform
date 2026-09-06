@@ -55,6 +55,19 @@ public class KnowledgeBase {
 
     private Boolean enabled = true;
 
+    @Column(length = 64)
+    private String embeddingModel = "text-embedding-v3";
+
+    @Column(length = 64)
+    private String embeddingProvider = "langgenius/tongyi/tongyi";
+
+    @Column(length = 32)
+    private String searchMethod = "hybrid_search";
+
+    private Integer topK = 3;
+
+    private Boolean rerankEnabled = true;
+
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;
@@ -87,6 +100,21 @@ public class KnowledgeBase {
         }
         if (this.enabled == null) {
             this.enabled = true;
+        }
+        if (this.embeddingModel == null || this.embeddingModel.isBlank()) {
+            this.embeddingModel = "text-embedding-v3";
+        }
+        if (this.embeddingProvider == null || this.embeddingProvider.isBlank()) {
+            this.embeddingProvider = "langgenius/tongyi/tongyi";
+        }
+        if (this.searchMethod == null || this.searchMethod.isBlank()) {
+            this.searchMethod = "hybrid_search";
+        }
+        if (this.topK == null || this.topK <= 0) {
+            this.topK = 3;
+        }
+        if (this.rerankEnabled == null) {
+            this.rerankEnabled = true;
         }
         LocalDateTime now = LocalDateTime.now();
         this.createdAt = now;
@@ -219,5 +247,45 @@ public class KnowledgeBase {
 
     public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public String getEmbeddingModel() {
+        return embeddingModel;
+    }
+
+    public void setEmbeddingModel(String embeddingModel) {
+        this.embeddingModel = embeddingModel;
+    }
+
+    public String getEmbeddingProvider() {
+        return embeddingProvider;
+    }
+
+    public void setEmbeddingProvider(String embeddingProvider) {
+        this.embeddingProvider = embeddingProvider;
+    }
+
+    public String getSearchMethod() {
+        return searchMethod;
+    }
+
+    public void setSearchMethod(String searchMethod) {
+        this.searchMethod = searchMethod;
+    }
+
+    public Integer getTopK() {
+        return topK;
+    }
+
+    public void setTopK(Integer topK) {
+        this.topK = topK;
+    }
+
+    public Boolean getRerankEnabled() {
+        return rerankEnabled;
+    }
+
+    public void setRerankEnabled(Boolean rerankEnabled) {
+        this.rerankEnabled = rerankEnabled;
     }
 }

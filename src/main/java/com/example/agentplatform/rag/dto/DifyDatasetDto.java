@@ -22,6 +22,15 @@ public class DifyDatasetDto {
     private String provider;
     private String permission;
 
+    @JsonProperty("embedding_model")
+    private String embeddingModel;
+
+    @JsonProperty("embedding_model_provider")
+    private String embeddingModelProvider;
+
+    @JsonProperty("retrieval_model_dict")
+    private java.util.Map<String, Object> retrievalModelDict;
+
     public String getId() {
         return id;
     }
@@ -84,5 +93,29 @@ public class DifyDatasetDto {
 
     public void setPermission(String permission) {
         this.permission = permission;
+    }
+
+    public String getEmbeddingModel() {
+        return embeddingModel;
+    }
+
+    public void setEmbeddingModel(String embeddingModel) {
+        this.embeddingModel = embeddingModel;
+    }
+
+    public String getEmbeddingModelProvider() {
+        return embeddingModelProvider;
+    }
+
+    public void setEmbeddingModelProvider(String embeddingModelProvider) {
+        this.embeddingModelProvider = embeddingModelProvider;
+    }
+
+    public java.util.Map<String, Object> getRetrievalModelDict() {
+        return retrievalModelDict;
+    }
+
+    public void setRetrievalModelDict(java.util.Map<String, Object> retrievalModelDict) {
+        this.retrievalModelDict = retrievalModelDict;
     }
 }

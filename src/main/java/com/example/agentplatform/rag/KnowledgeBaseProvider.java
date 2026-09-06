@@ -18,14 +18,15 @@ public interface KnowledgeBaseProvider {
     String getProviderType();
 
     /**
-     * 在底层 RAG 引擎创建知识库数据集
+     * 在底层 RAG 引擎创建知识库数据集（支持 Embedding 向量模型与检索模型配置）
      */
-    DifyDatasetDto createDataset(String name, String description, String indexingTechnique, String permission);
+    DifyDatasetDto createDataset(String name, String description, String indexingTechnique, String permission,
+                                 String embeddingModel, String embeddingProvider, String searchMethod, Integer topK, Boolean rerankEnabled);
 
     /**
-     * 更新知识库数据集信息
+     * 更新知识库数据集信息与检索模型配置
      */
-    void updateDataset(String externalDatasetId, String name, String description);
+    void updateDataset(String externalDatasetId, String name, String description, String searchMethod, Integer topK, Boolean rerankEnabled);
 
     /**
      * 在底层引擎删除知识库数据集

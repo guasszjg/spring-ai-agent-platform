@@ -118,12 +118,23 @@ public class KnowledgeBaseService {
         String providerType = (req.getProvider() != null && !req.getProvider().isBlank()) ? req.getProvider() : "DIFY";
         KnowledgeBaseProvider provider = resolveProvider(providerType);
 
+        String embeddingModel = (req.getEmbeddingModel() != null && !req.getEmbeddingModel().isBlank()) ? req.getEmbeddingModel() : "text-embedding-v3";
+        String embeddingProvider = (req.getEmbeddingProvider() != null && !req.getEmbeddingProvider().isBlank()) ? req.getEmbeddingProvider() : "langgenius/tongyi/tongyi";
+        String searchMethod = (req.getSearchMethod() != null && !req.getSearchMethod().isBlank()) ? req.getSearchMethod() : "hybrid_search";
+        Integer topK = (req.getTopK() != null && req.getTopK() > 0) ? req.getTopK() : 3;
+        Boolean rerankEnabled = req.getRerankEnabled() != null ? req.getRerankEnabled() : true;
+
         // 1. 调用底层 RAG 引擎（Dify）同步创建数据集
         DifyDatasetDto externalDataset = provider.createDataset(
                 req.getName().trim(),
                 req.getDescription(),
                 req.getIndexingTechnique(),
-                req.getPermission()
+                req.getPermission(),
+                embeddingModel,
+                embeddingProvider,
+                searchMethod,
+                topK,
+                rerankEnabled
         );
 
         // 2. 入本地 Spring AI 数据库管理
@@ -135,6 +146,11 @@ public class KnowledgeBaseService {
         kb.setExternalDatasetId(externalDataset != null ? externalDataset.getId() : null);
         kb.setIndexingTechnique((req.getIndexingTechnique() != null && !req.getIndexingTechnique().isBlank()) ? req.getIndexingTechnique() : "high_quality");
         kb.setPermission((req.getPermission() != null && !req.getPermission().isBlank()) ? req.getPermission() : "only_me");
+        kb.setEmbeddingModel(embeddingModel);
+        kb.setEmbeddingProvider(embeddingProvider);
+        kb.setSearchMethod(searchMethod);
+        kb.setTopK(topK);
+        kb.setRerankEnabled(rerankEnabled);
         kb.setDocumentCount(0);
         kb.setWordCount(0L);
         kb.setFaqCount(0);
@@ -159,12 +175,22 @@ public class KnowledgeBaseService {
         if (req.getEnabled() != null) {
             kb.setEnabled(req.getEnabled());
         }
+        if (req.getSearchMethod() != null && !req.getSearchMethod().isBlank()) {
+            kb.setSearchMethod(req.getSearchMethod());
+        }
+        if (req.getTopK() != null && req.getTopK() > 0) {
+            kb.setTopK(req.getTopK());
+        }
+        if (req.getRerankEnabled() != null) {
+            kb.setRerankEnabled(req.getRerankEnabled());
+        }
 
-        // 同步更新外部 Dify 数据集元数据
+        // 同步更新外部 Dify 数据集元数据及检索模式
         if (kb.getExternalDatasetId() != null) {
             try {
                 KnowledgeBaseProvider provider = resolveProvider(kb.getProvider());
-                provider.updateDataset(kb.getExternalDatasetId(), kb.getName(), kb.getDescription());
+                provider.updateDataset(kb.getExternalDatasetId(), kb.getName(), kb.getDescription(),
+                        kb.getSearchMethod(), kb.getTopK(), kb.getRerankEnabled());
             } catch (Exception e) {
                 log.warn("同步更新底层 RAG 数据集信息失败: {}", e.getMessage());
             }
@@ -219,6 +245,16 @@ public class KnowledgeBaseService {
                 kb.setDocumentCount(ext.getDocumentCount() != null ? ext.getDocumentCount() : 0);
                 kb.setWordCount(ext.getWordCount() != null ? ext.getWordCount() : 0L);
                 kb.setAvatar("📚");
+                if (ext.getEmbeddingModel() != null) kb.setEmbeddingModel(ext.getEmbeddingModel());
+                if (ext.getEmbeddingModelProvider() != null) kb.setEmbeddingProvider(ext.getEmbeddingModelProvider());
+                if (ext.getRetrievalModelDict() != null) {
+                    Object sm = ext.getRetrievalModelDict().get("search_method");
+                    if (sm != null) kb.setSearchMethod(String.valueOf(sm));
+                    Object tk = ext.getRetrievalModelDict().get("top_k");
+                    if (tk instanceof Number) kb.setTopK(((Number) tk).intValue());
+                    Object re = ext.getRetrievalModelDict().get("reranking_enable");
+                    if (re instanceof Boolean) kb.setRerankEnabled((Boolean) re);
+                }
                 kb = knowledgeBaseRepository.save(kb);
                 importedKb++;
             } else {
@@ -226,6 +262,16 @@ public class KnowledgeBaseService {
                 if (ext.getName() != null) kb.setName(ext.getName());
                 if (ext.getDocumentCount() != null) kb.setDocumentCount(ext.getDocumentCount());
                 if (ext.getWordCount() != null) kb.setWordCount(ext.getWordCount());
+                if (ext.getEmbeddingModel() != null) kb.setEmbeddingModel(ext.getEmbeddingModel());
+                if (ext.getEmbeddingModelProvider() != null) kb.setEmbeddingProvider(ext.getEmbeddingModelProvider());
+                if (ext.getRetrievalModelDict() != null) {
+                    Object sm = ext.getRetrievalModelDict().get("search_method");
+                    if (sm != null) kb.setSearchMethod(String.valueOf(sm));
+                    Object tk = ext.getRetrievalModelDict().get("top_k");
+                    if (tk instanceof Number) kb.setTopK(((Number) tk).intValue());
+                    Object re = ext.getRetrievalModelDict().get("reranking_enable");
+                    if (re instanceof Boolean) kb.setRerankEnabled((Boolean) re);
+                }
                 kb = knowledgeBaseRepository.save(kb);
             }
 

@@ -5,6 +5,9 @@ public class UpdateKnowledgeBaseRequest {
     private String description;
     private String avatar;
     private Boolean enabled;
+    private String searchMethod;
+    private Integer topK;
+    private Boolean rerankEnabled;
 
     public String getName() {
         return name;
@@ -36,5 +39,29 @@ public class UpdateKnowledgeBaseRequest {
 
     public void setEnabled(Boolean enabled) {
         this.enabled = enabled;
+    }
+
+    public String getSearchMethod() {
+        return searchMethod;
+    }
+
+    public void setSearchMethod(String searchMethod) {
+        this.searchMethod = searchMethod;
+    }
+
+    public Integer getTopK() {
+        return topK;
+    }
+
+    public void setTopK(Integer topK) {
+        this.topK = topK;
+    }
+
+    public Boolean getRerankEnabled() {
+        return rerankEnabled;
+    }
+
+    public void setRerankEnabled(Boolean rerankEnabled) {
+        this.rerankEnabled = rerankEnabled;
     }
 }

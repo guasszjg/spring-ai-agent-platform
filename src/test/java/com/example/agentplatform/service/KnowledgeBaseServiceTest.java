@@ -71,7 +71,7 @@ class KnowledgeBaseServiceTest {
         difyDto.setId("dify-ds-001");
         difyDto.setName("企业售后知识库");
 
-        when(difyProvider.createDataset(eq("企业售后知识库"), any(), any(), any())).thenReturn(difyDto);
+        when(difyProvider.createDataset(eq("企业售后知识库"), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(difyDto);
         when(knowledgeBaseRepository.save(any(KnowledgeBase.class))).thenAnswer(i -> {
             KnowledgeBase kb = i.getArgument(0);
             kb.setId("kb-test-1");
