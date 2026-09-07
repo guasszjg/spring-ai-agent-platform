@@ -65,6 +65,7 @@ class AgentServiceTest {
         source.setMaxTokens(4096);
         source.setTags(List.of("安全", "代码审计"));
         source.setToolsConfig("{\"bocha\":{\"enabled\":true}}");
+        source.setKnowledgeBaseIds(List.of("kb-a", "kb-b"));
         source.setApiKey("sk-agent-old-secret-key");
         source.setCallCount(999L);
         source.setAvgResponseTimeMs(450.5);
@@ -85,6 +86,7 @@ class AgentServiceTest {
         assertThat(cloned.getCode()).isEqualTo("code_auditor_copy");
         assertThat(cloned.getSystemPrompt()).isEqualTo("你是一名架构级代码审计专家...");
         assertThat(cloned.getToolsConfig()).isEqualTo("{\"bocha\":{\"enabled\":true}}");
+        assertThat(cloned.getKnowledgeBaseIds()).containsExactly("kb-a", "kb-b");
         assertThat(cloned.getTemperature()).isEqualTo(0.2);
         assertThat(cloned.getAvatar()).isEqualTo("💻");
         assertThat(cloned.getCategory()).isEqualTo("代码研发");

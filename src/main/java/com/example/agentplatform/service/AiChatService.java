@@ -28,6 +28,7 @@ public class AiChatService {
     private final ChatClient chatClient;
     private final com.example.agentplatform.tool.AgentToolRegistry toolRegistry;
     private final AgentToolSecretService toolSecretService;
+    private final KnowledgeBaseService knowledgeBaseService;
     private final boolean simulationFallbackEnabled;
 
     public AiChatService(AgentService agentService,
@@ -36,6 +37,7 @@ public class AiChatService {
                          OpenAiCompatibleClient openAiClient,
                          com.example.agentplatform.tool.AgentToolRegistry toolRegistry,
                          AgentToolSecretService toolSecretService,
+                         KnowledgeBaseService knowledgeBaseService,
                          @Autowired(required = false) ChatModel chatModel,
                          @Value("${app.ai.simulation-fallback:false}") boolean simulationFallbackEnabled) {
         this.agentService = agentService;
@@ -44,6 +46,7 @@ public class AiChatService {
         this.openAiClient = openAiClient;
         this.toolRegistry = toolRegistry;
         this.toolSecretService = toolSecretService;
+        this.knowledgeBaseService = knowledgeBaseService;
         this.simulationFallbackEnabled = simulationFallbackEnabled;
         this.chatClient = (chatModel != null) ? ChatClient.builder(chatModel).build() : null;
     }
@@ -94,6 +97,7 @@ public class AiChatService {
                 log.info("Invoking Spring AI ChatClient for Agent: [{}] with model: [{}]", agent.getName(), executionModel);
                 
                 String instruction = firstNonBlank(request.getPrompt(), agent.getSystemPrompt(), "你是一个通用智能助手。");
+                instruction = appendKnowledgeContext(instruction, agent, userMessage);
                 var clientRequest = chatClient.prompt()
                         .system(instruction);
 
@@ -167,7 +171,8 @@ public class AiChatService {
                                                                String livePrompt, List<java.util.Map<String, Object>> tools,
                                                                String[] routedModel) {
         ChatGeneration effective = generation != null ? generation : fromAgent(agent);
-        String instruction = firstNonBlank(livePrompt, agent.getSystemPrompt(), null);
+        final String instruction = appendKnowledgeContext(
+                firstNonBlank(livePrompt, agent.getSystemPrompt(), null), agent, userMessage);
         return gatewayService.resolveRoute(agent.getModelName()).map(route -> {
             var messages = OpenAiCompatibleClient.toMessages(
                     instruction,
@@ -187,6 +192,17 @@ public class AiChatService {
             }
             return null;
         }).orElse(null);
+    }
+
+    private String appendKnowledgeContext(String instruction, Agent agent, String userMessage) {
+        String rag = knowledgeBaseService.buildRetrievalContext(agent.getKnowledgeBaseIds(), userMessage);
+        if (rag == null || rag.isBlank()) {
+            return instruction;
+        }
+        if (instruction == null || instruction.isBlank()) {
+            return rag;
+        }
+        return instruction + "\n\n" + rag;
     }
 
     private ChatGeneration fromAgent(Agent agent) {

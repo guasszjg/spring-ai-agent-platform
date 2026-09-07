@@ -8,12 +8,15 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 
 @Repository
 public interface KnowledgeBaseRepository extends JpaRepository<KnowledgeBase, String> {
 
     Optional<KnowledgeBase> findByExternalDatasetId(String externalDatasetId);
+
+    List<KnowledgeBase> findByProvider(String provider);
 
     @Query("SELECT k FROM KnowledgeBase k WHERE (:keyword IS NULL OR :keyword = '' OR " +
            "LOWER(k.name) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +

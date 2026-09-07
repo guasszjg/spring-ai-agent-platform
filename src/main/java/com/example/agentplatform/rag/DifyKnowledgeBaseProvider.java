@@ -99,6 +99,11 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
     }
 
     @Override
+    public String getBaseUrl() {
+        return baseUrl;
+    }
+
+    @Override
     public DifyDatasetDto createDataset(String name, String description, String indexingTechnique, String permission,
                                         String embeddingModel, String embeddingProvider, String searchMethod, Integer topK, Boolean rerankEnabled,
                                         String rerankMode, String rerankModel, String rerankModelProvider,
@@ -240,17 +245,29 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
     public List<DifyDatasetDto> listExternalDatasets() {
         ensureConfigured();
         try {
-            String response = restClient.get()
-                    .uri(uriBuilder -> uriBuilder.path("/datasets").queryParam("page", 1).queryParam("limit", 100).build())
-                    .retrieve()
-                    .body(String.class);
-
-            JsonNode root = objectMapper.readTree(response);
-            JsonNode dataNode = root.get("data");
-            if (dataNode != null && dataNode.isArray()) {
-                return objectMapper.readValue(dataNode.toString(), new TypeReference<List<DifyDatasetDto>>() {});
+            List<DifyDatasetDto> all = new ArrayList<>();
+            for (int page = 1; page <= 5; page++) {
+                int currentPage = page;
+                String response = restClient.get()
+                        .uri(uriBuilder -> uriBuilder.path("/datasets")
+                                .queryParam("page", currentPage)
+                                .queryParam("limit", 100)
+                                .build())
+                        .retrieve()
+                        .body(String.class);
+                JsonNode root = objectMapper.readTree(response);
+                JsonNode dataNode = root.get("data");
+                if (dataNode == null || !dataNode.isArray() || dataNode.isEmpty()) {
+                    break;
+                }
+                List<DifyDatasetDto> pageItems = objectMapper.readValue(
+                        dataNode.toString(), new TypeReference<List<DifyDatasetDto>>() {});
+                all.addAll(pageItems);
+                if (pageItems.size() < 100) {
+                    break;
+                }
             }
-            return new ArrayList<>();
+            return all;
         } catch (IllegalStateException e) {
             throw e;
         } catch (Exception e) {
@@ -378,5 +395,58 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
     @Override
     public void deleteFaqDocument(String externalDatasetId, String externalDocId) {
         deleteDocument(externalDatasetId, externalDocId);
+    }
+
+    @Override
+    public List<RetrievedChunk> retrieve(String externalDatasetId, String query) {
+        if (externalDatasetId == null || externalDatasetId.isBlank()
+                || query == null || query.isBlank()) {
+            return new ArrayList<>();
+        }
+        try {
+            Map<String, Object> req = new HashMap<>();
+            req.put("query", query.trim());
+            String response = restClient.post()
+                    .uri("/datasets/{datasetId}/retrieve", externalDatasetId)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(req)
+                    .retrieve()
+                    .body(String.class);
+            return parseRetrieveResponse(objectMapper.readTree(response));
+        } catch (Exception e) {
+            log.warn("Dify 知识库检索失败 (datasetId: {}): {}", externalDatasetId, e.getMessage());
+            return new ArrayList<>();
+        }
+    }
+
+    static List<RetrievedChunk> parseRetrieveResponse(JsonNode root) {
+        List<RetrievedChunk> chunks = new ArrayList<>();
+        if (root == null) {
+            return chunks;
+        }
+        JsonNode records = root.get("records");
+        if (records == null || !records.isArray()) {
+            return chunks;
+        }
+        for (JsonNode record : records) {
+            JsonNode segment = record.get("segment");
+            if (segment == null || segment.isNull()) {
+                continue;
+            }
+            JsonNode contentNode = segment.get("content");
+            if (contentNode == null || contentNode.isNull() || contentNode.asText().isBlank()) {
+                continue;
+            }
+            String sourceName = null;
+            JsonNode document = segment.get("document");
+            if (document != null && document.hasNonNull("name")) {
+                sourceName = document.get("name").asText();
+            }
+            Double score = record.has("score") && record.get("score").isNumber()
+                    ? record.get("score").asDouble()
+                    : null;
+            chunks.add(new RetrievedChunk(contentNode.asText(), sourceName, score));
+        }
+        return chunks;
     }
 }

@@ -1,8 +1,10 @@
 package com.example.agentplatform.model;
 
+import com.example.agentplatform.config.StringListJsonConverter;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.CollectionTable;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -56,6 +58,9 @@ public class Agent {
     private LocalDateTime updatedAt;
     @Column(columnDefinition = "TEXT")
     private String toolsConfig;
+    @Convert(converter = StringListJsonConverter.class)
+    @Column(name = "knowledge_base_ids", columnDefinition = "TEXT")
+    private List<String> knowledgeBaseIds = new ArrayList<>();
     @Column(unique = true, length = 128)
     private String apiKey;
 
@@ -212,6 +217,14 @@ public class Agent {
 
     public void setToolsConfig(String toolsConfig) {
         this.toolsConfig = toolsConfig;
+    }
+
+    public List<String> getKnowledgeBaseIds() {
+        return knowledgeBaseIds;
+    }
+
+    public void setKnowledgeBaseIds(List<String> knowledgeBaseIds) {
+        this.knowledgeBaseIds = knowledgeBaseIds != null ? knowledgeBaseIds : new ArrayList<>();
     }
 
     public String getApiKey() {

@@ -22,6 +22,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -146,5 +147,79 @@ class KnowledgeBaseServiceTest {
         assertThat(result.getQuestion()).isEqualTo("如何重置密码？");
         assertThat(result.getExternalDocId()).isEqualTo("dify-doc-faq-999");
         verify(faqRepository).save(any(KnowledgeFaq.class));
+    }
+
+    @Test
+    void buildRetrievalContext_mergesRetrievedChunks() {
+        KnowledgeBase kb = new KnowledgeBase();
+        kb.setId("kb-1");
+        kb.setName("售后手册");
+        kb.setEnabled(true);
+        kb.setProvider("DIFY");
+        kb.setExternalDatasetId("ds-1");
+
+        when(knowledgeBaseRepository.findById("kb-1")).thenReturn(Optional.of(kb));
+        when(difyProvider.retrieve("ds-1", "怎么重启设备")).thenReturn(List.of(
+                new com.example.agentplatform.rag.RetrievedChunk("长按电源键 10 秒", "手册.pdf", 0.9)
+        ));
+
+        String context = knowledgeBaseService.buildRetrievalContext(List.of("kb-1"), "怎么重启设备");
+
+        assertThat(context).contains("【知识库检索结果】");
+        assertThat(context).contains("手册.pdf");
+        assertThat(context).contains("长按电源键 10 秒");
+    }
+
+    @Test
+    void displayHost_readsHostFromDifyBaseUrl() {
+        assertThat(KnowledgeBaseService.displayHost("http://120.79.38.143/v1")).isEqualTo("120.79.38.143");
+        assertThat(KnowledgeBaseService.displayHost("")).isEmpty();
+    }
+
+    @Test
+    void getEngineInfo_usesProviderBaseUrl() {
+        when(difyProvider.getBaseUrl()).thenReturn("http://120.79.38.143/v1");
+        var info = knowledgeBaseService.getEngineInfo();
+        assertThat(info.isConfigured()).isTrue();
+        assertThat(info.getHost()).isEqualTo("120.79.38.143");
+    }
+
+    @Test
+    void syncFromDify_reportsLocalDatasetsMissingOnCurrentEngine() {
+        DifyDatasetDto remote = new DifyDatasetDto();
+        remote.setId("ds-new");
+        remote.setName("新实例知识库");
+        when(difyProvider.listExternalDatasets()).thenReturn(List.of(remote));
+        when(difyProvider.listDocuments("ds-new", 1, 100)).thenReturn(List.of());
+        when(knowledgeBaseRepository.findByExternalDatasetId("ds-new")).thenReturn(Optional.empty());
+        when(knowledgeBaseRepository.save(any(KnowledgeBase.class))).thenAnswer(i -> {
+            KnowledgeBase kb = i.getArgument(0);
+            if (kb.getId() == null) {
+                kb.setId("kb-imported");
+            }
+            return kb;
+        });
+        when(documentRepository.countByKnowledgeBaseId(any())).thenReturn(0L);
+
+        KnowledgeBase stale = new KnowledgeBase();
+        stale.setId("kb-old");
+        stale.setName("旧服务器知识库");
+        stale.setProvider("DIFY");
+        stale.setExternalDatasetId("ds-old");
+        KnowledgeBase imported = new KnowledgeBase();
+        imported.setId("kb-imported");
+        imported.setName("新实例知识库");
+        imported.setProvider("DIFY");
+        imported.setExternalDatasetId("ds-new");
+        when(knowledgeBaseRepository.findByProvider("DIFY")).thenReturn(List.of(stale, imported));
+
+        Map<String, Object> result = knowledgeBaseService.syncFromDify();
+
+        assertThat(result.get("importedKnowledgeBases")).isEqualTo(1);
+        assertThat(result.get("staleCount")).isEqualTo(1);
+        @SuppressWarnings("unchecked")
+        List<Map<String, String>> staleList = (List<Map<String, String>>) result.get("staleKnowledgeBases");
+        assertThat(staleList).hasSize(1);
+        assertThat(staleList.get(0).get("id")).isEqualTo("kb-old");
     }
 }

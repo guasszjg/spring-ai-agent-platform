@@ -116,6 +116,9 @@ public class AgentService {
         if (agentUpdate.getToolsConfig() != null) {
             existing.setToolsConfig(toolConfigSanitizer.sanitize(agentUpdate.getToolsConfig()));
         }
+        if (agentUpdate.getKnowledgeBaseIds() != null) {
+            existing.setKnowledgeBaseIds(new ArrayList<>(agentUpdate.getKnowledgeBaseIds()));
+        }
 
         return agentRepository.save(existing);
     }
@@ -159,6 +162,9 @@ public class AgentService {
             clone.setTags(new ArrayList<>(source.getTags()));
         }
         clone.setToolsConfig(toolConfigSanitizer.sanitize(source.getToolsConfig()));
+        if (source.getKnowledgeBaseIds() != null) {
+            clone.setKnowledgeBaseIds(new ArrayList<>(source.getKnowledgeBaseIds()));
+        }
         clone.setId(null);
         clone.setApiKey(null);
         clone.setCallCount(0L);

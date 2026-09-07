@@ -5,10 +5,12 @@ import com.example.agentplatform.model.KnowledgeDocument;
 import com.example.agentplatform.model.KnowledgeFaq;
 import com.example.agentplatform.model.PageResult;
 import com.example.agentplatform.rag.KnowledgeBaseProvider;
+import com.example.agentplatform.rag.RetrievedChunk;
 import com.example.agentplatform.rag.dto.CreateFaqRequest;
 import com.example.agentplatform.rag.dto.CreateKnowledgeBaseRequest;
 import com.example.agentplatform.rag.dto.DifyDatasetDto;
 import com.example.agentplatform.rag.dto.DifyDocumentDto;
+import com.example.agentplatform.rag.dto.KnowledgeEngineInfo;
 import com.example.agentplatform.rag.dto.UpdateFaqRequest;
 import com.example.agentplatform.rag.dto.UpdateKnowledgeBaseRequest;
 import com.example.agentplatform.repository.KnowledgeBaseRepository;
@@ -33,9 +35,12 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -107,6 +112,96 @@ public class KnowledgeBaseService {
     public KnowledgeBase getKnowledgeBaseById(String id) {
         return knowledgeBaseRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("知识库不存在: " + id));
+    }
+
+    @Transactional(readOnly = true)
+    public KnowledgeEngineInfo getEngineInfo() {
+        KnowledgeEngineInfo info = new KnowledgeEngineInfo();
+        KnowledgeBaseProvider provider;
+        try {
+            provider = resolveProvider("DIFY");
+        } catch (Exception e) {
+            info.setConfigured(false);
+            info.setBaseUrl("");
+            info.setHost("");
+            return info;
+        }
+        String url = provider.getBaseUrl() != null ? provider.getBaseUrl().trim() : "";
+        info.setBaseUrl(url);
+        info.setConfigured(!url.isBlank());
+        info.setHost(displayHost(url));
+        return info;
+    }
+
+    static String displayHost(String baseUrl) {
+        if (baseUrl == null || baseUrl.isBlank()) {
+            return "";
+        }
+        try {
+            String raw = baseUrl.trim();
+            if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
+                raw = "http://" + raw;
+            }
+            URI uri = URI.create(raw);
+            return uri.getHost() != null ? uri.getHost() : baseUrl.trim();
+        } catch (Exception e) {
+            return baseUrl.trim();
+        }
+    }
+
+    /**
+     * 按智能体绑定的知识库检索切片，拼成可注入系统提示词的上下文。检索失败不抛错。
+     */
+    public String buildRetrievalContext(List<String> knowledgeBaseIds, String query) {
+        if (knowledgeBaseIds == null || knowledgeBaseIds.isEmpty()
+                || query == null || query.isBlank()) {
+            return "";
+        }
+        StringBuilder body = new StringBuilder();
+        int index = 1;
+        for (String kbId : knowledgeBaseIds) {
+            if (kbId == null || kbId.isBlank() || index > 12) {
+                continue;
+            }
+            Optional<KnowledgeBase> kbOpt = knowledgeBaseRepository.findById(kbId.trim());
+            if (kbOpt.isEmpty()) {
+                continue;
+            }
+            KnowledgeBase kb = kbOpt.get();
+            if (Boolean.FALSE.equals(kb.getEnabled())) {
+                continue;
+            }
+            String datasetId = kb.getExternalDatasetId();
+            if (datasetId == null || datasetId.isBlank()) {
+                continue;
+            }
+            try {
+                KnowledgeBaseProvider provider = resolveProvider(kb.getProvider());
+                List<RetrievedChunk> chunks = provider.retrieve(datasetId, query);
+                for (RetrievedChunk chunk : chunks) {
+                    if (chunk == null || chunk.content() == null || chunk.content().isBlank() || index > 12) {
+                        continue;
+                    }
+                    String content = chunk.content().trim();
+                    if (content.length() > 1500) {
+                        content = content.substring(0, 1500);
+                    }
+                    body.append("[").append(index++).append("]");
+                    if (chunk.sourceName() != null && !chunk.sourceName().isBlank()) {
+                        body.append(" 来源：").append(chunk.sourceName().trim());
+                    } else if (kb.getName() != null) {
+                        body.append(" 来源：").append(kb.getName());
+                    }
+                    body.append('\n').append(content).append("\n\n");
+                }
+            } catch (Exception e) {
+                log.warn("知识库 [{}] 检索失败: {}", kb.getName(), e.getMessage());
+            }
+        }
+        if (body.isEmpty()) {
+            return "";
+        }
+        return "【知识库检索结果】请优先依据下列资料回答用户问题。若资料不足以回答，请明确说明无法从知识库确认。\n\n" + body;
     }
 
     @Transactional
@@ -320,11 +415,33 @@ public class KnowledgeBaseService {
             knowledgeBaseRepository.save(kb);
         }
 
-        return Map.of(
-                "totalExternal", externalList.size(),
-                "importedKnowledgeBases", importedKb,
-                "importedDocuments", importedDocs
-        );
+        Set<String> remoteIds = new HashSet<>();
+        for (DifyDatasetDto ext : externalList) {
+            if (ext.getId() != null && !ext.getId().isBlank()) {
+                remoteIds.add(ext.getId());
+            }
+        }
+        List<Map<String, String>> stale = new ArrayList<>();
+        for (KnowledgeBase local : knowledgeBaseRepository.findByProvider("DIFY")) {
+            String datasetId = local.getExternalDatasetId();
+            if (datasetId == null || datasetId.isBlank() || remoteIds.contains(datasetId)) {
+                continue;
+            }
+            Map<String, String> item = new LinkedHashMap<>();
+            item.put("id", local.getId());
+            item.put("name", local.getName() != null ? local.getName() : "");
+            item.put("externalDatasetId", datasetId);
+            stale.add(item);
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("totalExternal", externalList.size());
+        result.put("importedKnowledgeBases", importedKb);
+        result.put("importedDocuments", importedDocs);
+        result.put("staleCount", stale.size());
+        result.put("staleKnowledgeBases", stale);
+        result.put("engineHost", displayHost(provider.getBaseUrl()));
+        return result;
     }
 
     // ==================== 文档上传与管理 ====================

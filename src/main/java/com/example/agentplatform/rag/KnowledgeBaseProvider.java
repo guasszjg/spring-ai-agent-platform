@@ -18,6 +18,13 @@ public interface KnowledgeBaseProvider {
     String getProviderType();
 
     /**
+     * RAG 引擎访问地址（不含密钥）。未配置时返回空串。
+     */
+    default String getBaseUrl() {
+        return "";
+    }
+
+    /**
      * 在底层 RAG 引擎创建知识库数据集（支持 Embedding 向量模型、检索模型与权重配置）
      */
     DifyDatasetDto createDataset(String name, String description, String indexingTechnique, String permission,
@@ -66,4 +73,9 @@ public interface KnowledgeBaseProvider {
      * 在底层引擎中删除 FAQ 文档
      */
     void deleteFaqDocument(String externalDatasetId, String externalDocId);
+
+    /**
+     * 按用户问题检索切片，供智能体对话注入上下文
+     */
+    List<RetrievedChunk> retrieve(String externalDatasetId, String query);
 }

@@ -7,6 +7,7 @@ import com.example.agentplatform.model.KnowledgeFaq;
 import com.example.agentplatform.model.PageResult;
 import com.example.agentplatform.rag.dto.CreateFaqRequest;
 import com.example.agentplatform.rag.dto.CreateKnowledgeBaseRequest;
+import com.example.agentplatform.rag.dto.KnowledgeEngineInfo;
 import com.example.agentplatform.rag.dto.UpdateFaqRequest;
 import com.example.agentplatform.rag.dto.UpdateKnowledgeBaseRequest;
 import com.example.agentplatform.service.KnowledgeBaseService;
@@ -47,7 +48,12 @@ public class KnowledgeBaseController {
         return ResponseEntity.ok(ApiResponse.ok(result));
     }
 
-    @GetMapping("/{id}")
+    @GetMapping("/engine")
+    public ResponseEntity<ApiResponse<KnowledgeEngineInfo>> engine() {
+        return ResponseEntity.ok(ApiResponse.ok(knowledgeBaseService.getEngineInfo()));
+    }
+
+    @GetMapping("/{id:^(?!engine$).+}")
     public ResponseEntity<ApiResponse<KnowledgeBase>> getById(@PathVariable String id) {
         KnowledgeBase kb = knowledgeBaseService.getKnowledgeBaseById(id);
         return ResponseEntity.ok(ApiResponse.ok(kb));
