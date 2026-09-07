@@ -40,19 +40,57 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
             @Value("${app.dify.base-url:}") String baseUrl,
             @Value("${app.dify.api-key:}") String apiKey,
             @Autowired(required = false) ObjectMapper objectMapper) {
-        this.baseUrl = (baseUrl != null && baseUrl.endsWith("/")) ? baseUrl.substring(0, baseUrl.length() - 1) : (baseUrl != null ? baseUrl : "");
-        this.apiKey = apiKey != null ? apiKey : "";
+        this.baseUrl = normalizeDifyBaseUrl(baseUrl);
+        this.apiKey = apiKey != null ? apiKey.trim() : "";
         this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
 
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofSeconds(15));
         factory.setReadTimeout(Duration.ofSeconds(60));
 
-        this.restClient = RestClient.builder()
-                .baseUrl(this.baseUrl)
-                .requestFactory(factory)
-                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + this.apiKey)
-                .build();
+        RestClient.Builder builder = RestClient.builder().requestFactory(factory);
+        if (!this.baseUrl.isBlank()) {
+            builder.baseUrl(this.baseUrl);
+        }
+        if (!this.apiKey.isBlank()) {
+            builder.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + this.apiKey);
+        }
+        this.restClient = builder.build();
+
+        if (this.baseUrl.isBlank() || this.apiKey.isBlank()) {
+            log.warn("Dify RAG 未完成配置: baseUrl={}, apiKeyConfigured={}",
+                    this.baseUrl.isBlank() ? "(空)" : this.baseUrl, !this.apiKey.isBlank());
+        } else {
+            log.info("Dify RAG 已配置: {}", this.baseUrl);
+        }
+    }
+
+    static String normalizeDifyBaseUrl(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+        String url = raw.trim();
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            url = "http://" + url;
+        }
+        while (url.endsWith("/")) {
+            url = url.substring(0, url.length() - 1);
+        }
+        if (!url.endsWith("/v1")) {
+            url = url + "/v1";
+        }
+        return url;
+    }
+
+    private void ensureConfigured() {
+        if (baseUrl.isBlank()) {
+            throw new IllegalStateException(
+                    "未配置 Dify Base URL，无法从 Dify 导入。请设置 app.dify.base-url 或环境变量 DIFY_BASE_URL，例如 http://120.79.38.143/v1");
+        }
+        if (apiKey.isBlank()) {
+            throw new IllegalStateException(
+                    "未配置 Dify Dataset API Key。请在 Dify 控制台创建知识库 API Key，并设置 app.dify.api-key 或环境变量 DIFY_API_KEY");
+        }
     }
 
     @Override
@@ -65,6 +103,7 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
                                         String embeddingModel, String embeddingProvider, String searchMethod, Integer topK, Boolean rerankEnabled,
                                         String rerankMode, String rerankModel, String rerankModelProvider,
                                         Double vectorWeight, Double keywordWeight) {
+        ensureConfigured();
         try {
             Map<String, Object> req = new HashMap<>();
             req.put("name", name);
@@ -108,6 +147,7 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
                               String rerankMode, String rerankModel, String rerankModelProvider,
                               Double vectorWeight, Double keywordWeight) {
         if (externalDatasetId == null || externalDatasetId.isBlank()) return;
+        ensureConfigured();
         try {
             Map<String, Object> req = new HashMap<>();
             if (name != null) req.put("name", name);
@@ -184,6 +224,7 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
     @Override
     public void deleteDataset(String externalDatasetId) {
         if (externalDatasetId == null || externalDatasetId.isBlank()) return;
+        ensureConfigured();
         try {
             restClient.delete()
                     .uri("/datasets/{datasetId}", externalDatasetId)
@@ -197,9 +238,10 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
 
     @Override
     public List<DifyDatasetDto> listExternalDatasets() {
+        ensureConfigured();
         try {
             String response = restClient.get()
-                    .uri("/datasets?page=1&limit=100")
+                    .uri(uriBuilder -> uriBuilder.path("/datasets").queryParam("page", 1).queryParam("limit", 100).build())
                     .retrieve()
                     .body(String.class);
 
@@ -209,14 +251,17 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 return objectMapper.readValue(dataNode.toString(), new TypeReference<List<DifyDatasetDto>>() {});
             }
             return new ArrayList<>();
+        } catch (IllegalStateException e) {
+            throw e;
         } catch (Exception e) {
             log.error("Dify 获取知识库数据集列表失败: {}", e.getMessage(), e);
-            return new ArrayList<>();
+            throw new IllegalStateException("从 Dify 拉取知识库失败: " + e.getMessage(), e);
         }
     }
 
     @Override
     public DifyDocumentDto uploadDocument(String externalDatasetId, MultipartFile file) {
+        ensureConfigured();
         try {
             MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
             Map<String, Object> dataConfig = Map.of(
@@ -252,6 +297,7 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
     @Override
     public void deleteDocument(String externalDatasetId, String externalDocId) {
         if (externalDatasetId == null || externalDocId == null) return;
+        ensureConfigured();
         try {
             restClient.delete()
                     .uri("/datasets/{datasetId}/documents/{docId}", externalDatasetId, externalDocId)
@@ -266,10 +312,14 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
     @Override
     public List<DifyDocumentDto> listDocuments(String externalDatasetId, int page, int limit) {
         if (externalDatasetId == null || externalDatasetId.isBlank()) return new ArrayList<>();
+        ensureConfigured();
         try {
             String response = restClient.get()
-                    .uri("/datasets/{datasetId}/documents?page={page}&limit={limit}",
-                            externalDatasetId, Math.max(1, page), Math.max(1, limit))
+                    .uri(uriBuilder -> uriBuilder
+                            .path("/datasets/{datasetId}/documents")
+                            .queryParam("page", Math.max(1, page))
+                            .queryParam("limit", Math.max(1, limit))
+                            .build(externalDatasetId))
                     .retrieve()
                     .body(String.class);
 
@@ -289,6 +339,7 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
     public DifyDocumentDto syncFaqDocument(String externalDatasetId, String existingExternalDocId,
                                           String question, String answer, String category) {
         if (externalDatasetId == null || externalDatasetId.isBlank()) return null;
+        ensureConfigured();
 
         // 若已有对应外部文档，先清理旧文档
         if (existingExternalDocId != null && !existingExternalDocId.isBlank()) {

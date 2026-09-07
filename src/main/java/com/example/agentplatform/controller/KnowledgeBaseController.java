@@ -75,8 +75,12 @@ public class KnowledgeBaseController {
 
     @PostMapping("/sync-from-dify")
     public ResponseEntity<ApiResponse<Map<String, Object>>> syncFromDify() {
-        Map<String, Object> result = knowledgeBaseService.syncFromDify();
-        return ResponseEntity.ok(ApiResponse.ok("Dify 知识库数据同步完成", result));
+        try {
+            Map<String, Object> result = knowledgeBaseService.syncFromDify();
+            return ResponseEntity.ok(ApiResponse.ok("Dify 知识库数据同步完成", result));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     // ==================== 文档库文件管理 ====================

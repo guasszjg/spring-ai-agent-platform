@@ -30,6 +30,9 @@ public class AppUser {
     @Column(length = 500)
     private String avatar;
 
+    @Column(name = "ui_preferences", columnDefinition = "TEXT")
+    private String uiPreferences;
+
     public AppUser() {
     }
 
@@ -79,5 +82,13 @@ public class AppUser {
 
     public void setAvatar(String avatar) {
         this.avatar = avatar;
+    }
+
+    public String getUiPreferences() {
+        return uiPreferences;
+    }
+
+    public void setUiPreferences(String uiPreferences) {
+        this.uiPreferences = uiPreferences;
     }
 }

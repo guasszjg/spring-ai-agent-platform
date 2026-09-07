@@ -105,6 +105,23 @@ public class AgentConversationService {
     }
 
     @Transactional(readOnly = true)
+    public Map<String, String> latestModelByAgent() {
+        Map<String, String> latest = new LinkedHashMap<>();
+        conversationRepository.findAll().stream()
+                .sorted(Comparator.comparing(AgentConversation::getUpdatedAt, Comparator.nullsLast(Comparator.naturalOrder())).reversed())
+                .forEach(item -> {
+                    if (item.getAgentId() == null || item.getAgentId().isBlank()) {
+                        return;
+                    }
+                    if (item.getLastModel() == null || item.getLastModel().isBlank()) {
+                        return;
+                    }
+                    latest.putIfAbsent(item.getAgentId(), item.getLastModel().trim());
+                });
+        return latest;
+    }
+
+    @Transactional(readOnly = true)
     public Map<String, Long> tokenUsageByModel(LocalDate start, LocalDate end) {
         return tokenUsageByModel(null, start, end);
     }

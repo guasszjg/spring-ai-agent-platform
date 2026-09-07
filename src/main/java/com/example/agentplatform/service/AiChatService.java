@@ -56,7 +56,9 @@ public class AiChatService {
 
         String userMessage = request.getMessage();
         String reply;
-        String executionModel = agent.getModelName() != null ? agent.getModelName() : "gpt-4o";
+        String executionModel = agent.getModelName() != null && !agent.getModelName().isBlank()
+                ? agent.getModelName()
+                : "未指定";
         int promptTokens = 0;
         int completionTokens = 0;
         boolean realModelReply = false;
@@ -131,6 +133,9 @@ public class AiChatService {
         long latencyMs = System.currentTimeMillis() - startTime;
         int tokens = promptTokens + completionTokens;
         agentService.recordInvocation(agent.getId(), latencyMs, promptTokens, completionTokens, realModelReply);
+        if (realModelReply) {
+            agentService.recordExecutedModel(agent.getId(), executionModel);
+        }
 
         ChatResponse response = new ChatResponse(
                 agent.getId(),

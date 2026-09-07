@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS app_users (
     password VARCHAR(200) NOT NULL,
     nickname VARCHAR(100),
     role VARCHAR(64),
-    avatar VARCHAR(500)
+    avatar VARCHAR(500),
+    ui_preferences TEXT
 );
 
 -- 2. 智能体表 (agents)
@@ -188,3 +189,6 @@ CREATE TABLE IF NOT EXISTS agent_templates (
 
 CREATE INDEX IF NOT EXISTS idx_templates_category ON agent_templates(category);
 CREATE INDEX IF NOT EXISTS idx_templates_sort_order ON agent_templates(sort_order);
+
+-- 2026-09-07: 用户界面偏好（跨设备同步卡片/列表等）
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS ui_preferences TEXT;

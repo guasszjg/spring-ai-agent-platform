@@ -206,7 +206,6 @@ public class AgentService {
         }
         dailyStatRepository.save(stat);
 
-        // 同步更新 Agent 主表的调用总次数与平均响应耗时，确保智能体列表、概览大盘与卡片实时展示
         agentRepository.findById(id).ifPresent(agent -> {
             long currentCalls = agent.getCallCount() == null ? 0L : agent.getCallCount();
             long newCalls = currentCalls + 1L;
@@ -216,6 +215,20 @@ public class AgentService {
             double newAvg = Math.round(((currentAvg * currentCalls + Math.max(0, latencyMs)) / (double) newCalls) * 10.0) / 10.0;
             agent.setAvgResponseTimeMs(newAvg);
 
+            agentRepository.save(agent);
+        });
+    }
+
+    public void recordExecutedModel(String id, String model) {
+        if (id == null || model == null || model.isBlank()) {
+            return;
+        }
+        String executed = model.trim();
+        agentRepository.findById(id).ifPresent(agent -> {
+            if (executed.equals(agent.getModelName())) {
+                return;
+            }
+            agent.setModelName(executed);
             agentRepository.save(agent);
         });
     }
@@ -310,6 +323,7 @@ public class AgentService {
                 agg[1] += row.getPromptTokens() + row.getCompletionTokens();
             }
         }
+        Map<String, String> latestModels = conversationService.latestModelByAgent();
         List<DashboardStats.RankingItem> ranking = rankAgg.entrySet().stream()
                 .sorted((a, b) -> Long.compare(b.getValue()[0], a.getValue()[0]))
                 .limit(4)
@@ -318,7 +332,7 @@ public class AgentService {
                     DashboardStats.RankingItem item = new DashboardStats.RankingItem();
                     item.setAvatar(agent != null && agent.getAvatar() != null ? agent.getAvatar() : "🤖");
                     item.setName(agent != null ? agent.getName() : entry.getKey());
-                    item.setModel(agent != null && agent.getModelName() != null ? agent.getModelName() : "未指定");
+                    item.setModel(resolveRankingModel(entry.getKey(), agent, latestModels));
                     item.setCalls(entry.getValue()[0]);
                     item.setTokens(entry.getValue()[1]);
                     return item;
@@ -417,6 +431,17 @@ public class AgentService {
                 trend.add(new DashboardStats.TrendPoint(date.format(TREND_LABEL), values[0], values[1])));
         stats.setTokenTrend(trend);
         return stats;
+    }
+
+    private static String resolveRankingModel(String agentId, Agent agent, Map<String, String> latestModels) {
+        String used = latestModels.get(agentId);
+        if (used != null && !used.isBlank()) {
+            return used;
+        }
+        if (agent != null && agent.getModelName() != null && !agent.getModelName().isBlank()) {
+            return agent.getModelName();
+        }
+        return "未指定";
     }
 
     private int resolveRangeDays(String range) {

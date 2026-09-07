@@ -159,6 +159,9 @@ public class DataInitializer implements ApplicationRunner {
         }
     }
 
+    private static final String DEMO_ADMIN_PASSWORD = "Amx#Admin2026";
+    private static final String DEMO_DEV_PASSWORD = "Amx#Dev2026";
+
     private void seedUsers() {
         if (!seedDemoUsers) {
             return;
@@ -167,7 +170,7 @@ public class DataInitializer implements ApplicationRunner {
             AppUser admin = new AppUser();
             admin.setId("user-admin");
             admin.setUsername("admin");
-            admin.setPassword(passwordEncoder.encode("admin123"));
+            admin.setPassword(passwordEncoder.encode(DEMO_ADMIN_PASSWORD));
             admin.setNickname("超级管理员");
             admin.setRole("System Admin");
             admin.setAvatar("/avatar-admin.jpg");
@@ -176,25 +179,42 @@ public class DataInitializer implements ApplicationRunner {
             AppUser developer = new AppUser();
             developer.setId("user-developer");
             developer.setUsername("developer");
-            developer.setPassword(passwordEncoder.encode("dev123456"));
+            developer.setPassword(passwordEncoder.encode(DEMO_DEV_PASSWORD));
             developer.setNickname("智能体工程师 (developer)");
             developer.setRole("Agent Developer");
             developer.setAvatar("/avatar-dev.jpg");
             userRepository.save(developer);
-        } else {
-            userRepository.findByUsernameIgnoreCase("admin").ifPresent(admin -> {
-                if (admin.getAvatar() == null || admin.getAvatar().contains("dicebear") || admin.getAvatar().contains("bottts")) {
-                    admin.setAvatar("/avatar-admin.jpg");
-                    userRepository.save(admin);
-                }
-            });
-            userRepository.findByUsernameIgnoreCase("developer").ifPresent(dev -> {
-                if (dev.getAvatar() == null || dev.getAvatar().contains("dicebear") || dev.getAvatar().contains("bottts")) {
-                    dev.setAvatar("/avatar-dev.jpg");
-                    userRepository.save(dev);
-                }
-            });
+            return;
         }
+
+        userRepository.findByUsernameIgnoreCase("admin").ifPresent(admin -> {
+            boolean changed = false;
+            if (admin.getAvatar() == null || admin.getAvatar().contains("dicebear") || admin.getAvatar().contains("bottts")) {
+                admin.setAvatar("/avatar-admin.jpg");
+                changed = true;
+            }
+            if (!passwordEncoder.matches(DEMO_ADMIN_PASSWORD, admin.getPassword())) {
+                admin.setPassword(passwordEncoder.encode(DEMO_ADMIN_PASSWORD));
+                changed = true;
+            }
+            if (changed) {
+                userRepository.save(admin);
+            }
+        });
+        userRepository.findByUsernameIgnoreCase("developer").ifPresent(dev -> {
+            boolean changed = false;
+            if (dev.getAvatar() == null || dev.getAvatar().contains("dicebear") || dev.getAvatar().contains("bottts")) {
+                dev.setAvatar("/avatar-dev.jpg");
+                changed = true;
+            }
+            if (!passwordEncoder.matches(DEMO_DEV_PASSWORD, dev.getPassword())) {
+                dev.setPassword(passwordEncoder.encode(DEMO_DEV_PASSWORD));
+                changed = true;
+            }
+            if (changed) {
+                userRepository.save(dev);
+            }
+        });
     }
 
     private void seedAgents() {

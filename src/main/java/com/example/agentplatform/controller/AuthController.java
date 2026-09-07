@@ -11,10 +11,13 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/auth")
@@ -48,10 +51,39 @@ public class AuthController {
     @GetMapping("/me")
     public ResponseEntity<ApiResponse<LoginResponse>> getCurrentUser(HttpSession session) {
         LoginResponse user = (LoginResponse) session.getAttribute(SessionAuthInterceptor.SESSION_USER);
-        if (user != null) {
-            return ResponseEntity.ok(ApiResponse.ok(user));
+        if (user == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ApiResponse.error("未登录"));
         }
-        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ApiResponse.error("未登录"));
+        LoginResponse latest = authService.currentUser(user.getUsername()).orElse(user);
+        session.setAttribute(SessionAuthInterceptor.SESSION_USER, latest);
+        return ResponseEntity.ok(ApiResponse.ok(latest));
+    }
+
+    @GetMapping("/preferences")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> getPreferences(HttpSession session) {
+        LoginResponse user = (LoginResponse) session.getAttribute(SessionAuthInterceptor.SESSION_USER);
+        if (user == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ApiResponse.error("未登录"));
+        }
+        return ResponseEntity.ok(ApiResponse.ok(authService.getPreferences(user.getUsername())));
+    }
+
+    @PutMapping("/preferences")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> savePreferences(
+            @RequestBody Map<String, Object> preferences,
+            HttpSession session) {
+        LoginResponse user = (LoginResponse) session.getAttribute(SessionAuthInterceptor.SESSION_USER);
+        if (user == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ApiResponse.error("未登录"));
+        }
+        try {
+            Map<String, Object> saved = authService.savePreferences(user.getUsername(), preferences);
+            user.setPreferences(saved);
+            session.setAttribute(SessionAuthInterceptor.SESSION_USER, user);
+            return ResponseEntity.ok(ApiResponse.ok("界面偏好已保存", saved));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     @DeleteMapping("/session")

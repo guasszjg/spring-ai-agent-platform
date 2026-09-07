@@ -99,8 +99,8 @@ java -jar target/spring-ai-agent-platform-1.0.0.jar
 ### 2. 访问控制台
 * 🌐 **访问地址**：[http://localhost:8080](http://localhost:8080)
 * 🔑 **仅 dev 环境的演示账号**：
-  * **超级管理员**：`admin` / `admin123`
-  * **开发者账号**：`developer` / `dev123456`
+  * **超级管理员**：`admin` / `Amx#Admin2026`
+  * **开发者账号**：`developer` / `Amx#Dev2026`
   *(支持页面一键点击快速填充)*
 
 ### 安全配置
