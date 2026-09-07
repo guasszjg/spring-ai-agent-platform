@@ -7,6 +7,7 @@ import com.example.agentplatform.model.GatewayOverview;
 import com.example.agentplatform.model.GatewayPolicy;
 import com.example.agentplatform.model.GatewayProbeRequest;
 import com.example.agentplatform.model.GatewayProbeResult;
+import com.example.agentplatform.model.LlmProtocolType;
 import com.example.agentplatform.model.LlmProvider;
 import com.example.agentplatform.model.LlmProviderRequest;
 import com.example.agentplatform.model.LlmProviderType;
@@ -36,17 +37,20 @@ public class LlmGatewayService {
     private final GatewayPolicyRepository policyRepository;
     private final SecretCrypto secretCrypto;
     private final OpenAiCompatibleClient openAiClient;
+    private final CustomHttpLlmClient customHttpClient;
     private final OutboundUrlValidator outboundUrlValidator;
 
     public LlmGatewayService(LlmProviderRepository providerRepository,
                              GatewayPolicyRepository policyRepository,
                              SecretCrypto secretCrypto,
                              OpenAiCompatibleClient openAiClient,
+                             CustomHttpLlmClient customHttpClient,
                              OutboundUrlValidator outboundUrlValidator) {
         this.providerRepository = providerRepository;
         this.policyRepository = policyRepository;
         this.secretCrypto = secretCrypto;
         this.openAiClient = openAiClient;
+        this.customHttpClient = customHttpClient;
         this.outboundUrlValidator = outboundUrlValidator;
     }
 
@@ -119,7 +123,10 @@ public class LlmGatewayService {
         LlmProvider provider = providerRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("未找到该模型通道"));
         if (enabled && !hasKey(provider)) {
-            throw new IllegalArgumentException("请先配置 API Key 后再启用通道");
+            String msg = provider.getProtocol() == LlmProtocolType.CUSTOM_HTTP
+                    ? "请先配置接口地址与请求模板后再启用通道"
+                    : "请先配置 API Key 后再启用通道";
+            throw new IllegalArgumentException(msg);
         }
         provider.setEnabled(enabled);
         return toView(providerRepository.save(provider));
@@ -160,10 +167,18 @@ public class LlmGatewayService {
         String apiKey = request.getApiKey();
         Integer timeout = request.getTimeoutMs();
         String providerId = blankToNull(request.getProviderId());
+        LlmProtocolType protocol = request.getProtocol();
+        String customConfig = request.getCustomConfig();
 
         if (providerId != null) {
             LlmProvider provider = providerRepository.findById(providerId)
                     .orElseThrow(() -> new IllegalArgumentException("未找到该模型通道"));
+            if (protocol == null) {
+                protocol = provider.getProtocol();
+            }
+            if (customConfig == null || customConfig.isBlank()) {
+                customConfig = provider.getCustomConfig();
+            }
             if (baseUrl == null || baseUrl.isBlank()) {
                 baseUrl = provider.getBaseUrl();
             }
@@ -175,17 +190,25 @@ public class LlmGatewayService {
             }
         }
 
-        if (baseUrl == null || baseUrl.isBlank()) {
-            throw new IllegalArgumentException("请填写 Base URL");
+        if (protocol == null) {
+            protocol = LlmProtocolType.OPENAI;
         }
-        if (apiKey == null || apiKey.isBlank()) {
-            throw new IllegalArgumentException("请填写 API Key 后再测试");
-        }
-
-        outboundUrlValidator.validateProviderBaseUrl(baseUrl);
 
         int timeoutMs = timeout != null ? timeout : 15000;
-        OpenAiCompatibleClient.ProbeResult result = openAiClient.probe(baseUrl, apiKey, timeoutMs);
+        OpenAiCompatibleClient.ProbeResult result;
+
+        if (protocol == LlmProtocolType.CUSTOM_HTTP) {
+            result = customHttpClient.probe(baseUrl, customConfig, timeoutMs);
+        } else {
+            if (baseUrl == null || baseUrl.isBlank()) {
+                throw new IllegalArgumentException("请填写 Base URL");
+            }
+            if (apiKey == null || apiKey.isBlank()) {
+                throw new IllegalArgumentException("请填写 API Key 后再测试");
+            }
+            outboundUrlValidator.validateProviderBaseUrl(baseUrl);
+            result = openAiClient.probe(baseUrl, apiKey, timeoutMs);
+        }
 
         if (providerId != null && result.success() && !result.models().isEmpty()) {
             providerRepository.findById(providerId).ifPresent(provider -> {
@@ -214,6 +237,12 @@ public class LlmGatewayService {
     private GatewayProbeRequest probeRequestFromProvider(String id) {
         GatewayProbeRequest request = new GatewayProbeRequest();
         request.setProviderId(id);
+        providerRepository.findById(id).ifPresent(provider -> {
+            request.setProtocol(provider.getProtocol());
+            request.setCustomConfig(provider.getCustomConfig());
+            request.setBaseUrl(provider.getBaseUrl());
+            request.setTimeoutMs(provider.getTimeoutMs());
+        });
         return request;
     }
 
@@ -303,6 +332,14 @@ public class LlmGatewayService {
         if (request.getRemark() != null) {
             provider.setRemark(request.getRemark().trim());
         }
+        if (request.getProtocol() != null) {
+            provider.setProtocol(request.getProtocol());
+        } else if (creating && provider.getProtocol() == null) {
+            provider.setProtocol(LlmProtocolType.OPENAI);
+        }
+        if (request.getCustomConfig() != null) {
+            provider.setCustomConfig(request.getCustomConfig());
+        }
         if (request.getApiKey() != null && !request.getApiKey().isBlank()) {
             provider.setApiKeyEncrypted(secretCrypto.encrypt(request.getApiKey().trim()));
             provider.setLastProbeStatus("UNTESTED");
@@ -311,7 +348,10 @@ public class LlmGatewayService {
         }
         if (request.getEnabled() != null) {
             if (Boolean.TRUE.equals(request.getEnabled()) && !hasKey(provider)) {
-                throw new IllegalArgumentException("请先配置 API Key 后再启用通道");
+                String msg = provider.getProtocol() == LlmProtocolType.CUSTOM_HTTP
+                        ? "请先配置接口地址与请求模板后再启用通道"
+                        : "请先配置 API Key 后再启用通道";
+                throw new IllegalArgumentException(msg);
             }
             provider.setEnabled(request.getEnabled());
         } else if (creating) {
@@ -335,6 +375,8 @@ public class LlmGatewayService {
         LlmProviderView view = new LlmProviderView();
         view.setId(provider.getId());
         view.setVendor(provider.getVendor());
+        view.setProtocol(provider.getProtocol());
+        view.setCustomConfig(provider.getCustomConfig());
         view.setName(provider.getName());
         view.setBaseUrl(provider.getBaseUrl());
         view.setConfigured(hasKey(provider));
@@ -363,6 +405,10 @@ public class LlmGatewayService {
     }
 
     private boolean hasKey(LlmProvider provider) {
+        if (provider.getProtocol() == LlmProtocolType.CUSTOM_HTTP) {
+            return (provider.getCustomConfig() != null && !provider.getCustomConfig().isBlank())
+                    || (provider.getBaseUrl() != null && !provider.getBaseUrl().isBlank());
+        }
         return provider.getApiKeyEncrypted() != null && !provider.getApiKeyEncrypted().isBlank();
     }
 
@@ -399,6 +445,9 @@ public class LlmGatewayService {
                     .map(String::trim)
                     .filter(item -> !item.isEmpty())
                     .forEach(models::add);
+        }
+        if (models.isEmpty() && provider.getProtocol() == LlmProtocolType.CUSTOM_HTTP) {
+            models.add(provider.getName());
         }
         return new ArrayList<>(models);
     }

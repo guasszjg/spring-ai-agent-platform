@@ -6,6 +6,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
+import jakarta.persistence.PostLoad;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
@@ -24,6 +25,13 @@ public class LlmProvider {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 32)
     private LlmProviderType vendor;
+
+    @Enumerated(EnumType.STRING)
+    @Column(length = 32)
+    private LlmProtocolType protocol = LlmProtocolType.OPENAI;
+
+    @Column(name = "custom_config", columnDefinition = "TEXT")
+    private String customConfig;
 
     @Column(nullable = false, length = 120)
     private String name;
@@ -73,6 +81,22 @@ public class LlmProvider {
 
     public void setVendor(LlmProviderType vendor) {
         this.vendor = vendor;
+    }
+
+    public LlmProtocolType getProtocol() {
+        return protocol != null ? protocol : LlmProtocolType.OPENAI;
+    }
+
+    public void setProtocol(LlmProtocolType protocol) {
+        this.protocol = protocol;
+    }
+
+    public String getCustomConfig() {
+        return customConfig;
+    }
+
+    public void setCustomConfig(String customConfig) {
+        this.customConfig = customConfig;
     }
 
     public String getName() {
@@ -217,13 +241,26 @@ public class LlmProvider {
         if (maxRetries == null) {
             maxRetries = 1;
         }
+        if (protocol == null) {
+            protocol = LlmProtocolType.OPENAI;
+        }
         if (lastProbeStatus == null) {
             lastProbeStatus = "UNTESTED";
         }
     }
 
+    @PostLoad
+    void onLoad() {
+        if (protocol == null) {
+            protocol = LlmProtocolType.OPENAI;
+        }
+    }
+
     @PreUpdate
     void onUpdate() {
+        if (protocol == null) {
+            protocol = LlmProtocolType.OPENAI;
+        }
         updatedAt = LocalDateTime.now();
     }
 }

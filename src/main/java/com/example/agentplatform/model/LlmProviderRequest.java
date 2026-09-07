@@ -2,6 +2,8 @@ package com.example.agentplatform.model;
 
 public class LlmProviderRequest {
     private LlmProviderType vendor;
+    private LlmProtocolType protocol;
+    private String customConfig;
     private String name;
     private String baseUrl;
     private String apiKey;
@@ -90,5 +92,21 @@ public class LlmProviderRequest {
 
     public void setRemark(String remark) {
         this.remark = remark;
+    }
+
+    public LlmProtocolType getProtocol() {
+        return protocol;
+    }
+
+    public void setProtocol(LlmProtocolType protocol) {
+        this.protocol = protocol;
+    }
+
+    public String getCustomConfig() {
+        return customConfig;
+    }
+
+    public void setCustomConfig(String customConfig) {
+        this.customConfig = customConfig;
     }
 }

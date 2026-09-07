@@ -25,6 +25,7 @@ public class AiChatService {
     private final AgentConversationService conversationService;
     private final LlmGatewayService gatewayService;
     private final OpenAiCompatibleClient openAiClient;
+    private final CustomHttpLlmClient customHttpClient;
     private final ChatClient chatClient;
     private final com.example.agentplatform.tool.AgentToolRegistry toolRegistry;
     private final AgentToolSecretService toolSecretService;
@@ -35,6 +36,7 @@ public class AiChatService {
                          AgentConversationService conversationService,
                          LlmGatewayService gatewayService,
                          OpenAiCompatibleClient openAiClient,
+                         CustomHttpLlmClient customHttpClient,
                          com.example.agentplatform.tool.AgentToolRegistry toolRegistry,
                          AgentToolSecretService toolSecretService,
                          KnowledgeBaseService knowledgeBaseService,
@@ -44,6 +46,7 @@ public class AiChatService {
         this.conversationService = conversationService;
         this.gatewayService = gatewayService;
         this.openAiClient = openAiClient;
+        this.customHttpClient = customHttpClient;
         this.toolRegistry = toolRegistry;
         this.toolSecretService = toolSecretService;
         this.knowledgeBaseService = knowledgeBaseService;
@@ -224,6 +227,10 @@ public class AiChatService {
         int attempts = Math.max(1, maxRetries + 1);
         for (int i = 0; i < attempts; i++) {
             try {
+                if (provider.getProtocol() == com.example.agentplatform.model.LlmProtocolType.CUSTOM_HTTP) {
+                    log.info("Gateway routing agent chat via custom HTTP endpoint [{}]", provider.getName());
+                    return customHttpClient.chat(provider, messages, generation, timeoutMs);
+                }
                 log.info("Gateway routing agent chat via [{}] model [{}] with {} tools", provider.getName(), model, tools != null ? tools.size() : 0);
                 return openAiClient.chatWithTools(provider.getBaseUrl(), apiKey, model, messages, tools, toolRegistry, generation, timeoutMs);
             } catch (Exception ex) {

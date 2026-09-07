@@ -26,8 +26,11 @@ public class AgentToolSecretController {
     @GetMapping("/bocha")
     public ResponseEntity<ApiResponse<Map<String, Boolean>>> bochaStatus(@PathVariable String agentId) {
         try {
+            boolean specific = secretService.isBochaConfiguredSpecific(agentId);
+            boolean configured = secretService.isBochaConfigured(agentId);
             return ResponseEntity.ok(ApiResponse.ok(Map.of(
-                    "configured", secretService.isBochaConfigured(agentId)
+                    "configured", configured,
+                    "inherited", !specific && configured
             )));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));

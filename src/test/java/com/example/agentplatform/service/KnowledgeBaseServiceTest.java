@@ -222,4 +222,18 @@ class KnowledgeBaseServiceTest {
         assertThat(staleList).hasSize(1);
         assertThat(staleList.get(0).get("id")).isEqualTo("kb-old");
     }
+
+    @Test
+    void buildRetrievalContext_skipsDisabledOrMissingDataset() {
+        KnowledgeBase disabled = new KnowledgeBase();
+        disabled.setId("kb-off");
+        disabled.setEnabled(false);
+        disabled.setExternalDatasetId("ds-off");
+        disabled.setProvider("DIFY");
+
+        when(knowledgeBaseRepository.findById("kb-off")).thenReturn(Optional.of(disabled));
+
+        String context = knowledgeBaseService.buildRetrievalContext(List.of("kb-off"), "任意问题");
+        assertThat(context).isEmpty();
+    }
 }

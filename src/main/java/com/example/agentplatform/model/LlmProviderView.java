@@ -6,6 +6,8 @@ import java.util.List;
 public class LlmProviderView {
     private String id;
     private LlmProviderType vendor;
+    private LlmProtocolType protocol;
+    private String customConfig;
     private String name;
     private String baseUrl;
     private boolean configured;
@@ -37,6 +39,22 @@ public class LlmProviderView {
 
     public void setVendor(LlmProviderType vendor) {
         this.vendor = vendor;
+    }
+
+    public LlmProtocolType getProtocol() {
+        return protocol;
+    }
+
+    public void setProtocol(LlmProtocolType protocol) {
+        this.protocol = protocol;
+    }
+
+    public String getCustomConfig() {
+        return customConfig;
+    }
+
+    public void setCustomConfig(String customConfig) {
+        this.customConfig = customConfig;
     }
 
     public String getName() {

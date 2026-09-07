@@ -403,6 +403,7 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 || query == null || query.isBlank()) {
             return new ArrayList<>();
         }
+        ensureConfigured();
         try {
             Map<String, Object> req = new HashMap<>();
             req.put("query", query.trim());

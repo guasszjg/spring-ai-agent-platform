@@ -2,6 +2,8 @@ package com.example.agentplatform.model;
 
 public class GatewayProbeRequest {
     private String providerId;
+    private LlmProtocolType protocol;
+    private String customConfig;
     private String baseUrl;
     private String apiKey;
     private Integer timeoutMs;
@@ -12,6 +14,22 @@ public class GatewayProbeRequest {
 
     public void setProviderId(String providerId) {
         this.providerId = providerId;
+    }
+
+    public LlmProtocolType getProtocol() {
+        return protocol;
+    }
+
+    public void setProtocol(LlmProtocolType protocol) {
+        this.protocol = protocol;
+    }
+
+    public String getCustomConfig() {
+        return customConfig;
+    }
+
+    public void setCustomConfig(String customConfig) {
+        this.customConfig = customConfig;
     }
 
     public String getBaseUrl() {

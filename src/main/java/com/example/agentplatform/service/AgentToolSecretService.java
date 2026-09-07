@@ -39,16 +39,35 @@ public class AgentToolSecretService {
 
     @Transactional(readOnly = true)
     public String getBochaApiKey(String agentId) {
-        return secretRepository.findById(agentId)
+        if (agentId != null && !agentId.isBlank()) {
+            String specific = secretRepository.findById(agentId)
+                    .map(AgentToolSecret::getBochaApiKeyEncrypted)
+                    .filter(value -> value != null && !value.isBlank())
+                    .map(secretCrypto::decrypt)
+                    .orElse(null);
+            if (specific != null && !specific.isBlank()) {
+                return specific;
+            }
+        }
+        // 如果当前智能体未单独配置，自动继承平台已加密保存的任意有效 Bocha Key（实现全局共享）
+        return secretRepository.findAll().stream()
                 .map(AgentToolSecret::getBochaApiKeyEncrypted)
                 .filter(value -> value != null && !value.isBlank())
+                .findFirst()
                 .map(secretCrypto::decrypt)
                 .orElse(null);
     }
 
     @Transactional(readOnly = true)
     public boolean isBochaConfigured(String agentId) {
-        requireAgent(agentId);
+        return getBochaApiKey(agentId) != null;
+    }
+
+    @Transactional(readOnly = true)
+    public boolean isBochaConfiguredSpecific(String agentId) {
+        if (agentId == null || agentId.isBlank()) {
+            return false;
+        }
         return secretRepository.findById(agentId)
                 .map(AgentToolSecret::getBochaApiKeyEncrypted)
                 .filter(value -> value != null && !value.isBlank())

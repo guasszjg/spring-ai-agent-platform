@@ -30,6 +30,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -201,7 +202,7 @@ public class KnowledgeBaseService {
         if (body.isEmpty()) {
             return "";
         }
-        return "【知识库检索结果】请优先依据下列资料回答用户问题。若资料不足以回答，请明确说明无法从知识库确认。\n\n" + body;
+        return "【知识库检索结果】以下是可能相关的参考资料。请优先参考其中的有效信息作答；若资料不相关或不足以回答，请严格遵循智能体本身的流程规则继续处理，切勿声明无法从知识库确认。\n\n" + body;
     }
 
     @Transactional
