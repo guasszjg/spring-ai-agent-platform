@@ -42,6 +42,6 @@ src/main/resources/application-local.yml
 src/main/resources/application-local.properties
 src/main/resources/application-secret.yml
 src/main/resources/application-secret.properties
-doc/
+# Requirement and local docs (keep schema.sql tracked)
 doc/*
-doc/不要提交.txt
+!doc/schema.sql
