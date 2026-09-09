@@ -59,6 +59,12 @@ public class AgentTemplate {
     @Column(name = "sort_order")
     private Integer sortOrder = 0;
 
+    @Column(name = "owner_id", length = 64)
+    private String ownerId;
+
+    @Column(name = "owner_username", length = 64)
+    private String ownerUsername;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
@@ -245,5 +251,21 @@ public class AgentTemplate {
 
     public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public String getOwnerId() {
+        return ownerId;
+    }
+
+    public void setOwnerId(String ownerId) {
+        this.ownerId = ownerId;
+    }
+
+    public String getOwnerUsername() {
+        return ownerUsername;
+    }
+
+    public void setOwnerUsername(String ownerUsername) {
+        this.ownerUsername = ownerUsername;
     }
 }

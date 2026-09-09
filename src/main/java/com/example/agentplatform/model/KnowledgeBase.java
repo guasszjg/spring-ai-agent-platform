@@ -81,6 +81,15 @@ public class KnowledgeBase {
 
     private Double keywordWeight = 0.3;
 
+    @Column(name = "owner_id", length = 64)
+    private String ownerId;
+
+    @Column(name = "owner_username", length = 64)
+    private String ownerUsername;
+
+    @Column(name = "is_system")
+    private Boolean isSystem = false;
+
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;
@@ -355,5 +364,29 @@ public class KnowledgeBase {
 
     public void setKeywordWeight(Double keywordWeight) {
         this.keywordWeight = keywordWeight;
+    }
+
+    public String getOwnerId() {
+        return ownerId;
+    }
+
+    public void setOwnerId(String ownerId) {
+        this.ownerId = ownerId;
+    }
+
+    public String getOwnerUsername() {
+        return ownerUsername;
+    }
+
+    public void setOwnerUsername(String ownerUsername) {
+        this.ownerUsername = ownerUsername;
+    }
+
+    public Boolean getIsSystem() {
+        return isSystem;
+    }
+
+    public void setIsSystem(Boolean isSystem) {
+        this.isSystem = isSystem;
     }
 }

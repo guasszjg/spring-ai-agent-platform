@@ -41,9 +41,13 @@ public class AgentTemplateController {
 
     @GetMapping("/{id}")
     public ResponseEntity<ApiResponse<AgentTemplate>> getTemplate(@PathVariable String id) {
-        return templateService.getById(id)
-                .map(t -> ResponseEntity.ok(ApiResponse.ok(t)))
-                .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error("模板未找到: " + id)));
+        try {
+            return templateService.getById(id)
+                    .map(t -> ResponseEntity.ok(ApiResponse.ok(t)))
+                    .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error("模板未找到: " + id)));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     @PostMapping
@@ -51,6 +55,8 @@ public class AgentTemplateController {
         try {
             AgentTemplate created = templateService.create(template);
             return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok("场景模板创建成功", created));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
         }
@@ -61,6 +67,8 @@ public class AgentTemplateController {
         try {
             AgentTemplate updated = templateService.update(id, template);
             return ResponseEntity.ok(ApiResponse.ok("场景模板更新成功", updated));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
         }
@@ -68,10 +76,14 @@ public class AgentTemplateController {
 
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<Void>> deleteTemplate(@PathVariable String id) {
-        boolean removed = templateService.delete(id);
-        if (removed) {
-            return ResponseEntity.ok(ApiResponse.ok("场景模板已删除", null));
+        try {
+            boolean removed = templateService.delete(id);
+            if (removed) {
+                return ResponseEntity.ok(ApiResponse.ok("场景模板已删除", null));
+            }
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error("删除失败，未找到该模板"));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
         }
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error("删除失败，未找到该模板"));
     }
 }

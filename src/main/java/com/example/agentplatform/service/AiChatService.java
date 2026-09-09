@@ -30,6 +30,7 @@ public class AiChatService {
     private final com.example.agentplatform.tool.AgentToolRegistry toolRegistry;
     private final AgentToolSecretService toolSecretService;
     private final KnowledgeBaseService knowledgeBaseService;
+    private final ResourceAuthorizationService resourceAuthorizationService;
     private final boolean simulationFallbackEnabled;
 
     public AiChatService(AgentService agentService,
@@ -40,6 +41,7 @@ public class AiChatService {
                          com.example.agentplatform.tool.AgentToolRegistry toolRegistry,
                          AgentToolSecretService toolSecretService,
                          KnowledgeBaseService knowledgeBaseService,
+                         ResourceAuthorizationService resourceAuthorizationService,
                          @Autowired(required = false) ChatModel chatModel,
                          @Value("${app.ai.simulation-fallback:false}") boolean simulationFallbackEnabled) {
         this.agentService = agentService;
@@ -50,6 +52,7 @@ public class AiChatService {
         this.toolRegistry = toolRegistry;
         this.toolSecretService = toolSecretService;
         this.knowledgeBaseService = knowledgeBaseService;
+        this.resourceAuthorizationService = resourceAuthorizationService;
         this.simulationFallbackEnabled = simulationFallbackEnabled;
         this.chatClient = (chatModel != null) ? ChatClient.builder(chatModel).build() : null;
     }
@@ -59,6 +62,16 @@ public class AiChatService {
 
         Agent agent = agentService.getById(request.getAgentId())
                 .orElseThrow(() -> new IllegalArgumentException("智能体不存在: " + request.getAgentId()));
+
+        com.example.agentplatform.security.CurrentActor actor = com.example.agentplatform.security.CurrentActor.get();
+        if (actor != null && !resourceAuthorizationService.canRunAgent(actor, agent)) {
+            throw new IllegalStateException("权限不足：无权运行或调用该智能体");
+        }
+
+        // 强校验智能体绑定的知识库依赖权限：
+        // 智能体拥有者对所绑定的每一个知识库必须拥有有效的 USE 权限；
+        // 若依赖失效或授权已撤销，在此立即阻断，严禁调用 LLM 或 Dify，且不产生任何数据库会话写入与外部调用！
+        resourceAuthorizationService.checkAgentKnowledgeBaseDependencies(agent);
 
         String userMessage = request.getMessage();
         String reply;

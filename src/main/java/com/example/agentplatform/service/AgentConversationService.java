@@ -68,6 +68,22 @@ public class AgentConversationService {
     @Transactional(readOnly = true)
     public PageResult<AgentConversation> listLogs(String agentId, String range, String keyword,
                                                   String sort, String order, int page, int size) {
+        return listLogs(null, null, agentId, range, keyword, sort, order, page, size);
+    }
+
+    @Transactional(readOnly = true)
+    public PageResult<AgentConversation> listLogs(com.example.agentplatform.model.Agent agent,
+                                                  com.example.agentplatform.security.CurrentActor actor,
+                                                  String range, String keyword,
+                                                  String sort, String order, int page, int size) {
+        String agentId = agent != null ? agent.getId() : null;
+        return listLogs(agent, actor, agentId, range, keyword, sort, order, page, size);
+    }
+
+    private PageResult<AgentConversation> listLogs(com.example.agentplatform.model.Agent agent,
+                                                   com.example.agentplatform.security.CurrentActor actor,
+                                                   String agentId, String range, String keyword,
+                                                   String sort, String order, int page, int size) {
         LocalDate[] bounds = TimeRange.resolve(range);
         String kw = keyword == null ? "" : keyword.trim().toLowerCase(Locale.ROOT);
         boolean asc = "asc".equalsIgnoreCase(order);
@@ -78,8 +94,17 @@ public class AgentConversationService {
             comparator = comparator.reversed();
         }
 
+        boolean isOwnerOrAdmin = actor == null || actor.isSuperAdmin()
+                || (agent != null && actor.getUserId() != null && actor.getUserId().equals(agent.getOwnerId()));
+
         List<AgentConversation> filtered = conversationRepository.findByAgentIdOrderByUpdatedAtDesc(agentId).stream()
                 .filter(item -> inRange(item.getCreatedAt(), bounds))
+                .filter(item -> {
+                    if (isOwnerOrAdmin) {
+                        return true;
+                    }
+                    return actor.getUsername() != null && actor.getUsername().equalsIgnoreCase(item.getAccount());
+                })
                 .filter(item -> kw.isEmpty()
                         || contains(item.getTitle(), kw)
                         || contains(item.getAccount(), kw))
@@ -105,9 +130,43 @@ public class AgentConversationService {
     }
 
     @Transactional(readOnly = true)
+    public Optional<ConversationDetail> getDetail(com.example.agentplatform.model.Agent agent,
+                                                  com.example.agentplatform.security.CurrentActor actor,
+                                                  String conversationId) {
+        if (agent == null) {
+            return Optional.empty();
+        }
+        Optional<AgentConversation> opt = conversationRepository.findById(conversationId)
+                .filter(item -> agent.getId().equals(item.getAgentId()));
+        if (opt.isEmpty()) {
+            return Optional.empty();
+        }
+
+        boolean isOwnerOrAdmin = actor == null || actor.isSuperAdmin()
+                || (actor.getUserId() != null && actor.getUserId().equals(agent.getOwnerId()));
+        if (!isOwnerOrAdmin) {
+            String account = opt.get().getAccount();
+            if (account == null || !account.equalsIgnoreCase(actor.getUsername())) {
+                throw new IllegalStateException("权限不足：无法查看其他用户的会话记录");
+            }
+        }
+
+        return Optional.of(new ConversationDetail(
+                opt.get(),
+                messageRepository.findByConversationIdOrderByCreatedAtAsc(conversationId)
+        ));
+    }
+
+    @Transactional(readOnly = true)
     public Map<String, String> latestModelByAgent() {
+        return latestModelByAgent(null);
+    }
+
+    @Transactional(readOnly = true)
+    public Map<String, String> latestModelByAgent(java.util.Set<String> allowedAgentIds) {
         Map<String, String> latest = new LinkedHashMap<>();
         conversationRepository.findAll().stream()
+                .filter(item -> allowedAgentIds == null || allowedAgentIds.contains(item.getAgentId()))
                 .sorted(Comparator.comparing(AgentConversation::getUpdatedAt, Comparator.nullsLast(Comparator.naturalOrder())).reversed())
                 .forEach(item -> {
                     if (item.getAgentId() == null || item.getAgentId().isBlank()) {
@@ -123,22 +182,34 @@ public class AgentConversationService {
 
     @Transactional(readOnly = true)
     public Map<String, Long> tokenUsageByModel(LocalDate start, LocalDate end) {
-        return tokenUsageByModel(null, start, end);
+        return tokenUsageByModel(null, null, start, end);
     }
 
     @Transactional(readOnly = true)
     public Map<String, Long> tokenUsageByModel(String agentId, LocalDate start, LocalDate end) {
+        return tokenUsageByModel(agentId, null, start, end);
+    }
+
+    @Transactional(readOnly = true)
+    public Map<String, Long> tokenUsageByModel(String agentId, java.util.Set<String> allowedAgentIds, LocalDate start, LocalDate end) {
         LocalDateTime from = (start == null ? LocalDate.of(2020, 1, 1) : start).atStartOfDay();
         LocalDateTime to = (end == null ? LocalDate.now() : end).plusDays(1).atStartOfDay();
         Map<String, Long> usage = new LinkedHashMap<>();
         List<AgentConversationMessage> messages = messageRepository
                 .findByRoleAndCreatedAtGreaterThanEqualAndCreatedAtLessThan("assistant", from, to);
-        if (agentId != null && !agentId.isBlank()) {
-            java.util.Set<String> ids = conversationRepository.findByAgentIdOrderByUpdatedAtDesc(agentId).stream()
+
+        final java.util.Set<String> finalTargetAgentIds = (agentId != null && !agentId.isBlank())
+                ? java.util.Set.of(agentId)
+                : allowedAgentIds;
+
+        if (finalTargetAgentIds != null) {
+            java.util.Set<String> validConvIds = conversationRepository.findAll().stream()
+                    .filter(c -> finalTargetAgentIds.contains(c.getAgentId()))
                     .map(AgentConversation::getId)
                     .collect(Collectors.toSet());
-            messages = messages.stream().filter(item -> ids.contains(item.getConversationId())).collect(Collectors.toList());
+            messages = messages.stream().filter(item -> validConvIds.contains(item.getConversationId())).collect(Collectors.toList());
         }
+
         for (AgentConversationMessage message : messages) {
             if (message.getTokensUsed() == null || message.getTokensUsed() <= 0) {
                 continue;

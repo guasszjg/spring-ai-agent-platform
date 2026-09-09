@@ -18,6 +18,8 @@ import com.example.agentplatform.repository.KnowledgeDocumentRepository;
 import com.example.agentplatform.repository.KnowledgeFaqRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.example.agentplatform.repository.ResourceGrantRepository;
+import com.example.agentplatform.security.CurrentActor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,7 +38,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
-import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -47,6 +48,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 public class KnowledgeBaseService {
@@ -66,17 +68,23 @@ public class KnowledgeBaseService {
     private final KnowledgeBaseRepository knowledgeBaseRepository;
     private final KnowledgeDocumentRepository documentRepository;
     private final KnowledgeFaqRepository faqRepository;
+    private final ResourceAuthorizationService resourceAuthorizationService;
+    private final ResourceGrantRepository resourceGrantRepository;
     private final Map<String, KnowledgeBaseProvider> providerMap = new HashMap<>();
     private final ObjectMapper objectMapper;
 
     public KnowledgeBaseService(KnowledgeBaseRepository knowledgeBaseRepository,
                                 KnowledgeDocumentRepository documentRepository,
                                 KnowledgeFaqRepository faqRepository,
+                                ResourceAuthorizationService resourceAuthorizationService,
+                                ResourceGrantRepository resourceGrantRepository,
                                 List<KnowledgeBaseProvider> providers,
                                 @Autowired(required = false) ObjectMapper objectMapper) {
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.documentRepository = documentRepository;
         this.faqRepository = faqRepository;
+        this.resourceAuthorizationService = resourceAuthorizationService;
+        this.resourceGrantRepository = resourceGrantRepository;
         this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
         for (KnowledgeBaseProvider p : providers) {
             this.providerMap.put(p.getProviderType().toUpperCase(), p);
@@ -99,20 +107,56 @@ public class KnowledgeBaseService {
 
     @Transactional(readOnly = true)
     public PageResult<KnowledgeBase> searchKnowledgeBases(String keyword, String provider, int page, int size) {
+        return searchKnowledgeBases(keyword, provider, page, size, CurrentActor.get());
+    }
+
+    @Transactional(readOnly = true)
+    public PageResult<KnowledgeBase> searchKnowledgeBases(String keyword, String provider, int page, int size, CurrentActor actor) {
+        List<KnowledgeBase> all = knowledgeBaseRepository.findAll(Sort.by(Sort.Direction.DESC, "updatedAt"));
+        List<KnowledgeBase> filtered = all.stream()
+                .filter(kb -> {
+                    if (actor != null && !resourceAuthorizationService.canViewKnowledgeBase(actor, kb)) {
+                        return false;
+                    }
+                    if (provider != null && !provider.isBlank()) {
+                        if (!provider.trim().equalsIgnoreCase(kb.getProvider())) {
+                            return false;
+                        }
+                    }
+                    if (keyword != null && !keyword.isBlank()) {
+                        String kw = keyword.trim().toLowerCase();
+                        boolean matchName = kb.getName() != null && kb.getName().toLowerCase().contains(kw);
+                        boolean matchDesc = kb.getDescription() != null && kb.getDescription().toLowerCase().contains(kw);
+                        if (!matchName && !matchDesc) {
+                            return false;
+                        }
+                    }
+                    return true;
+                })
+                .collect(Collectors.toList());
+
+        int total = filtered.size();
         int safePage = Math.max(1, page);
         int safeSize = Math.max(1, size);
-        Page<KnowledgeBase> p = knowledgeBaseRepository.searchKnowledgeBases(
-                keyword != null ? keyword.trim() : null,
-                provider != null ? provider.trim() : null,
-                PageRequest.of(safePage - 1, safeSize, Sort.by(Sort.Direction.DESC, "updatedAt"))
-        );
-        return new PageResult<>(p.getContent(), (int) p.getTotalElements(), safePage, safeSize);
+        int fromIndex = Math.min((safePage - 1) * safeSize, total);
+        int toIndex = Math.min(fromIndex + safeSize, total);
+        List<KnowledgeBase> pageRecords = filtered.subList(fromIndex, toIndex);
+        return new PageResult<>(pageRecords, total, safePage, safeSize);
     }
 
     @Transactional(readOnly = true)
     public KnowledgeBase getKnowledgeBaseById(String id) {
-        return knowledgeBaseRepository.findById(id)
+        return getKnowledgeBaseById(id, CurrentActor.get());
+    }
+
+    @Transactional(readOnly = true)
+    public KnowledgeBase getKnowledgeBaseById(String id, CurrentActor actor) {
+        KnowledgeBase kb = knowledgeBaseRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("知识库不存在: " + id));
+        if (actor != null && !resourceAuthorizationService.canViewKnowledgeBase(actor, kb)) {
+            throw new IllegalStateException("权限不足：无权访问该知识库");
+        }
+        return kb;
     }
 
     @Transactional(readOnly = true)
@@ -207,6 +251,14 @@ public class KnowledgeBaseService {
 
     @Transactional
     public KnowledgeBase createKnowledgeBase(CreateKnowledgeBaseRequest req) {
+        return createKnowledgeBase(req, CurrentActor.get());
+    }
+
+    @Transactional
+    public KnowledgeBase createKnowledgeBase(CreateKnowledgeBaseRequest req, CurrentActor actor) {
+        if (actor != null && actor.isViewer()) {
+            throw new IllegalStateException("权限不足：只读用户无法创建知识库");
+        }
         if (req.getName() == null || req.getName().trim().isEmpty()) {
             throw new IllegalArgumentException("知识库名称不能为空");
         }
@@ -267,12 +319,31 @@ public class KnowledgeBaseService {
         kb.setFaqCount(0);
         kb.setEnabled(true);
 
+        if (actor != null) {
+            kb.setOwnerId(actor.getUserId());
+            kb.setOwnerUsername(actor.getUsername());
+            kb.setIsSystem(actor.isSuperAdmin());
+        } else {
+            kb.setIsSystem(true);
+            kb.setOwnerUsername("system");
+            kb.setOwnerId("system");
+        }
+
         return knowledgeBaseRepository.save(kb);
     }
 
     @Transactional
     public KnowledgeBase updateKnowledgeBase(String id, UpdateKnowledgeBaseRequest req) {
-        KnowledgeBase kb = getKnowledgeBaseById(id);
+        return updateKnowledgeBase(id, req, CurrentActor.get());
+    }
+
+    @Transactional
+    public KnowledgeBase updateKnowledgeBase(String id, UpdateKnowledgeBaseRequest req, CurrentActor actor) {
+        KnowledgeBase kb = knowledgeBaseRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("知识库不存在: " + id));
+        if (!resourceAuthorizationService.canManageKnowledgeBase(actor, kb)) {
+            throw new IllegalStateException("权限不足：您无权修改该知识库");
+        }
 
         if (req.getName() != null && !req.getName().trim().isEmpty()) {
             kb.setName(req.getName().trim());
@@ -326,7 +397,16 @@ public class KnowledgeBaseService {
 
     @Transactional
     public void deleteKnowledgeBase(String id) {
-        KnowledgeBase kb = getKnowledgeBaseById(id);
+        deleteKnowledgeBase(id, CurrentActor.get());
+    }
+
+    @Transactional
+    public void deleteKnowledgeBase(String id, CurrentActor actor) {
+        KnowledgeBase kb = knowledgeBaseRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("知识库不存在: " + id));
+        if (!resourceAuthorizationService.canManageKnowledgeBase(actor, kb)) {
+            throw new IllegalStateException("权限不足：您无权删除该知识库");
+        }
 
         // 1. 调用底层 RAG 引擎删除数据集
         if (kb.getExternalDatasetId() != null) {
@@ -338,7 +418,10 @@ public class KnowledgeBaseService {
             }
         }
 
-        // 2. 级联删除本地文档与 FAQ 数据
+        // 2. 级联删除权限授权记录、本地文档与 FAQ 数据
+        if (resourceGrantRepository != null) {
+            resourceGrantRepository.deleteByResourceTypeAndResourceId(ResourceAuthorizationService.TYPE_KNOWLEDGE_BASE, kb.getId());
+        }
         documentRepository.deleteByKnowledgeBaseId(kb.getId());
         faqRepository.deleteByKnowledgeBaseId(kb.getId());
 
@@ -370,6 +453,9 @@ public class KnowledgeBaseService {
                 kb.setDocumentCount(ext.getDocumentCount() != null ? ext.getDocumentCount() : 0);
                 kb.setWordCount(ext.getWordCount() != null ? ext.getWordCount() : 0L);
                 kb.setAvatar("📚");
+                kb.setIsSystem(true);
+                kb.setOwnerUsername("system");
+                kb.setOwnerId("system");
                 if (ext.getEmbeddingModel() != null) kb.setEmbeddingModel(ext.getEmbeddingModel());
                 if (ext.getEmbeddingModelProvider() != null) kb.setEmbeddingProvider(ext.getEmbeddingModelProvider());
                 populateRetrievalModel(kb, ext.getRetrievalModelDict());
@@ -377,6 +463,11 @@ public class KnowledgeBaseService {
                 importedKb++;
             } else {
                 kb = existing.get();
+                if (kb.getIsSystem() == null) {
+                    kb.setIsSystem(true);
+                    kb.setOwnerUsername("system");
+                    kb.setOwnerId("system");
+                }
                 if (ext.getName() != null) kb.setName(ext.getName());
                 if (ext.getDocumentCount() != null) kb.setDocumentCount(ext.getDocumentCount());
                 if (ext.getWordCount() != null) kb.setWordCount(ext.getWordCount());
@@ -449,7 +540,16 @@ public class KnowledgeBaseService {
 
     @Transactional
     public List<KnowledgeDocument> uploadDocuments(String knowledgeBaseId, List<MultipartFile> files) {
-        KnowledgeBase kb = getKnowledgeBaseById(knowledgeBaseId);
+        return uploadDocuments(knowledgeBaseId, files, CurrentActor.get());
+    }
+
+    @Transactional
+    public List<KnowledgeDocument> uploadDocuments(String knowledgeBaseId, List<MultipartFile> files, CurrentActor actor) {
+        KnowledgeBase kb = knowledgeBaseRepository.findById(knowledgeBaseId)
+                .orElseThrow(() -> new IllegalArgumentException("知识库不存在: " + knowledgeBaseId));
+        if (!resourceAuthorizationService.canManageKnowledgeBase(actor, kb)) {
+            throw new IllegalStateException("权限不足：您无权向该知识库上传文档");
+        }
 
         if (files == null || files.isEmpty()) {
             throw new IllegalArgumentException("请选择需要上传的文件");
@@ -500,6 +600,17 @@ public class KnowledgeBaseService {
 
     @Transactional(readOnly = true)
     public PageResult<KnowledgeDocument> searchDocuments(String knowledgeBaseId, String keyword, String status, int page, int size) {
+        return searchDocuments(knowledgeBaseId, keyword, status, page, size, CurrentActor.get());
+    }
+
+    @Transactional(readOnly = true)
+    public PageResult<KnowledgeDocument> searchDocuments(String knowledgeBaseId, String keyword, String status, int page, int size, CurrentActor actor) {
+        KnowledgeBase kb = knowledgeBaseRepository.findById(knowledgeBaseId)
+                .orElseThrow(() -> new IllegalArgumentException("知识库不存在: " + knowledgeBaseId));
+        if (actor != null && !resourceAuthorizationService.canViewKnowledgeBase(actor, kb)) {
+            throw new IllegalStateException("权限不足：您无权查看该知识库文档");
+        }
+
         int safePage = Math.max(1, page);
         int safeSize = Math.max(1, size);
         Page<KnowledgeDocument> p = documentRepository.searchDocuments(
@@ -513,7 +624,17 @@ public class KnowledgeBaseService {
 
     @Transactional
     public void deleteDocument(String knowledgeBaseId, String documentId) {
-        KnowledgeBase kb = getKnowledgeBaseById(knowledgeBaseId);
+        deleteDocument(knowledgeBaseId, documentId, CurrentActor.get());
+    }
+
+    @Transactional
+    public void deleteDocument(String knowledgeBaseId, String documentId, CurrentActor actor) {
+        KnowledgeBase kb = knowledgeBaseRepository.findById(knowledgeBaseId)
+                .orElseThrow(() -> new IllegalArgumentException("知识库不存在: " + knowledgeBaseId));
+        if (!resourceAuthorizationService.canManageKnowledgeBase(actor, kb)) {
+            throw new IllegalStateException("权限不足：您无权删除该知识库文档");
+        }
+
         KnowledgeDocument doc = documentRepository.findById(documentId)
                 .orElseThrow(() -> new IllegalArgumentException("文档不存在: " + documentId));
 
@@ -538,7 +659,17 @@ public class KnowledgeBaseService {
 
     @Transactional
     public KnowledgeDocument refreshDocumentStatus(String knowledgeBaseId, String documentId) {
-        KnowledgeBase kb = getKnowledgeBaseById(knowledgeBaseId);
+        return refreshDocumentStatus(knowledgeBaseId, documentId, CurrentActor.get());
+    }
+
+    @Transactional
+    public KnowledgeDocument refreshDocumentStatus(String knowledgeBaseId, String documentId, CurrentActor actor) {
+        KnowledgeBase kb = knowledgeBaseRepository.findById(knowledgeBaseId)
+                .orElseThrow(() -> new IllegalArgumentException("知识库不存在: " + knowledgeBaseId));
+        if (actor != null && !resourceAuthorizationService.canViewKnowledgeBase(actor, kb)) {
+            throw new IllegalStateException("权限不足：您无权刷新该知识库文档");
+        }
+
         KnowledgeDocument doc = documentRepository.findById(documentId)
                 .orElseThrow(() -> new IllegalArgumentException("文档不存在: " + documentId));
 
@@ -561,6 +692,17 @@ public class KnowledgeBaseService {
 
     @Transactional(readOnly = true)
     public PageResult<KnowledgeFaq> searchFaqs(String knowledgeBaseId, String keyword, String category, int page, int size) {
+        return searchFaqs(knowledgeBaseId, keyword, category, page, size, CurrentActor.get());
+    }
+
+    @Transactional(readOnly = true)
+    public PageResult<KnowledgeFaq> searchFaqs(String knowledgeBaseId, String keyword, String category, int page, int size, CurrentActor actor) {
+        KnowledgeBase kb = knowledgeBaseRepository.findById(knowledgeBaseId)
+                .orElseThrow(() -> new IllegalArgumentException("知识库不存在: " + knowledgeBaseId));
+        if (actor != null && !resourceAuthorizationService.canViewKnowledgeBase(actor, kb)) {
+            throw new IllegalStateException("权限不足：您无权查看该知识库FAQ");
+        }
+
         int safePage = Math.max(1, page);
         int safeSize = Math.max(1, size);
         Page<KnowledgeFaq> p = faqRepository.searchFaqs(
@@ -574,6 +716,17 @@ public class KnowledgeBaseService {
 
     @Transactional(readOnly = true)
     public List<String> getFaqCategories(String knowledgeBaseId) {
+        return getFaqCategories(knowledgeBaseId, CurrentActor.get());
+    }
+
+    @Transactional(readOnly = true)
+    public List<String> getFaqCategories(String knowledgeBaseId, CurrentActor actor) {
+        KnowledgeBase kb = knowledgeBaseRepository.findById(knowledgeBaseId)
+                .orElseThrow(() -> new IllegalArgumentException("知识库不存在: " + knowledgeBaseId));
+        if (actor != null && !resourceAuthorizationService.canViewKnowledgeBase(actor, kb)) {
+            throw new IllegalStateException("权限不足：您无权查看该知识库FAQ分类");
+        }
+
         List<String> list = faqRepository.findDistinctCategoriesByKnowledgeBaseId(knowledgeBaseId);
         List<String> result = new ArrayList<>();
         result.add("全部");
@@ -587,7 +740,16 @@ public class KnowledgeBaseService {
 
     @Transactional
     public KnowledgeFaq createFaq(String knowledgeBaseId, CreateFaqRequest req) {
-        KnowledgeBase kb = getKnowledgeBaseById(knowledgeBaseId);
+        return createFaq(knowledgeBaseId, req, CurrentActor.get());
+    }
+
+    @Transactional
+    public KnowledgeFaq createFaq(String knowledgeBaseId, CreateFaqRequest req, CurrentActor actor) {
+        KnowledgeBase kb = knowledgeBaseRepository.findById(knowledgeBaseId)
+                .orElseThrow(() -> new IllegalArgumentException("知识库不存在: " + knowledgeBaseId));
+        if (!resourceAuthorizationService.canManageKnowledgeBase(actor, kb)) {
+            throw new IllegalStateException("权限不足：您无权在该知识库创建FAQ");
+        }
 
         if (req.getQuestion() == null || req.getQuestion().trim().isEmpty()) {
             throw new IllegalArgumentException("FAQ 问题不能为空");
@@ -639,7 +801,17 @@ public class KnowledgeBaseService {
 
     @Transactional
     public KnowledgeFaq updateFaq(String knowledgeBaseId, String faqId, UpdateFaqRequest req) {
-        KnowledgeBase kb = getKnowledgeBaseById(knowledgeBaseId);
+        return updateFaq(knowledgeBaseId, faqId, req, CurrentActor.get());
+    }
+
+    @Transactional
+    public KnowledgeFaq updateFaq(String knowledgeBaseId, String faqId, UpdateFaqRequest req, CurrentActor actor) {
+        KnowledgeBase kb = knowledgeBaseRepository.findById(knowledgeBaseId)
+                .orElseThrow(() -> new IllegalArgumentException("知识库不存在: " + knowledgeBaseId));
+        if (!resourceAuthorizationService.canManageKnowledgeBase(actor, kb)) {
+            throw new IllegalStateException("权限不足：您无权修改该知识库FAQ");
+        }
+
         KnowledgeFaq faq = faqRepository.findById(faqId)
                 .orElseThrow(() -> new IllegalArgumentException("FAQ 不存在: " + faqId));
 
@@ -694,7 +866,17 @@ public class KnowledgeBaseService {
 
     @Transactional
     public void deleteFaq(String knowledgeBaseId, String faqId) {
-        KnowledgeBase kb = getKnowledgeBaseById(knowledgeBaseId);
+        deleteFaq(knowledgeBaseId, faqId, CurrentActor.get());
+    }
+
+    @Transactional
+    public void deleteFaq(String knowledgeBaseId, String faqId, CurrentActor actor) {
+        KnowledgeBase kb = knowledgeBaseRepository.findById(knowledgeBaseId)
+                .orElseThrow(() -> new IllegalArgumentException("知识库不存在: " + knowledgeBaseId));
+        if (!resourceAuthorizationService.canManageKnowledgeBase(actor, kb)) {
+            throw new IllegalStateException("权限不足：您无权删除该知识库FAQ");
+        }
+
         KnowledgeFaq faq = faqRepository.findById(faqId)
                 .orElseThrow(() -> new IllegalArgumentException("FAQ 不存在: " + faqId));
 
@@ -720,6 +902,13 @@ public class KnowledgeBaseService {
     // ==================== FAQ 图片上传辅助 ====================
 
     public String saveFaqImage(MultipartFile file) {
+        return saveFaqImage(file, CurrentActor.get());
+    }
+
+    public String saveFaqImage(MultipartFile file, CurrentActor actor) {
+        if (actor != null && actor.isViewer()) {
+            throw new IllegalStateException("权限不足：只读用户无法上传图片");
+        }
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("上传图片不能为空");
         }

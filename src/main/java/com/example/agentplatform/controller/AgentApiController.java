@@ -144,6 +144,10 @@ public class AgentApiController {
                 data.put("latency_ms", chatResp.getLatencyMs());
                 data.put("created_at", System.currentTimeMillis() / 1000);
                 return ResponseEntity.ok(ApiResponse.ok("success", data));
+            } catch (IllegalStateException e) {
+                log.warn("Blocking chat rejected: {}", e.getMessage());
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body(ApiResponse.error(e.getMessage()));
             } catch (Exception e) {
                 log.error("Blocking chat error: {}", e.getMessage(), e);
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)

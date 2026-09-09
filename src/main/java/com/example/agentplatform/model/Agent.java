@@ -63,6 +63,12 @@ public class Agent {
     private List<String> knowledgeBaseIds = new ArrayList<>();
     @Column(unique = true, length = 128)
     private String apiKey;
+    @Column(name = "owner_id", length = 64)
+    private String ownerId;
+    @Column(name = "owner_username", length = 64)
+    private String ownerUsername;
+    @Column(name = "is_system")
+    private Boolean isSystem = false;
 
     public Agent() {
         this.createdAt = LocalDateTime.now();
@@ -263,6 +269,30 @@ public class Agent {
         if (tags == null) {
             tags = new ArrayList<>();
         }
+    }
+
+    public String getOwnerId() {
+        return ownerId;
+    }
+
+    public void setOwnerId(String ownerId) {
+        this.ownerId = ownerId;
+    }
+
+    public String getOwnerUsername() {
+        return ownerUsername;
+    }
+
+    public void setOwnerUsername(String ownerUsername) {
+        this.ownerUsername = ownerUsername;
+    }
+
+    public Boolean getIsSystem() {
+        return isSystem;
+    }
+
+    public void setIsSystem(Boolean isSystem) {
+        this.isSystem = isSystem;
     }
 
     @PreUpdate

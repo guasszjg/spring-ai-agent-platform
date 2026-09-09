@@ -6,6 +6,7 @@ import com.example.agentplatform.model.AgentStatus;
 import com.example.agentplatform.model.AgentTemplate;
 import com.example.agentplatform.model.AppUser;
 import com.example.agentplatform.model.GatewayPolicy;
+import com.example.agentplatform.model.KnowledgeBase;
 import com.example.agentplatform.model.LlmProvider;
 import com.example.agentplatform.model.LlmProviderType;
 import com.example.agentplatform.repository.AgentDailyStatRepository;
@@ -86,6 +87,21 @@ public class DataInitializer implements ApplicationRunner {
                 // Ignore if Dify is temporarily unreachable on startup
             }
         }
+        for (KnowledgeBase kb : knowledgeBaseRepository.findAll()) {
+            boolean changed = false;
+            if (kb.getIsSystem() == null) {
+                kb.setIsSystem(true);
+                changed = true;
+            }
+            if (kb.getOwnerUsername() == null && Boolean.TRUE.equals(kb.getIsSystem())) {
+                kb.setOwnerUsername("system");
+                kb.setOwnerId("system");
+                changed = true;
+            }
+            if (changed) {
+                knowledgeBaseRepository.save(kb);
+            }
+        }
     }
 
     private void syncAgentCallStats() {
@@ -163,62 +179,82 @@ public class DataInitializer implements ApplicationRunner {
     private static final String DEMO_DEV_PASSWORD = "Amx#Dev2026";
 
     private void seedUsers() {
-        if (!seedDemoUsers) {
-            return;
-        }
         if (userRepository.count() == 0) {
-            AppUser admin = new AppUser();
-            admin.setId("user-admin");
-            admin.setUsername("admin");
-            admin.setPassword(passwordEncoder.encode(DEMO_ADMIN_PASSWORD));
-            admin.setNickname("超级管理员");
-            admin.setRole("System Admin");
-            admin.setAvatar("/avatar-admin.jpg");
-            userRepository.save(admin);
+            if (seedDemoUsers) {
+                AppUser admin = new AppUser();
+                admin.setId("user-admin");
+                admin.setUsername("admin");
+                admin.setPassword(passwordEncoder.encode(DEMO_ADMIN_PASSWORD));
+                admin.setNickname("超级管理员");
+                admin.setRole(com.example.agentplatform.model.UserRole.SUPER_ADMIN.getCode());
+                admin.setStatus(com.example.agentplatform.model.UserStatus.ACTIVE);
+                admin.setAuthVersion(1);
+                admin.setMustChangePassword(false);
+                admin.setAvatar("/avatar-admin.jpg");
+                userRepository.save(admin);
 
-            AppUser developer = new AppUser();
-            developer.setId("user-developer");
-            developer.setUsername("developer");
-            developer.setPassword(passwordEncoder.encode(DEMO_DEV_PASSWORD));
-            developer.setNickname("智能体工程师 (developer)");
-            developer.setRole("Agent Developer");
-            developer.setAvatar("/avatar-dev.jpg");
-            userRepository.save(developer);
+                AppUser developer = new AppUser();
+                developer.setId("user-developer");
+                developer.setUsername("developer");
+                developer.setPassword(passwordEncoder.encode(DEMO_DEV_PASSWORD));
+                developer.setNickname("智能体工程师 (developer)");
+                developer.setRole(com.example.agentplatform.model.UserRole.DEVELOPER.getCode());
+                developer.setStatus(com.example.agentplatform.model.UserStatus.ACTIVE);
+                developer.setAuthVersion(1);
+                developer.setMustChangePassword(false);
+                developer.setAvatar("/avatar-dev.jpg");
+                userRepository.save(developer);
+            }
             return;
         }
 
-        userRepository.findByUsernameIgnoreCase("admin").ifPresent(admin -> {
+        // 数据迁移与标准化（保留用户已修改的密码，只对旧角色字段和新字段做安全补全）
+        for (AppUser u : userRepository.findAll()) {
             boolean changed = false;
-            if (admin.getAvatar() == null || admin.getAvatar().contains("dicebear") || admin.getAvatar().contains("bottts")) {
-                admin.setAvatar("/avatar-admin.jpg");
+            if (u.getStatus() == null) {
+                u.setStatus(com.example.agentplatform.model.UserStatus.ACTIVE);
                 changed = true;
             }
-            if (!passwordEncoder.matches(DEMO_ADMIN_PASSWORD, admin.getPassword())) {
-                admin.setPassword(passwordEncoder.encode(DEMO_ADMIN_PASSWORD));
+            if (u.getAuthVersion() == null) {
+                u.setAuthVersion(1);
+                changed = true;
+            }
+            if (u.getMustChangePassword() == null) {
+                u.setMustChangePassword(false);
+                changed = true;
+            }
+            String normalizedRole = com.example.agentplatform.model.UserRole.fromRaw(u.getRole()).getCode();
+            if (!normalizedRole.equals(u.getRole())) {
+                u.setRole(normalizedRole);
+                changed = true;
+            }
+            if (u.getAvatar() != null && (u.getAvatar().contains("dicebear") || u.getAvatar().contains("bottts"))) {
+                u.setAvatar("admin".equalsIgnoreCase(u.getUsername()) ? "/avatar-admin.jpg" : "/avatar-dev.jpg");
                 changed = true;
             }
             if (changed) {
-                userRepository.save(admin);
+                userRepository.save(u);
             }
-        });
-        userRepository.findByUsernameIgnoreCase("developer").ifPresent(dev -> {
-            boolean changed = false;
-            if (dev.getAvatar() == null || dev.getAvatar().contains("dicebear") || dev.getAvatar().contains("bottts")) {
-                dev.setAvatar("/avatar-dev.jpg");
-                changed = true;
-            }
-            if (!passwordEncoder.matches(DEMO_DEV_PASSWORD, dev.getPassword())) {
-                dev.setPassword(passwordEncoder.encode(DEMO_DEV_PASSWORD));
-                changed = true;
-            }
-            if (changed) {
-                userRepository.save(dev);
-            }
-        });
+        }
     }
 
     private void seedAgents() {
         if (agentRepository.count() > 0) {
+            for (Agent a : agentRepository.findAll()) {
+                boolean changed = false;
+                if (a.getIsSystem() == null) {
+                    a.setIsSystem(true);
+                    changed = true;
+                }
+                if (a.getOwnerUsername() == null && Boolean.TRUE.equals(a.getIsSystem())) {
+                    a.setOwnerUsername("system");
+                    a.setOwnerId("system");
+                    changed = true;
+                }
+                if (changed) {
+                    agentRepository.save(a);
+                }
+            }
             return;
         }
 
@@ -358,7 +394,13 @@ public class DataInitializer implements ApplicationRunner {
         a8.setCreatedAt(LocalDateTime.now().minusDays(5));
         a8.setUpdatedAt(LocalDateTime.now().minusHours(1));
 
-        agentRepository.saveAll(List.of(a1, a2, a3, a4, a5, a6, a7, a8));
+        List<Agent> initialAgents = List.of(a1, a2, a3, a4, a5, a6, a7, a8);
+        for (Agent a : initialAgents) {
+            a.setIsSystem(true);
+            a.setOwnerUsername("system");
+            a.setOwnerId("system");
+        }
+        agentRepository.saveAll(initialAgents);
     }
 
     private void seedLlmGateway() {

@@ -3,8 +3,11 @@ package com.example.agentplatform.service;
 import com.example.agentplatform.config.ToolConfigSanitizer;
 import com.example.agentplatform.model.Agent;
 import com.example.agentplatform.model.AgentStatus;
+import com.example.agentplatform.model.KnowledgeBase;
 import com.example.agentplatform.repository.AgentDailyStatRepository;
 import com.example.agentplatform.repository.AgentRepository;
+import com.example.agentplatform.repository.KnowledgeBaseRepository;
+import com.example.agentplatform.repository.ResourceGrantRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -16,6 +19,7 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -34,6 +38,15 @@ class AgentServiceTest {
     @Mock
     private AgentToolSecretService toolSecretService;
 
+    @Mock
+    private ResourceAuthorizationService resourceAuthService;
+
+    @Mock
+    private KnowledgeBaseRepository knowledgeBaseRepository;
+
+    @Mock
+    private ResourceGrantRepository resourceGrantRepository;
+
     private ToolConfigSanitizer toolConfigSanitizer = new ToolConfigSanitizer();
 
     private AgentService agentService;
@@ -45,7 +58,10 @@ class AgentServiceTest {
                 dailyStatRepository,
                 conversationService,
                 toolConfigSanitizer,
-                toolSecretService
+                toolSecretService,
+                resourceAuthService,
+                knowledgeBaseRepository,
+                resourceGrantRepository
         );
     }
 
@@ -72,6 +88,13 @@ class AgentServiceTest {
         source.setStatus(AgentStatus.RUNNING);
 
         when(agentRepository.findById("orig-id-123")).thenReturn(Optional.of(source));
+        when(resourceAuthService.canCopyAgent(any(), any())).thenReturn(true);
+        when(resourceAuthService.canUseKnowledgeBase(any(), any())).thenReturn(true);
+        KnowledgeBase kbA = new KnowledgeBase(); kbA.setId("kb-a");
+        KnowledgeBase kbB = new KnowledgeBase(); kbB.setId("kb-b");
+        when(knowledgeBaseRepository.findById("kb-a")).thenReturn(Optional.of(kbA));
+        when(knowledgeBaseRepository.findById("kb-b")).thenReturn(Optional.of(kbB));
+
         when(agentRepository.existsByCode("code_auditor_copy")).thenReturn(false);
         when(agentRepository.save(any(Agent.class))).thenAnswer(invocation -> {
             Agent a = invocation.getArgument(0);
@@ -94,7 +117,53 @@ class AgentServiceTest {
         assertThat(cloned.getCallCount()).isEqualTo(0L);
         assertThat(cloned.getAvgResponseTimeMs()).isEqualTo(0.0);
         assertThat(cloned.getApiKey()).isNull();
+    }
 
-        verify(toolSecretService).copyForClonedAgent("orig-id-123", "cloned-new-id");
+    @Test
+    void developerCannotUpdateOrDeleteSystemAgent() {
+        Agent systemAgent = new Agent();
+        systemAgent.setId("sys-1");
+        systemAgent.setIsSystem(true);
+        systemAgent.setOwnerUsername("system");
+        when(agentRepository.findById("sys-1")).thenReturn(Optional.of(systemAgent));
+
+        com.example.agentplatform.security.CurrentActor devActor =
+                new com.example.agentplatform.security.CurrentActor("user-dev", "guass", com.example.agentplatform.model.UserRole.DEVELOPER);
+        when(resourceAuthService.canManageAgent(eq(devActor), eq(systemAgent))).thenReturn(false);
+
+        // Attempt update
+        Agent patch = new Agent();
+        patch.setName("Modified Name");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> {
+            agentService.update("sys-1", patch, devActor);
+        });
+
+        // Attempt delete
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> {
+            agentService.delete("sys-1", devActor);
+        });
+    }
+
+    @Test
+    void copyAgentByDeveloper_assignsDeveloperOwnership() {
+        Agent systemAgent = new Agent();
+        systemAgent.setId("sys-orig");
+        systemAgent.setName("SQL优化专家");
+        systemAgent.setCode("sql_expert");
+        systemAgent.setIsSystem(true);
+
+        when(agentRepository.findById("sys-orig")).thenReturn(Optional.of(systemAgent));
+        when(agentRepository.existsByCode("sql_expert_copy")).thenReturn(false);
+        when(agentRepository.save(any(Agent.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        com.example.agentplatform.security.CurrentActor devActor =
+                new com.example.agentplatform.security.CurrentActor("user-dev", "guass", com.example.agentplatform.model.UserRole.DEVELOPER);
+        when(resourceAuthService.canCopyAgent(eq(devActor), eq(systemAgent))).thenReturn(true);
+
+        Agent copy = agentService.copyAgent("sys-orig", devActor);
+
+        assertThat(copy.getIsSystem()).isFalse();
+        assertThat(copy.getOwnerId()).isEqualTo("user-dev");
+        assertThat(copy.getOwnerUsername()).isEqualTo("guass");
     }
 }

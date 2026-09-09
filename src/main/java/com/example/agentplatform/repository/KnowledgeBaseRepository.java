@@ -25,4 +25,15 @@ public interface KnowledgeBaseRepository extends JpaRepository<KnowledgeBase, St
     Page<KnowledgeBase> searchKnowledgeBases(@Param("keyword") String keyword,
                                             @Param("provider") String provider,
                                             Pageable pageable);
+
+    @Query("SELECT k FROM KnowledgeBase k WHERE (:keyword IS NULL OR :keyword = '' OR " +
+           "LOWER(k.name) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
+           "LOWER(k.description) LIKE LOWER(CONCAT('%', :keyword, '%'))) AND " +
+           "(:provider IS NULL OR :provider = '' OR k.provider = :provider) AND " +
+           "(:isSuperAdmin = true OR k.isSystem = true OR (k.ownerId IS NOT NULL AND k.ownerId = :ownerId))")
+    Page<KnowledgeBase> searchKnowledgeBasesAccessible(@Param("keyword") String keyword,
+                                                      @Param("provider") String provider,
+                                                      @Param("isSuperAdmin") boolean isSuperAdmin,
+                                                      @Param("ownerId") String ownerId,
+                                                      Pageable pageable);
 }

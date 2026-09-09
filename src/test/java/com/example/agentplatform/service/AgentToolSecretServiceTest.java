@@ -10,6 +10,7 @@ import org.mockito.ArgumentCaptor;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -21,8 +22,13 @@ class AgentToolSecretServiceTest {
         AgentToolSecretRepository secrets = mock(AgentToolSecretRepository.class);
         AgentRepository agents = mock(AgentRepository.class);
         SecretCrypto crypto = new SecretCrypto("test-only-master-secret");
-        AgentToolSecretService service = new AgentToolSecretService(secrets, agents, crypto);
-        when(agents.existsById("agent-1")).thenReturn(true);
+        ResourceAuthorizationService authService = mock(ResourceAuthorizationService.class);
+        AgentToolSecretService service = new AgentToolSecretService(secrets, agents, crypto, authService);
+
+        com.example.agentplatform.model.Agent agent = new com.example.agentplatform.model.Agent();
+        agent.setId("agent-1");
+        when(agents.findById("agent-1")).thenReturn(Optional.of(agent));
+        when(authService.canManageAgent(any(), any())).thenReturn(true);
         when(secrets.findById("agent-1")).thenReturn(Optional.empty());
 
         service.saveBochaApiKey("agent-1", "bocha-plain-key");

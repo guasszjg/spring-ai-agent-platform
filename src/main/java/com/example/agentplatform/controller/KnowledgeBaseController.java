@@ -11,6 +11,8 @@ import com.example.agentplatform.rag.dto.KnowledgeEngineInfo;
 import com.example.agentplatform.rag.dto.UpdateFaqRequest;
 import com.example.agentplatform.rag.dto.UpdateKnowledgeBaseRequest;
 import com.example.agentplatform.service.KnowledgeBaseService;
+import com.example.agentplatform.security.CurrentActor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -36,6 +38,11 @@ public class KnowledgeBaseController {
         this.knowledgeBaseService = knowledgeBaseService;
     }
 
+    private boolean checkAdmin() {
+        CurrentActor actor = CurrentActor.get();
+        return actor != null && actor.isSuperAdmin();
+    }
+
     // ==================== 知识库基础 CRUD ====================
 
     @GetMapping
@@ -55,32 +62,54 @@ public class KnowledgeBaseController {
 
     @GetMapping("/{id:^(?!engine$).+}")
     public ResponseEntity<ApiResponse<KnowledgeBase>> getById(@PathVariable String id) {
-        KnowledgeBase kb = knowledgeBaseService.getKnowledgeBaseById(id);
-        return ResponseEntity.ok(ApiResponse.ok(kb));
+        try {
+            KnowledgeBase kb = knowledgeBaseService.getKnowledgeBaseById(id);
+            return ResponseEntity.ok(ApiResponse.ok(kb));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     @PostMapping
     public ResponseEntity<ApiResponse<KnowledgeBase>> create(@RequestBody CreateKnowledgeBaseRequest req) {
-        KnowledgeBase kb = knowledgeBaseService.createKnowledgeBase(req);
-        return ResponseEntity.ok(ApiResponse.ok("知识库创建成功并已同步至 Dify RAG 引擎", kb));
+        try {
+            KnowledgeBase kb = knowledgeBaseService.createKnowledgeBase(req);
+            return ResponseEntity.ok(ApiResponse.ok("知识库创建成功并已同步至 Dify RAG 引擎", kb));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     @PutMapping("/{id}")
     public ResponseEntity<ApiResponse<KnowledgeBase>> update(
             @PathVariable String id,
             @RequestBody UpdateKnowledgeBaseRequest req) {
-        KnowledgeBase kb = knowledgeBaseService.updateKnowledgeBase(id, req);
-        return ResponseEntity.ok(ApiResponse.ok("知识库信息更新成功", kb));
+        try {
+            KnowledgeBase kb = knowledgeBaseService.updateKnowledgeBase(id, req);
+            return ResponseEntity.ok(ApiResponse.ok("知识库信息更新成功", kb));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<Void>> delete(@PathVariable String id) {
-        knowledgeBaseService.deleteKnowledgeBase(id);
-        return ResponseEntity.ok(ApiResponse.ok("知识库已彻底删除", null));
+        try {
+            knowledgeBaseService.deleteKnowledgeBase(id);
+            return ResponseEntity.ok(ApiResponse.ok("知识库已彻底删除", null));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     @PostMapping("/sync-from-dify")
     public ResponseEntity<ApiResponse<Map<String, Object>>> syncFromDify() {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可全量同步外部知识库"));
+        }
         try {
             Map<String, Object> result = knowledgeBaseService.syncFromDify();
             return ResponseEntity.ok(ApiResponse.ok("Dify 知识库数据同步完成", result));
@@ -95,8 +124,14 @@ public class KnowledgeBaseController {
     public ResponseEntity<ApiResponse<List<KnowledgeDocument>>> uploadDocuments(
             @PathVariable String id,
             @RequestParam("files") List<MultipartFile> files) {
-        List<KnowledgeDocument> uploaded = knowledgeBaseService.uploadDocuments(id, files);
-        return ResponseEntity.ok(ApiResponse.ok("已成功上传 " + uploaded.size() + " 个文档至知识库", uploaded));
+        try {
+            List<KnowledgeDocument> uploaded = knowledgeBaseService.uploadDocuments(id, files);
+            return ResponseEntity.ok(ApiResponse.ok("已成功上传 " + uploaded.size() + " 个文档至知识库", uploaded));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     @GetMapping("/{id}/documents")
@@ -106,24 +141,42 @@ public class KnowledgeBaseController {
             @RequestParam(required = false) String status,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "10") int size) {
-        PageResult<KnowledgeDocument> result = knowledgeBaseService.searchDocuments(id, keyword, status, page, size);
-        return ResponseEntity.ok(ApiResponse.ok(result));
+        try {
+            PageResult<KnowledgeDocument> result = knowledgeBaseService.searchDocuments(id, keyword, status, page, size);
+            return ResponseEntity.ok(ApiResponse.ok(result));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     @DeleteMapping("/{id}/documents/{docId}")
     public ResponseEntity<ApiResponse<Void>> deleteDocument(
             @PathVariable String id,
             @PathVariable String docId) {
-        knowledgeBaseService.deleteDocument(id, docId);
-        return ResponseEntity.ok(ApiResponse.ok("文档已成功删除", null));
+        try {
+            knowledgeBaseService.deleteDocument(id, docId);
+            return ResponseEntity.ok(ApiResponse.ok("文档已成功删除", null));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     @PostMapping("/{id}/documents/{docId}/refresh")
     public ResponseEntity<ApiResponse<KnowledgeDocument>> refreshDocument(
             @PathVariable String id,
             @PathVariable String docId) {
-        KnowledgeDocument doc = knowledgeBaseService.refreshDocumentStatus(id, docId);
-        return ResponseEntity.ok(ApiResponse.ok("文档状态刷新成功", doc));
+        try {
+            KnowledgeDocument doc = knowledgeBaseService.refreshDocumentStatus(id, docId);
+            return ResponseEntity.ok(ApiResponse.ok("文档状态刷新成功", doc));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     // ==================== 问答对 (FAQ) 管理 ====================
@@ -135,22 +188,40 @@ public class KnowledgeBaseController {
             @RequestParam(required = false) String category,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "10") int size) {
-        PageResult<KnowledgeFaq> result = knowledgeBaseService.searchFaqs(id, keyword, category, page, size);
-        return ResponseEntity.ok(ApiResponse.ok(result));
+        try {
+            PageResult<KnowledgeFaq> result = knowledgeBaseService.searchFaqs(id, keyword, category, page, size);
+            return ResponseEntity.ok(ApiResponse.ok(result));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     @GetMapping("/{id}/faqs/categories")
     public ResponseEntity<ApiResponse<List<String>>> listFaqCategories(@PathVariable String id) {
-        List<String> categories = knowledgeBaseService.getFaqCategories(id);
-        return ResponseEntity.ok(ApiResponse.ok(categories));
+        try {
+            List<String> categories = knowledgeBaseService.getFaqCategories(id);
+            return ResponseEntity.ok(ApiResponse.ok(categories));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     @PostMapping("/{id}/faqs")
     public ResponseEntity<ApiResponse<KnowledgeFaq>> createFaq(
             @PathVariable String id,
             @RequestBody CreateFaqRequest req) {
-        KnowledgeFaq faq = knowledgeBaseService.createFaq(id, req);
-        return ResponseEntity.ok(ApiResponse.ok("FAQ 问答创建成功并已向量化", faq));
+        try {
+            KnowledgeFaq faq = knowledgeBaseService.createFaq(id, req);
+            return ResponseEntity.ok(ApiResponse.ok("FAQ 问答创建成功并已向量化", faq));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     @PutMapping("/{id}/faqs/{faqId}")
@@ -158,23 +229,41 @@ public class KnowledgeBaseController {
             @PathVariable String id,
             @PathVariable String faqId,
             @RequestBody UpdateFaqRequest req) {
-        KnowledgeFaq faq = knowledgeBaseService.updateFaq(id, faqId, req);
-        return ResponseEntity.ok(ApiResponse.ok("FAQ 问答更新成功", faq));
+        try {
+            KnowledgeFaq faq = knowledgeBaseService.updateFaq(id, faqId, req);
+            return ResponseEntity.ok(ApiResponse.ok("FAQ 问答更新成功", faq));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     @DeleteMapping("/{id}/faqs/{faqId}")
     public ResponseEntity<ApiResponse<Void>> deleteFaq(
             @PathVariable String id,
             @PathVariable String faqId) {
-        knowledgeBaseService.deleteFaq(id, faqId);
-        return ResponseEntity.ok(ApiResponse.ok("FAQ 问答已删除", null));
+        try {
+            knowledgeBaseService.deleteFaq(id, faqId);
+            return ResponseEntity.ok(ApiResponse.ok("FAQ 问答已删除", null));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     // ==================== 图片上传辅助 ====================
 
     @PostMapping("/upload-image")
     public ResponseEntity<ApiResponse<Map<String, String>>> uploadImage(@RequestParam("file") MultipartFile file) {
-        String url = knowledgeBaseService.saveFaqImage(file);
-        return ResponseEntity.ok(ApiResponse.ok("图片上传成功", Map.of("url", url)));
+        try {
+            String url = knowledgeBaseService.saveFaqImage(file);
+            return ResponseEntity.ok(ApiResponse.ok("图片上传成功", Map.of("url", url)));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
     }
 }

@@ -9,9 +9,15 @@ CREATE TABLE IF NOT EXISTS app_users (
     username VARCHAR(64) NOT NULL UNIQUE,
     password VARCHAR(200) NOT NULL,
     nickname VARCHAR(100),
-    role VARCHAR(64),
+    role VARCHAR(64) DEFAULT 'DEVELOPER',
+    status VARCHAR(32) DEFAULT 'ACTIVE',
+    auth_version INTEGER DEFAULT 1,
+    must_change_password BOOLEAN DEFAULT FALSE,
+    temp_password_expires_at TIMESTAMP,
     avatar VARCHAR(500),
-    ui_preferences TEXT
+    ui_preferences TEXT,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
 );
 
 -- 2. 智能体表 (agents)
@@ -33,11 +39,16 @@ CREATE TABLE IF NOT EXISTS agents (
     status VARCHAR(32),
     call_count BIGINT DEFAULT 0,
     avg_response_time_ms DOUBLE PRECISION DEFAULT 0.0,
+    owner_id VARCHAR(64),
+    owner_username VARCHAR(64),
+    is_system BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP,
     updated_at TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_agents_api_key ON agents(api_key);
+CREATE INDEX IF NOT EXISTS idx_agents_owner_id ON agents(owner_id);
+CREATE INDEX IF NOT EXISTS idx_agents_is_system ON agents(is_system);
 
 -- 3. 智能体标签关联表 (agent_tags)
 CREATE TABLE IF NOT EXISTS agent_tags (
@@ -181,12 +192,17 @@ CREATE TABLE IF NOT EXISTS knowledge_bases (
     rerank_model_provider VARCHAR(64) DEFAULT 'langgenius/tongyi/tongyi',
     vector_weight DOUBLE PRECISION DEFAULT 0.7,
     keyword_weight DOUBLE PRECISION DEFAULT 0.3,
+    owner_id VARCHAR(64),
+    owner_username VARCHAR(64),
+    is_system BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP,
     updated_at TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_kb_provider ON knowledge_bases(provider);
 CREATE INDEX IF NOT EXISTS idx_kb_ext_dataset_id ON knowledge_bases(external_dataset_id);
+CREATE INDEX IF NOT EXISTS idx_kb_owner_id ON knowledge_bases(owner_id);
+CREATE INDEX IF NOT EXISTS idx_kb_is_system ON knowledge_bases(is_system);
 
 -- 12. 知识库文档分块表 (knowledge_documents)
 CREATE TABLE IF NOT EXISTS knowledge_documents (
@@ -339,3 +355,67 @@ CREATE TABLE IF NOT EXISTS knowledge_faqs (
 );
 CREATE INDEX IF NOT EXISTS idx_kfaq_kb_id ON knowledge_faqs(knowledge_base_id);
 CREATE INDEX IF NOT EXISTS idx_kfaq_category ON knowledge_faqs(category);
+
+-- 2026-09-08: 用户角色与生命周期安全控制扩展
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'ACTIVE';
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS auth_version INTEGER DEFAULT 1;
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE;
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS temp_password_expires_at TIMESTAMP;
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP;
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP;
+COMMENT ON COLUMN app_users.status IS '账号状态: ACTIVE / PENDING_PASSWORD / DISABLED';
+COMMENT ON COLUMN app_users.auth_version IS '凭据版本号，修改密码/禁用/角色变更时递增，立即令现有Session失效';
+COMMENT ON COLUMN app_users.must_change_password IS '是否需首次改密（临时密码登录后强制修改）';
+
+-- 2026-09-08: 资产归属与多租户权限隔离（智能体与知识库支持系统公共预置与个人资产）
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS owner_id VARCHAR(64);
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS owner_username VARCHAR(64);
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS idx_agents_owner_id ON agents(owner_id);
+CREATE INDEX IF NOT EXISTS idx_agents_is_system ON agents(is_system);
+
+ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS owner_id VARCHAR(64);
+ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS owner_username VARCHAR(64);
+ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS idx_kb_owner_id ON knowledge_bases(owner_id);
+CREATE INDEX IF NOT EXISTS idx_kb_is_system ON knowledge_bases(is_system);
+
+-- 2026-09-08: 场景模板表 (agent_templates)
+CREATE TABLE IF NOT EXISTS agent_templates (
+    id VARCHAR(64) PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    category VARCHAR(64),
+    avatar VARCHAR(64),
+    description TEXT,
+    model_name VARCHAR(100),
+    system_prompt TEXT,
+    temperature DOUBLE PRECISION DEFAULT 0.7,
+    top_p DOUBLE PRECISION,
+    max_tokens INTEGER,
+    tags TEXT,
+    is_builtin BOOLEAN DEFAULT FALSE,
+    sort_order INTEGER DEFAULT 0,
+    owner_id VARCHAR(64),
+    owner_username VARCHAR(64),
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_agent_templates_owner_id ON agent_templates(owner_id);
+CREATE INDEX IF NOT EXISTS idx_agent_templates_is_builtin ON agent_templates(is_builtin);
+
+-- 2026-09-08: 细粒度资源共享授权表 (resource_grants)
+CREATE TABLE IF NOT EXISTS resource_grants (
+    id VARCHAR(64) PRIMARY KEY,
+    resource_type VARCHAR(32) NOT NULL,
+    resource_id VARCHAR(64) NOT NULL,
+    grantee_user_id VARCHAR(64) NOT NULL,
+    grantee_username VARCHAR(64),
+    level VARCHAR(32) NOT NULL,
+    created_by_user_id VARCHAR(64),
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_grants_lookup ON resource_grants(resource_type, resource_id, grantee_user_id);
+CREATE INDEX IF NOT EXISTS idx_grants_grantee ON resource_grants(grantee_user_id);
+
+

@@ -11,6 +11,7 @@ import com.example.agentplatform.rag.dto.DifyDocumentDto;
 import com.example.agentplatform.repository.KnowledgeBaseRepository;
 import com.example.agentplatform.repository.KnowledgeDocumentRepository;
 import com.example.agentplatform.repository.KnowledgeFaqRepository;
+import com.example.agentplatform.repository.ResourceGrantRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,6 +46,12 @@ class KnowledgeBaseServiceTest {
     private KnowledgeFaqRepository faqRepository;
 
     @Mock
+    private ResourceAuthorizationService resourceAuthorizationService;
+
+    @Mock
+    private ResourceGrantRepository resourceGrantRepository;
+
+    @Mock
     private KnowledgeBaseProvider difyProvider;
 
     private KnowledgeBaseService knowledgeBaseService;
@@ -56,6 +63,8 @@ class KnowledgeBaseServiceTest {
                 knowledgeBaseRepository,
                 documentRepository,
                 faqRepository,
+                resourceAuthorizationService,
+                resourceGrantRepository,
                 List.of(difyProvider),
                 new ObjectMapper()
         );
@@ -96,6 +105,7 @@ class KnowledgeBaseServiceTest {
         kb.setProvider("DIFY");
 
         when(knowledgeBaseRepository.findById("kb-1")).thenReturn(Optional.of(kb));
+        when(resourceAuthorizationService.canManageKnowledgeBase(any(), any())).thenReturn(true);
 
         // 1. 测试超过 5 个文件限制
         List<MultipartFile> sixFiles = new ArrayList<>();
@@ -123,6 +133,7 @@ class KnowledgeBaseServiceTest {
         kb.setProvider("DIFY");
 
         when(knowledgeBaseRepository.findById("kb-faq-1")).thenReturn(Optional.of(kb));
+        when(resourceAuthorizationService.canManageKnowledgeBase(any(), any())).thenReturn(true);
 
         DifyDocumentDto difyDoc = new DifyDocumentDto();
         difyDoc.setId("dify-doc-faq-999");

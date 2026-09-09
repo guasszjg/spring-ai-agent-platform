@@ -10,6 +10,7 @@ import com.example.agentplatform.model.PageResult;
 import com.example.agentplatform.config.ToolConfigSanitizer;
 import com.example.agentplatform.repository.AgentDailyStatRepository;
 import com.example.agentplatform.repository.AgentRepository;
+import com.example.agentplatform.security.CurrentActor;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,32 +31,70 @@ public class AgentService {
     private final AgentConversationService conversationService;
     private final ToolConfigSanitizer toolConfigSanitizer;
     private final AgentToolSecretService toolSecretService;
+    private final ResourceAuthorizationService resourceAuthService;
+    private final com.example.agentplatform.repository.KnowledgeBaseRepository knowledgeBaseRepository;
+    private final com.example.agentplatform.repository.ResourceGrantRepository resourceGrantRepository;
 
     public AgentService(AgentRepository agentRepository,
                         AgentDailyStatRepository dailyStatRepository,
                         AgentConversationService conversationService,
                         ToolConfigSanitizer toolConfigSanitizer,
-                        AgentToolSecretService toolSecretService) {
+                        AgentToolSecretService toolSecretService,
+                        ResourceAuthorizationService resourceAuthService,
+                        com.example.agentplatform.repository.KnowledgeBaseRepository knowledgeBaseRepository,
+                        com.example.agentplatform.repository.ResourceGrantRepository resourceGrantRepository) {
         this.agentRepository = agentRepository;
         this.dailyStatRepository = dailyStatRepository;
         this.conversationService = conversationService;
         this.toolConfigSanitizer = toolConfigSanitizer;
         this.toolSecretService = toolSecretService;
+        this.resourceAuthService = resourceAuthService;
+        this.knowledgeBaseRepository = knowledgeBaseRepository;
+        this.resourceGrantRepository = resourceGrantRepository;
     }
 
     @Transactional(readOnly = true)
     public PageResult<Agent> searchAgents(String keyword, String category, AgentStatus status, int page, int size) {
+        return searchAgents(keyword, category, status, null, CurrentActor.get(), page, size);
+    }
+
+    @Transactional(readOnly = true)
+    public PageResult<Agent> searchAgents(String keyword, String category, AgentStatus status, String scope, CurrentActor actor, int page, int size) {
         List<Agent> all = agentRepository.findAll(Sort.by(Sort.Direction.DESC, "updatedAt"));
 
         List<Agent> filtered = all.stream()
                 .filter(a -> {
+                    // 1. Role & Grant-based baseline accessibility
+                    if (actor != null && !resourceAuthService.canViewAgent(actor, a)) {
+                        return false;
+                    }
+
+                    // 2. Explicit scope tab filter (mine | system | shared | all)
+                    if ("mine".equalsIgnoreCase(scope)) {
+                        if (actor == null || actor.getUserId() == null || !actor.getUserId().equals(a.getOwnerId())) {
+                            return false;
+                        }
+                    } else if ("system".equalsIgnoreCase(scope)) {
+                        if (!Boolean.TRUE.equals(a.getIsSystem())) {
+                            return false;
+                        }
+                    } else if ("shared".equalsIgnoreCase(scope)) {
+                        boolean isSys = Boolean.TRUE.equals(a.getIsSystem());
+                        boolean isMine = actor != null && actor.getUserId() != null && actor.getUserId().equals(a.getOwnerId());
+                        if (isSys || isMine) {
+                            return false;
+                        }
+                    }
+
+                    // 3. Keyword search
                     if (keyword != null && !keyword.trim().isEmpty()) {
                         String kw = keyword.trim().toLowerCase();
                         boolean matchName = a.getName() != null && a.getName().toLowerCase().contains(kw);
                         boolean matchDesc = a.getDescription() != null && a.getDescription().toLowerCase().contains(kw);
                         boolean matchCode = a.getCode() != null && a.getCode().toLowerCase().contains(kw);
                         boolean matchTag = a.getTags() != null && a.getTags().stream().anyMatch(t -> t.toLowerCase().contains(kw));
-                        if (!matchName && !matchDesc && !matchCode && !matchTag) {
+                        boolean matchOwner = a.getOwnerUsername() != null && a.getOwnerUsername().toLowerCase().contains(kw);
+                        if (!matchName && !matchDesc && !matchCode && !matchTag && !matchOwner) {
                             return false;
                         }
                     }
@@ -85,18 +124,61 @@ public class AgentService {
 
     @Transactional(readOnly = true)
     public Optional<Agent> getById(String id) {
-        return agentRepository.findById(id);
+        return getById(id, CurrentActor.get());
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<Agent> getById(String id, CurrentActor actor) {
+        Optional<Agent> opt = agentRepository.findById(id);
+        if (opt.isPresent() && actor != null && !resourceAuthService.canViewAgent(actor, opt.get())) {
+            throw new IllegalStateException("权限不足：无权访问该智能体");
+        }
+        return opt;
     }
 
     public Agent create(Agent agent) {
+        return create(agent, CurrentActor.get());
+    }
+
+    public Agent create(Agent agent, CurrentActor actor) {
+        if (actor != null && actor.isViewer()) {
+            throw new IllegalStateException("只读观察员无权创建智能体资产");
+        }
+        if (actor != null && agent.getKnowledgeBaseIds() != null) {
+            validateKnowledgeBaseBindings(actor, agent.getKnowledgeBaseIds());
+        }
         agent.setId(null);
+        if (actor != null) {
+            agent.setOwnerId(actor.getUserId());
+            agent.setOwnerUsername(actor.getUsername());
+            if (!actor.isSuperAdmin()) {
+                agent.setIsSystem(false);
+            }
+        } else {
+            agent.setIsSystem(false);
+        }
         agent.setToolsConfig(toolConfigSanitizer.sanitize(agent.getToolsConfig()));
         return agentRepository.save(agent);
     }
 
     public Agent update(String id, Agent agentUpdate) {
+        return update(id, agentUpdate, CurrentActor.get());
+    }
+
+    public Agent update(String id, Agent agentUpdate, CurrentActor actor) {
         Agent existing = agentRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("智能体不存在: " + id));
+
+        if (!resourceAuthService.canManageAgent(actor, existing)) {
+            if (actor != null && Boolean.TRUE.equals(existing.getIsSystem())) {
+                throw new IllegalStateException("系统公共预置资产受平台保护，仅超级管理员可直接修改。请点击「复制」创建您的专属智能体！");
+            }
+            throw new IllegalStateException("权限不足：无法修改其他开发者的个人智能体");
+        }
+
+        if (actor != null && agentUpdate.getKnowledgeBaseIds() != null) {
+            validateKnowledgeBaseBindings(actor, agentUpdate.getKnowledgeBaseIds());
+        }
 
         if (agentUpdate.getName() != null) existing.setName(agentUpdate.getName());
         if (agentUpdate.getCode() != null) existing.setCode(agentUpdate.getCode());
@@ -119,32 +201,69 @@ public class AgentService {
         if (agentUpdate.getKnowledgeBaseIds() != null) {
             existing.setKnowledgeBaseIds(new ArrayList<>(agentUpdate.getKnowledgeBaseIds()));
         }
+        if (actor != null && actor.isSuperAdmin() && agentUpdate.getIsSystem() != null) {
+            existing.setIsSystem(agentUpdate.getIsSystem());
+        }
 
         return agentRepository.save(existing);
     }
 
     public boolean delete(String id) {
-        if (!agentRepository.existsById(id)) {
+        return delete(id, CurrentActor.get());
+    }
+
+    public boolean delete(String id, CurrentActor actor) {
+        Agent existing = agentRepository.findById(id).orElse(null);
+        if (existing == null) {
             return false;
         }
+
+        if (!resourceAuthService.canManageAgent(actor, existing)) {
+            if (actor != null && Boolean.TRUE.equals(existing.getIsSystem())) {
+                throw new IllegalStateException("系统公共预置资产受平台保护，仅超级管理员可删除");
+            }
+            throw new IllegalStateException("权限不足：无法删除其他开发者的个人智能体");
+        }
+
         toolSecretService.clearForDeletedAgent(id);
+        resourceGrantRepository.deleteByResourceTypeAndResourceId(ResourceAuthorizationService.TYPE_AGENT, id);
         agentRepository.deleteById(id);
         return true;
     }
 
     public Agent updateStatus(String id, AgentStatus status) {
+        return updateStatus(id, status, CurrentActor.get());
+    }
+
+    public Agent updateStatus(String id, AgentStatus status, CurrentActor actor) {
         if (status == null) {
             throw new IllegalArgumentException("状态不能为空");
         }
-        Agent agent = agentRepository.findById(id)
+        Agent existing = agentRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("智能体不存在: " + id));
-        agent.setStatus(status);
-        return agentRepository.save(agent);
+
+        if (!resourceAuthService.canManageAgent(actor, existing)) {
+            if (actor != null && Boolean.TRUE.equals(existing.getIsSystem())) {
+                throw new IllegalStateException("系统公共预置资产受平台保护，仅超级管理员可启停，请复制为个人智能体后再调整运行状态");
+            }
+            throw new IllegalStateException("权限不足：无法启停其他开发者的个人智能体");
+        }
+
+        existing.setStatus(status);
+        return agentRepository.save(existing);
     }
 
     public Agent copyAgent(String sourceId) {
+        return copyAgent(sourceId, CurrentActor.get());
+    }
+
+    public Agent copyAgent(String sourceId, CurrentActor actor) {
         Agent source = agentRepository.findById(sourceId)
                 .orElseThrow(() -> new IllegalArgumentException("未找到待复制的智能体: " + sourceId));
+
+        if (!resourceAuthService.canCopyAgent(actor, source)) {
+            throw new IllegalStateException("权限不足：无法复制该智能体");
+        }
 
         Agent clone = new Agent();
         clone.setName(source.getName() != null ? source.getName() + " (副本)" : "未命名智能体 (副本)");
@@ -161,20 +280,53 @@ public class AgentService {
         if (source.getTags() != null) {
             clone.setTags(new ArrayList<>(source.getTags()));
         }
+        // 关键安全修复：脱敏清洗配置，绝不复制明文 API 密钥
         clone.setToolsConfig(toolConfigSanitizer.sanitize(source.getToolsConfig()));
+
+        // 关键安全修复：复制智能体时，仅保留新拥有者有权使用的知识库
         if (source.getKnowledgeBaseIds() != null) {
-            clone.setKnowledgeBaseIds(new ArrayList<>(source.getKnowledgeBaseIds()));
+            List<String> validKbs = new ArrayList<>();
+            for (String kbId : source.getKnowledgeBaseIds()) {
+                if (kbId == null || kbId.isBlank()) continue;
+                knowledgeBaseRepository.findById(kbId).ifPresent(kb -> {
+                    if (resourceAuthService.canUseKnowledgeBase(actor, kb)) {
+                        validKbs.add(kbId);
+                    }
+                });
+            }
+            clone.setKnowledgeBaseIds(validKbs);
         }
         clone.setId(null);
         clone.setApiKey(null);
         clone.setCallCount(0L);
         clone.setAvgResponseTimeMs(0.0);
 
+        if (actor != null) {
+            clone.setOwnerId(actor.getUserId());
+            clone.setOwnerUsername(actor.getUsername());
+        }
+        clone.setIsSystem(false);
+
         Agent saved = agentRepository.save(clone);
 
-        toolSecretService.copyForClonedAgent(sourceId, saved.getId());
+        // 关键安全修复：复制智能体绝不携带工具密钥！避免跨智能体密钥泄露
+        // （已彻底移除 toolSecretService.copyForClonedAgent 调用）
 
         return saved;
+    }
+
+    private void validateKnowledgeBaseBindings(CurrentActor actor, List<String> kbIds) {
+        if (kbIds == null || kbIds.isEmpty() || actor == null || actor.isSuperAdmin()) {
+            return;
+        }
+        for (String kbId : kbIds) {
+            if (kbId == null || kbId.isBlank()) continue;
+            com.example.agentplatform.model.KnowledgeBase kb = knowledgeBaseRepository.findById(kbId)
+                    .orElseThrow(() -> new IllegalArgumentException("绑定的知识库不存在: " + kbId));
+            if (!resourceAuthService.canUseKnowledgeBase(actor, kb)) {
+                throw new IllegalStateException("权限不足：无权绑定未获得 USE 授权的知识库 [" + kb.getName() + "]");
+            }
+        }
     }
 
     private String generateUniqueCopyCode(String sourceCode) {
@@ -241,11 +393,16 @@ public class AgentService {
 
     @Transactional(readOnly = true)
     public DashboardStats getDashboardStats() {
-        return getDashboardStats("7days");
+        return getDashboardStats("7days", CurrentActor.get());
     }
 
     @Transactional(readOnly = true)
     public DashboardStats getDashboardStats(String range) {
+        return getDashboardStats(range, CurrentActor.get());
+    }
+
+    @Transactional(readOnly = true)
+    public DashboardStats getDashboardStats(String range, CurrentActor actor) {
         int days = resolveRangeDays(range);
         LocalDate end = LocalDate.now();
         LocalDate start = end.minusDays(days - 1L);
@@ -253,24 +410,33 @@ public class AgentService {
         LocalDate prevStart = prevEnd.minusDays(days - 1L);
 
         List<Agent> all = agentRepository.findAll();
-        Map<String, Agent> agentById = all.stream()
+        List<Agent> accessible = all.stream()
+                .filter(a -> resourceAuthService.canViewAgent(actor, a))
+                .collect(Collectors.toList());
+        Set<String> accessibleIds = accessible.stream().map(Agent::getId).collect(Collectors.toSet());
+
+        Map<String, Agent> agentById = accessible.stream()
                 .filter(a -> a.getId() != null)
                 .collect(Collectors.toMap(Agent::getId, a -> a, (a, b) -> a));
 
-        List<AgentDailyStat> current = dailyStatRepository.findByStatDateBetween(start, end);
-        List<AgentDailyStat> previous = dailyStatRepository.findByStatDateBetween(prevStart, prevEnd);
+        List<AgentDailyStat> current = dailyStatRepository.findByStatDateBetween(start, end).stream()
+                .filter(row -> accessibleIds.contains(row.getAgentId()))
+                .collect(Collectors.toList());
+        List<AgentDailyStat> previous = dailyStatRepository.findByStatDateBetween(prevStart, prevEnd).stream()
+                .filter(row -> accessibleIds.contains(row.getAgentId()))
+                .collect(Collectors.toList());
 
         DashboardStats stats = new DashboardStats();
-        stats.setTotalAgents(all.size());
-        stats.setRunningAgents(all.stream().filter(a -> a.getStatus() == AgentStatus.RUNNING).count());
-        stats.setIdleAgents(all.stream().filter(a -> a.getStatus() == AgentStatus.IDLE).count());
-        stats.setDisabledAgents(all.stream().filter(a -> a.getStatus() == AgentStatus.DISABLED).count());
+        stats.setTotalAgents(accessible.size());
+        stats.setRunningAgents(accessible.stream().filter(a -> a.getStatus() == AgentStatus.RUNNING).count());
+        stats.setIdleAgents(accessible.stream().filter(a -> a.getStatus() == AgentStatus.IDLE).count());
+        stats.setDisabledAgents(accessible.stream().filter(a -> a.getStatus() == AgentStatus.DISABLED).count());
 
-        long totalCalls = all.stream().mapToLong(a -> a.getCallCount() == null ? 0 : a.getCallCount()).sum();
+        long totalCalls = accessible.stream().mapToLong(a -> a.getCallCount() == null ? 0 : a.getCallCount()).sum();
         stats.setTotalCalls(totalCalls);
 
-        long latencyCalls = all.stream().mapToLong(a -> a.getCallCount() == null ? 0 : a.getCallCount()).sum();
-        double latencySum = all.stream()
+        long latencyCalls = accessible.stream().mapToLong(a -> a.getCallCount() == null ? 0 : a.getCallCount()).sum();
+        double latencySum = accessible.stream()
                 .filter(a -> a.getCallCount() != null && a.getCallCount() > 0)
                 .mapToDouble(a -> (a.getAvgResponseTimeMs() == null ? 0.0 : a.getAvgResponseTimeMs()) * a.getCallCount())
                 .sum();
@@ -282,7 +448,7 @@ public class AgentService {
         double successRate = successCalls == 0 ? 0.0 : Math.round(successCount * 1000.0 / successCalls) / 10.0;
         stats.setSuccessRate(successRate);
 
-        Map<String, Long> categoryCount = all.stream()
+        Map<String, Long> categoryCount = accessible.stream()
                 .collect(Collectors.groupingBy(a -> a.getCategory() == null ? "其它" : a.getCategory(), Collectors.counting()));
         stats.setCategoryDistribution(categoryCount);
 
@@ -291,7 +457,7 @@ public class AgentService {
         stats.setPromptTokens(promptTokens);
         stats.setCompletionTokens(completionTokens);
         long totalTokens = promptTokens + completionTokens;
-        Map<String, Long> modelTokens = conversationService.tokenUsageByModel(start, end);
+        Map<String, Long> modelTokens = conversationService.tokenUsageByModel(null, accessibleIds, start, end);
         stats.setModelDistribution(modelTokens);
         stats.setEstimatedCostCny(LlmPriceCatalog.estimateCny(modelTokens, promptTokens, completionTokens));
 
@@ -316,7 +482,7 @@ public class AgentService {
         stats.setTokenTrend(trend);
 
         Map<String, long[]> rankAgg = new HashMap<>();
-        for (Agent agent : all) {
+        for (Agent agent : accessible) {
             long calls = agent.getCallCount() == null ? 0 : agent.getCallCount();
             if (calls <= 0) {
                 continue;
@@ -329,7 +495,7 @@ public class AgentService {
                 agg[1] += row.getPromptTokens() + row.getCompletionTokens();
             }
         }
-        Map<String, String> latestModels = conversationService.latestModelByAgent();
+        Map<String, String> latestModels = conversationService.latestModelByAgent(accessibleIds);
         List<DashboardStats.RankingItem> ranking = rankAgg.entrySet().stream()
                 .sorted((a, b) -> Long.compare(b.getValue()[0], a.getValue()[0]))
                 .limit(4)
@@ -371,8 +537,15 @@ public class AgentService {
 
     @Transactional(readOnly = true)
     public AgentMonitorStats getAgentMonitor(String agentId, String range) {
-        if (!agentRepository.existsById(agentId)) {
-            throw new IllegalArgumentException("智能体不存在: " + agentId);
+        return getAgentMonitor(agentId, range, CurrentActor.get());
+    }
+
+    @Transactional(readOnly = true)
+    public AgentMonitorStats getAgentMonitor(String agentId, String range, CurrentActor actor) {
+        Agent agent = agentRepository.findById(agentId)
+                .orElseThrow(() -> new IllegalArgumentException("智能体不存在: " + agentId));
+        if (actor != null && !resourceAuthService.canViewAgent(actor, agent)) {
+            throw new IllegalStateException("权限不足：无权查看该智能体的监控数据");
         }
         LocalDate[] bounds = TimeRange.resolve(range);
         LocalDate end = bounds[1] != null ? bounds[1] : LocalDate.now();

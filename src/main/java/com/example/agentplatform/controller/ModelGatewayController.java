@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import com.example.agentplatform.security.CurrentActor;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.net.URI;
@@ -37,8 +38,17 @@ public class ModelGatewayController {
         this.gatewayService = gatewayService;
     }
 
+    private boolean checkAdmin() {
+        CurrentActor actor = CurrentActor.get();
+        return actor != null && actor.isSuperAdmin();
+    }
+
     @GetMapping({ "", "/overview" })
     public ResponseEntity<ApiResponse<GatewayOverview>> overview() {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可查看网关概览"));
+        }
         return ResponseEntity.ok(ApiResponse.ok(gatewayService.overview()));
     }
 
@@ -54,6 +64,10 @@ public class ModelGatewayController {
 
     @PostMapping("/providers")
     public ResponseEntity<ApiResponse<LlmProviderView>> create(@RequestBody LlmProviderRequest request) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可创建模型通道"));
+        }
         try {
             LlmProviderView created = gatewayService.create(request);
             URI location = ServletUriComponentsBuilder.fromCurrentRequest()
@@ -69,6 +83,10 @@ public class ModelGatewayController {
     @PutMapping("/providers/{id}")
     public ResponseEntity<ApiResponse<LlmProviderView>> update(@PathVariable String id,
                                                                @RequestBody LlmProviderRequest request) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可修改模型通道"));
+        }
         try {
             return ResponseEntity.ok(ApiResponse.ok("模型通道已更新", gatewayService.update(id, request)));
         } catch (IllegalArgumentException e) {
@@ -81,6 +99,10 @@ public class ModelGatewayController {
     @PatchMapping("/providers/{id}/enabled")
     public ResponseEntity<ApiResponse<LlmProviderView>> toggle(@PathVariable String id,
                                                                @RequestBody EnabledToggleRequest request) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可启停模型通道"));
+        }
         if (request.getEnabled() == null) {
             return ResponseEntity.badRequest().body(ApiResponse.error("enabled 不能为空"));
         }
@@ -95,6 +117,10 @@ public class ModelGatewayController {
 
     @DeleteMapping("/providers/{id}")
     public ResponseEntity<ApiResponse<Void>> delete(@PathVariable String id) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可删除模型通道"));
+        }
         try {
             gatewayService.delete(id);
             return ResponseEntity.ok(ApiResponse.ok("自定义通道已删除", null));
@@ -107,6 +133,10 @@ public class ModelGatewayController {
 
     @PostMapping("/providers/{id}/probe")
     public ResponseEntity<ApiResponse<LlmProviderView>> probe(@PathVariable String id) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可测试通道连通性"));
+        }
         try {
             LlmProviderView view = gatewayService.probe(id);
             String message = "SUCCESS".equals(view.getLastProbeStatus()) ? "连通性探测成功" : "连通性探测失败";
@@ -120,6 +150,10 @@ public class ModelGatewayController {
 
     @PostMapping("/probe")
     public ResponseEntity<ApiResponse<GatewayProbeResult>> testConnection(@RequestBody GatewayProbeRequest request) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可测试通道连通性"));
+        }
         try {
             GatewayProbeResult result = gatewayService.testConnection(request);
             String message = result.isSuccess() ? "连通性测试通过" : "连通性测试失败";
@@ -133,6 +167,10 @@ public class ModelGatewayController {
 
     @PutMapping("/policy")
     public ResponseEntity<ApiResponse<GatewayPolicy>> savePolicy(@RequestBody GatewayPolicy policy) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可修改网关路由策略"));
+        }
         try {
             return ResponseEntity.ok(ApiResponse.ok("路由策略已保存", gatewayService.savePolicy(policy)));
         } catch (IllegalArgumentException e) {
