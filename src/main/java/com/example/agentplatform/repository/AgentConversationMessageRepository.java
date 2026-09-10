@@ -11,4 +11,6 @@ public interface AgentConversationMessageRepository extends JpaRepository<AgentC
 
     List<AgentConversationMessage> findByRoleAndCreatedAtGreaterThanEqualAndCreatedAtLessThan(
             String role, LocalDateTime start, LocalDateTime end);
+
+    void deleteByConversationId(String conversationId);
 }

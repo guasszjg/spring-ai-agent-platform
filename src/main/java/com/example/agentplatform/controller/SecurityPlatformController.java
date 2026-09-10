@@ -27,6 +27,13 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.example.agentplatform.model.OpenApiCallLog;
+import com.example.agentplatform.model.UsageDaily;
+import com.example.agentplatform.repository.OpenApiCallLogRepository;
+import com.example.agentplatform.service.UsageRecorder;
+import org.springframework.format.annotation.DateTimeFormat;
+
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
@@ -37,13 +44,19 @@ public class SecurityPlatformController {
     private final SecurityPlatformService securityPlatformService;
     private final IdentitySyncService identitySyncService;
     private final AuditEventRepository auditEventRepository;
+    private final UsageRecorder usageRecorder;
+    private final OpenApiCallLogRepository openApiCallLogRepository;
 
     public SecurityPlatformController(SecurityPlatformService securityPlatformService,
                                       IdentitySyncService identitySyncService,
-                                      AuditEventRepository auditEventRepository) {
+                                      AuditEventRepository auditEventRepository,
+                                      UsageRecorder usageRecorder,
+                                      OpenApiCallLogRepository openApiCallLogRepository) {
         this.securityPlatformService = securityPlatformService;
         this.identitySyncService = identitySyncService;
         this.auditEventRepository = auditEventRepository;
+        this.usageRecorder = usageRecorder;
+        this.openApiCallLogRepository = openApiCallLogRepository;
     }
 
     @GetMapping("/overview")
@@ -228,5 +241,45 @@ public class SecurityPlatformController {
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
         }
+    }
+
+    @GetMapping("/usage/summary")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> usageSummary(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
+        CurrentActor actor = CurrentActor.get();
+        String ownerId = (actor != null && !actor.isSuperAdmin()) ? actor.getUserId() : null;
+        LocalDate endDate = to != null ? to : LocalDate.now();
+        LocalDate startDate = from != null ? from : endDate.minusDays(30);
+        Map<String, Object> summary = usageRecorder.getSummary(ownerId, startDate, endDate);
+        summary.put("from", startDate.toString());
+        summary.put("to", endDate.toString());
+        return ResponseEntity.ok(ApiResponse.ok(summary));
+    }
+
+    @GetMapping("/usage/daily")
+    public ResponseEntity<ApiResponse<List<UsageDaily>>> usageDaily(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
+        CurrentActor actor = CurrentActor.get();
+        String ownerId = (actor != null && !actor.isSuperAdmin()) ? actor.getUserId() : null;
+        LocalDate endDate = to != null ? to : LocalDate.now();
+        LocalDate startDate = from != null ? from : endDate.minusDays(30);
+        List<UsageDaily> list = usageRecorder.getDailyList(ownerId, startDate, endDate);
+        return ResponseEntity.ok(ApiResponse.ok(list));
+    }
+
+    @GetMapping("/usage/logs")
+    public ResponseEntity<ApiResponse<PageResult<OpenApiCallLog>>> usageLogs(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        CurrentActor actor = CurrentActor.get();
+        int pageNum = Math.max(page, 1);
+        int pageSize = Math.min(Math.max(size, 1), 100);
+        PageRequest pr = PageRequest.of(pageNum - 1, pageSize);
+        Page<OpenApiCallLog> result = (actor != null && actor.isSuperAdmin())
+                ? openApiCallLogRepository.findAllByOrderByTsDesc(pr)
+                : openApiCallLogRepository.findByOwnerIdOrderByTsDesc(actor != null ? actor.getUserId() : "", pr);
+        return ResponseEntity.ok(ApiResponse.ok(new PageResult<>(result.getContent(), result.getTotalElements(), pageNum, pageSize)));
     }
 }

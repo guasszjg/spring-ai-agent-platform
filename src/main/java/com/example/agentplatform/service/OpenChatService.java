@@ -40,6 +40,7 @@ public class OpenChatService {
     private final ResourceAuthorizationService authorizationService;
     private final GuardrailPolicyRepository policyRepository;
     private final AuditRecorder auditRecorder;
+    private final UsageRecorder usageRecorder;
     private final ObjectMapper objectMapper;
 
     public OpenChatService(AgentRepository agentRepository,
@@ -47,12 +48,14 @@ public class OpenChatService {
                            ResourceAuthorizationService authorizationService,
                            GuardrailPolicyRepository policyRepository,
                            AuditRecorder auditRecorder,
+                           UsageRecorder usageRecorder,
                            ObjectMapper objectMapper) {
         this.agentRepository = agentRepository;
         this.aiChatService = aiChatService;
         this.authorizationService = authorizationService;
         this.policyRepository = policyRepository;
         this.auditRecorder = auditRecorder;
+        this.usageRecorder = usageRecorder;
         this.objectMapper = objectMapper;
     }
 
@@ -136,6 +139,10 @@ public class OpenChatService {
             data.put("created_at", System.currentTimeMillis() / 1000);
             data.put("request_id", ctx.getRequestId());
             auditRecorder.record("chat.invoke", "AGENT", agent.getId(), "SUCCESS", null, "LOW", null);
+            usageRecorder.record("chat", agent.getId(), chatResp.getConversationId(), 200, null,
+                    chatResp.getLatencyMs() != null ? chatResp.getLatencyMs().intValue() : 0,
+                    chatResp.getTokensUsed() != null ? chatResp.getTokensUsed() : 0,
+                    0, chatResp.getModel() != null ? chatResp.getModel() : agent.getModelName());
             return ResponseEntity.ok(ApiResponse.ok("success", data));
         } catch (IllegalStateException e) {
             return error(HttpStatus.FORBIDDEN, "dependency_invalid", e.getMessage());
@@ -184,6 +191,10 @@ public class OpenChatService {
                 emitter.send(SseEmitter.event().name("message_end").data(objectMapper.writeValueAsString(endPayload)));
                 emitter.complete();
                 auditRecorder.record("chat.invoke", "AGENT", agent.getId(), "SUCCESS", null, "LOW", null);
+                usageRecorder.record("chat", agent.getId(), convId, 200, null,
+                        chatResp.getLatencyMs() != null ? chatResp.getLatencyMs().intValue() : 0,
+                        chatResp.getTokensUsed() != null ? chatResp.getTokensUsed() : 0,
+                        0, chatResp.getModel() != null ? chatResp.getModel() : agent.getModelName());
             } catch (Exception e) {
                 log.error("Open SSE error: {}", e.getMessage(), e);
                 try {

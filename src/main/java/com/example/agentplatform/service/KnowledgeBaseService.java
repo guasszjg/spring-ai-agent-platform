@@ -273,6 +273,21 @@ public class KnowledgeBaseService {
         return "【知识库检索结果】以下是可能相关的参考资料。请优先参考其中的有效信息作答；若资料不相关或不足以回答，请严格遵循智能体本身的流程规则继续处理，切勿声明无法从知识库确认。\n\n" + body;
     }
 
+    @Transactional(readOnly = true)
+    public List<RetrievedChunk> retrieveChunks(String kbId, String query, int topK) {
+        KnowledgeBase kb = getKnowledgeBaseById(kbId);
+        if (kb.getExternalDatasetId() == null || kb.getExternalDatasetId().isBlank()) {
+            return List.of();
+        }
+        KnowledgeBaseProvider provider = resolveProvider(kb.getProvider());
+        List<RetrievedChunk> chunks = provider.retrieve(kb.getExternalDatasetId(), query);
+        if (topK > 0 && chunks.size() > topK) {
+            return chunks.subList(0, topK);
+        }
+        return chunks;
+    }
+
+
     @Transactional
     public KnowledgeBase createKnowledgeBase(CreateKnowledgeBaseRequest req) {
         return createKnowledgeBase(req, CurrentActor.get());

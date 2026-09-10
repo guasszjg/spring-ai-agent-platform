@@ -10,6 +10,7 @@ import java.util.List;
 
 public interface AuditEventRepository extends JpaRepository<AuditEvent, String> {
     Page<AuditEvent> findByOwnerIdOrderByOccurredAtDesc(String ownerId, Pageable pageable);
+    List<AuditEvent> findByOwnerIdAndOccurredAtBetweenOrderByOccurredAtDesc(String ownerId, LocalDateTime start, LocalDateTime end);
     Page<AuditEvent> findAllByOrderByOccurredAtDesc(Pageable pageable);
     List<AuditEvent> findTop10ByRiskLevelOrderByOccurredAtDesc(String riskLevel);
     long countByOccurredAtAfterAndResult(LocalDateTime after, String result);
