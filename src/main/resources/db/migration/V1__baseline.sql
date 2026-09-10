@@ -1,6 +1,8 @@
 -- ==========================================================
--- Spring AI Agent Platform - Database Schema for PostgreSQL
--- Database: guass_test
+-- Spring AI Agent Platform - Flyway Baseline Migration (V1)
+-- Database: PostgreSQL
+-- Description: Complete schema baseline covering core agents,
+--              knowledge bases, authorization, and open platform
 -- ==========================================================
 
 -- 1. 用户表 (app_users)
@@ -20,7 +22,7 @@ CREATE TABLE IF NOT EXISTS app_users (
     updated_at TIMESTAMP
 );
 
--- 2. 智能体表 (agents)
+-- 2. 智能体主表 (agents)
 CREATE TABLE IF NOT EXISTS agents (
     id VARCHAR(64) PRIMARY KEY,
     name VARCHAR(200) NOT NULL,
@@ -33,17 +35,17 @@ CREATE TABLE IF NOT EXISTS agents (
     temperature DOUBLE PRECISION,
     top_p DOUBLE PRECISION,
     max_tokens INTEGER,
-    tools_config TEXT,
-    knowledge_base_ids TEXT,
-    api_key VARCHAR(128) UNIQUE,
     status VARCHAR(32),
     call_count BIGINT DEFAULT 0,
     avg_response_time_ms DOUBLE PRECISION DEFAULT 0.0,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP,
+    tools_config TEXT,
+    knowledge_base_ids TEXT,
+    api_key VARCHAR(128) UNIQUE,
     owner_id VARCHAR(64),
     owner_username VARCHAR(64),
-    is_system BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP
+    is_system BOOLEAN DEFAULT FALSE
 );
 
 CREATE INDEX IF NOT EXISTS idx_agents_api_key ON agents(api_key);
@@ -138,7 +140,7 @@ CREATE TABLE IF NOT EXISTS agent_daily_stats (
 
 CREATE INDEX IF NOT EXISTS idx_daily_stats_agent_date ON agent_daily_stats(agent_id, stat_date);
 
--- 9. 智能体工具密钥表：密钥仅保存 AES-GCM 密文
+-- 9. 智能体工具密钥表 (agent_tool_secrets)
 CREATE TABLE IF NOT EXISTS agent_tool_secrets (
     agent_id VARCHAR(64) PRIMARY KEY,
     bocha_api_key_encrypted TEXT,
@@ -161,12 +163,16 @@ CREATE TABLE IF NOT EXISTS agent_templates (
     tags TEXT,
     is_builtin BOOLEAN DEFAULT FALSE,
     sort_order INTEGER DEFAULT 0,
+    owner_id VARCHAR(64),
+    owner_username VARCHAR(64),
     created_at TIMESTAMP,
     updated_at TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_templates_category ON agent_templates(category);
 CREATE INDEX IF NOT EXISTS idx_templates_sort_order ON agent_templates(sort_order);
+CREATE INDEX IF NOT EXISTS idx_agent_templates_owner_id ON agent_templates(owner_id);
+CREATE INDEX IF NOT EXISTS idx_agent_templates_is_builtin ON agent_templates(is_builtin);
 
 -- 11. 知识库主表 (knowledge_bases)
 CREATE TABLE IF NOT EXISTS knowledge_bases (
@@ -243,167 +249,7 @@ CREATE TABLE IF NOT EXISTS knowledge_faqs (
 CREATE INDEX IF NOT EXISTS idx_kfaq_kb_id ON knowledge_faqs(knowledge_base_id);
 CREATE INDEX IF NOT EXISTS idx_kfaq_category ON knowledge_faqs(category);
 
--- ==========================================================
--- 14. 增量变更语句 (如果远程 192 或已有数据库已建过老表，直接执行此段补丁即可)
--- ==========================================================
--- 2026-09-06: agents 表增加 tools_config 字段，只保存非敏感工具配置
-ALTER TABLE agents ADD COLUMN IF NOT EXISTS tools_config TEXT;
-COMMENT ON COLUMN agents.tools_config IS '智能体非敏感工具配置(JSON格式，包含插件开关、检索条数与时效等，不含API Key)';
-
-CREATE TABLE IF NOT EXISTS agent_tool_secrets (
-    agent_id VARCHAR(64) PRIMARY KEY,
-    bocha_api_key_encrypted TEXT,
-    updated_at TIMESTAMP,
-    CONSTRAINT fk_agent_tool_secret_agent FOREIGN KEY (agent_id) REFERENCES agents (id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS agent_templates (
-    id VARCHAR(64) PRIMARY KEY,
-    name VARCHAR(200) NOT NULL,
-    category VARCHAR(64),
-    avatar VARCHAR(64),
-    description TEXT,
-    model_name VARCHAR(100),
-    system_prompt TEXT,
-    temperature DOUBLE PRECISION DEFAULT 0.7,
-    top_p DOUBLE PRECISION,
-    max_tokens INTEGER,
-    tags TEXT,
-    is_builtin BOOLEAN DEFAULT FALSE,
-    sort_order INTEGER DEFAULT 0,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_templates_category ON agent_templates(category);
-CREATE INDEX IF NOT EXISTS idx_templates_sort_order ON agent_templates(sort_order);
-
--- 2026-09-07: 用户界面偏好（跨设备同步卡片/列表等）
-ALTER TABLE app_users ADD COLUMN IF NOT EXISTS ui_preferences TEXT;
-
--- 2026-09-07: 智能体关联知识库列表
-ALTER TABLE agents ADD COLUMN IF NOT EXISTS knowledge_base_ids TEXT;
-COMMENT ON COLUMN agents.knowledge_base_ids IS '智能体绑定的知识库 ID 列表 (JSON Array)';
-
--- 2026-09-07: 模型通道支持自定义 HTTP 协议及自定义配置模板
-ALTER TABLE llm_providers ADD COLUMN IF NOT EXISTS protocol VARCHAR(32) DEFAULT 'OPENAI';
-ALTER TABLE llm_providers ADD COLUMN IF NOT EXISTS custom_config TEXT;
-COMMENT ON COLUMN llm_providers.protocol IS '通道协议类型: OPENAI / CUSTOM_HTTP';
-COMMENT ON COLUMN llm_providers.custom_config IS '第三方非标 HTTP 接口自定义请求头、Body模板与提取路径配置 (JSON)';
-
--- 2026-09-07: RAG 知识库三张表（如已有老库缺少直接创建，见上方 11、12、13 节）
-CREATE TABLE IF NOT EXISTS knowledge_bases (
-    id VARCHAR(64) PRIMARY KEY,
-    name VARCHAR(200) NOT NULL,
-    description TEXT,
-    avatar VARCHAR(64) DEFAULT '📚',
-    provider VARCHAR(32) NOT NULL DEFAULT 'DIFY',
-    external_dataset_id VARCHAR(128),
-    indexing_technique VARCHAR(64) DEFAULT 'high_quality',
-    permission VARCHAR(32) DEFAULT 'only_me',
-    document_count INTEGER DEFAULT 0,
-    word_count BIGINT DEFAULT 0,
-    faq_count INTEGER DEFAULT 0,
-    enabled BOOLEAN DEFAULT TRUE,
-    embedding_model VARCHAR(64) DEFAULT 'text-embedding-v3',
-    embedding_provider VARCHAR(64) DEFAULT 'langgenius/tongyi/tongyi',
-    search_method VARCHAR(32) DEFAULT 'hybrid_search',
-    top_k INTEGER DEFAULT 3,
-    rerank_enabled BOOLEAN DEFAULT TRUE,
-    rerank_mode VARCHAR(32) DEFAULT 'weighted_score',
-    rerank_model VARCHAR(64) DEFAULT 'qwen3-rerank',
-    rerank_model_provider VARCHAR(64) DEFAULT 'langgenius/tongyi/tongyi',
-    vector_weight DOUBLE PRECISION DEFAULT 0.7,
-    keyword_weight DOUBLE PRECISION DEFAULT 0.3,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_kb_provider ON knowledge_bases(provider);
-CREATE INDEX IF NOT EXISTS idx_kb_ext_dataset_id ON knowledge_bases(external_dataset_id);
-
-CREATE TABLE IF NOT EXISTS knowledge_documents (
-    id VARCHAR(64) PRIMARY KEY,
-    knowledge_base_id VARCHAR(64) NOT NULL,
-    external_doc_id VARCHAR(128),
-    name VARCHAR(255) NOT NULL,
-    extension VARCHAR(32),
-    file_size BIGINT DEFAULT 0,
-    word_count BIGINT DEFAULT 0,
-    token_count BIGINT DEFAULT 0,
-    indexing_status VARCHAR(32) DEFAULT 'waiting',
-    error_message TEXT,
-    enabled BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_kdoc_kb_id ON knowledge_documents(knowledge_base_id);
-CREATE INDEX IF NOT EXISTS idx_kdoc_ext_id ON knowledge_documents(external_doc_id);
-
-CREATE TABLE IF NOT EXISTS knowledge_faqs (
-    id VARCHAR(64) PRIMARY KEY,
-    knowledge_base_id VARCHAR(64) NOT NULL,
-    external_doc_id VARCHAR(128),
-    question TEXT NOT NULL,
-    answer TEXT NOT NULL,
-    category VARCHAR(64) DEFAULT '通用问答',
-    content_type VARCHAR(32) DEFAULT 'TEXT',
-    image_urls TEXT,
-    enabled BOOLEAN DEFAULT TRUE,
-    hit_count BIGINT DEFAULT 0,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_kfaq_kb_id ON knowledge_faqs(knowledge_base_id);
-CREATE INDEX IF NOT EXISTS idx_kfaq_category ON knowledge_faqs(category);
-
--- 2026-09-08: 用户角色与生命周期安全控制扩展
-ALTER TABLE app_users ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'ACTIVE';
-ALTER TABLE app_users ADD COLUMN IF NOT EXISTS auth_version INTEGER DEFAULT 1;
-ALTER TABLE app_users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE;
-ALTER TABLE app_users ADD COLUMN IF NOT EXISTS temp_password_expires_at TIMESTAMP;
-ALTER TABLE app_users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP;
-ALTER TABLE app_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP;
-COMMENT ON COLUMN app_users.status IS '账号状态: ACTIVE / PENDING_PASSWORD / DISABLED';
-COMMENT ON COLUMN app_users.auth_version IS '凭据版本号，修改密码/禁用/角色变更时递增，立即令现有Session失效';
-COMMENT ON COLUMN app_users.must_change_password IS '是否需首次改密（临时密码登录后强制修改）';
-
--- 2026-09-08: 资产归属与多租户权限隔离（智能体与知识库支持系统公共预置与个人资产）
-ALTER TABLE agents ADD COLUMN IF NOT EXISTS owner_id VARCHAR(64);
-ALTER TABLE agents ADD COLUMN IF NOT EXISTS owner_username VARCHAR(64);
-ALTER TABLE agents ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE;
-CREATE INDEX IF NOT EXISTS idx_agents_owner_id ON agents(owner_id);
-CREATE INDEX IF NOT EXISTS idx_agents_is_system ON agents(is_system);
-
-ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS owner_id VARCHAR(64);
-ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS owner_username VARCHAR(64);
-ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE;
-CREATE INDEX IF NOT EXISTS idx_kb_owner_id ON knowledge_bases(owner_id);
-CREATE INDEX IF NOT EXISTS idx_kb_is_system ON knowledge_bases(is_system);
-
--- 2026-09-08: 场景模板表 (agent_templates)
-CREATE TABLE IF NOT EXISTS agent_templates (
-    id VARCHAR(64) PRIMARY KEY,
-    name VARCHAR(200) NOT NULL,
-    category VARCHAR(64),
-    avatar VARCHAR(64),
-    description TEXT,
-    model_name VARCHAR(100),
-    system_prompt TEXT,
-    temperature DOUBLE PRECISION DEFAULT 0.7,
-    top_p DOUBLE PRECISION,
-    max_tokens INTEGER,
-    tags TEXT,
-    is_builtin BOOLEAN DEFAULT FALSE,
-    sort_order INTEGER DEFAULT 0,
-    owner_id VARCHAR(64),
-    owner_username VARCHAR(64),
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_agent_templates_owner_id ON agent_templates(owner_id);
-CREATE INDEX IF NOT EXISTS idx_agent_templates_is_builtin ON agent_templates(is_builtin);
-
--- 2026-09-08: 细粒度资源共享授权表 (resource_grants)
+-- 14. 细粒度资源共享授权表 (resource_grants)
 CREATE TABLE IF NOT EXISTS resource_grants (
     id VARCHAR(64) PRIMARY KEY,
     resource_type VARCHAR(32) NOT NULL,
@@ -415,12 +261,11 @@ CREATE TABLE IF NOT EXISTS resource_grants (
     created_at TIMESTAMP,
     CONSTRAINT uk_resource_grant UNIQUE (resource_type, resource_id, grantee_user_id)
 );
+
 CREATE INDEX IF NOT EXISTS idx_grants_lookup ON resource_grants(resource_type, resource_id, grantee_user_id);
 CREATE INDEX IF NOT EXISTS idx_grants_grantee ON resource_grants(grantee_user_id);
 
--- ==========================================================
 -- 15. 开放平台 API 凭证表 (open_api_keys)
--- ==========================================================
 CREATE TABLE IF NOT EXISTS open_api_keys (
     id VARCHAR(64) PRIMARY KEY,
     owner_id VARCHAR(64) NOT NULL,
@@ -443,13 +288,12 @@ CREATE TABLE IF NOT EXISTS open_api_keys (
     created_at TIMESTAMP,
     updated_at TIMESTAMP
 );
+
 CREATE INDEX IF NOT EXISTS idx_oak_owner_id ON open_api_keys(owner_id);
 CREATE INDEX IF NOT EXISTS idx_oak_key_hash ON open_api_keys(key_hash);
 CREATE INDEX IF NOT EXISTS idx_oak_status ON open_api_keys(status);
 
--- ==========================================================
 -- 16. 第三方身份源配置表 (identity_providers)
--- ==========================================================
 CREATE TABLE IF NOT EXISTS identity_providers (
     id VARCHAR(64) PRIMARY KEY,
     code VARCHAR(64) NOT NULL UNIQUE,
@@ -469,12 +313,11 @@ CREATE TABLE IF NOT EXISTS identity_providers (
     created_at TIMESTAMP,
     updated_at TIMESTAMP
 );
+
 CREATE INDEX IF NOT EXISTS idx_idp_code ON identity_providers(code);
 CREATE INDEX IF NOT EXISTS idx_idp_enabled ON identity_providers(enabled);
 
--- ==========================================================
 -- 17. 外部身份映射绑定表 (external_identities)
--- ==========================================================
 CREATE TABLE IF NOT EXISTS external_identities (
     id VARCHAR(64) PRIMARY KEY,
     user_id VARCHAR(64) NOT NULL,
@@ -492,12 +335,11 @@ CREATE TABLE IF NOT EXISTS external_identities (
     updated_at TIMESTAMP,
     CONSTRAINT uk_ext_identity_provider_ext UNIQUE (provider_code, external_id)
 );
+
 CREATE INDEX IF NOT EXISTS idx_ext_id_user ON external_identities(user_id);
 CREATE INDEX IF NOT EXISTS idx_ext_id_provider ON external_identities(provider_id);
 
--- ==========================================================
 -- 18. 接入终端白名单凭证表 (client_credentials)
--- ==========================================================
 CREATE TABLE IF NOT EXISTS client_credentials (
     id VARCHAR(64) PRIMARY KEY,
     owner_id VARCHAR(64) NOT NULL,
@@ -518,13 +360,12 @@ CREATE TABLE IF NOT EXISTS client_credentials (
     updated_at TIMESTAMP,
     CONSTRAINT uk_client_owner_type_hash UNIQUE (owner_id, client_type, client_id_hash)
 );
+
 CREATE INDEX IF NOT EXISTS idx_client_cred_owner ON client_credentials(owner_id);
 CREATE INDEX IF NOT EXISTS idx_client_cred_hash ON client_credentials(client_id_hash);
 CREATE INDEX IF NOT EXISTS idx_client_cred_status ON client_credentials(status);
 
--- ==========================================================
 -- 19. 租户护栏策略表 (guardrail_policies)
--- ==========================================================
 CREATE TABLE IF NOT EXISTS guardrail_policies (
     owner_id VARCHAR(64) PRIMARY KEY,
     client_policy VARCHAR(32) DEFAULT 'OFF',
@@ -542,9 +383,7 @@ CREATE TABLE IF NOT EXISTS guardrail_policies (
     updated_at TIMESTAMP
 );
 
--- ==========================================================
 -- 20. 安全审计事件记录表 (audit_events)
--- ==========================================================
 CREATE TABLE IF NOT EXISTS audit_events (
     id VARCHAR(64) PRIMARY KEY,
     occurred_at TIMESTAMP NOT NULL,
@@ -564,11 +403,36 @@ CREATE TABLE IF NOT EXISTS audit_events (
     request_id VARCHAR(64),
     sanitized_diff TEXT
 );
+
 CREATE INDEX IF NOT EXISTS idx_audit_occurred ON audit_events(occurred_at);
 CREATE INDEX IF NOT EXISTS idx_audit_owner ON audit_events(owner_id);
 CREATE INDEX IF NOT EXISTS idx_audit_actor_user ON audit_events(actor_user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_events(action);
 CREATE INDEX IF NOT EXISTS idx_audit_result ON audit_events(result);
 
+-- ==========================================================
+-- 幂等性保障：对于已有数据库历史版本的增量补齐 (IF NOT EXISTS)
+-- ==========================================================
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'ACTIVE';
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS auth_version INTEGER DEFAULT 1;
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE;
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS temp_password_expires_at TIMESTAMP;
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS ui_preferences TEXT;
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP;
+ALTER TABLE app_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP;
 
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS tools_config TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS knowledge_base_ids TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS owner_id VARCHAR(64);
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS owner_username VARCHAR(64);
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE;
 
+ALTER TABLE llm_providers ADD COLUMN IF NOT EXISTS protocol VARCHAR(32) DEFAULT 'OPENAI';
+ALTER TABLE llm_providers ADD COLUMN IF NOT EXISTS custom_config TEXT;
+
+ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS owner_id VARCHAR(64);
+ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS owner_username VARCHAR(64);
+ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE;
+
+ALTER TABLE agent_templates ADD COLUMN IF NOT EXISTS owner_id VARCHAR(64);
+ALTER TABLE agent_templates ADD COLUMN IF NOT EXISTS owner_username VARCHAR(64);
