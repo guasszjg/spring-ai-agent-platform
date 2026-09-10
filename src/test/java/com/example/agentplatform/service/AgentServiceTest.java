@@ -47,6 +47,9 @@ class AgentServiceTest {
     @Mock
     private ResourceGrantRepository resourceGrantRepository;
 
+    @Mock
+    private OwnerNameResolver ownerNameResolver;
+
     private ToolConfigSanitizer toolConfigSanitizer = new ToolConfigSanitizer();
 
     private AgentService agentService;
@@ -61,7 +64,8 @@ class AgentServiceTest {
                 toolSecretService,
                 resourceAuthService,
                 knowledgeBaseRepository,
-                resourceGrantRepository
+                resourceGrantRepository,
+                ownerNameResolver
         );
     }
 

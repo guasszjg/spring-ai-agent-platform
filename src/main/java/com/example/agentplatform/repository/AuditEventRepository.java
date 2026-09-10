@@ -1,0 +1,18 @@
+package com.example.agentplatform.repository;
+
+import com.example.agentplatform.model.AuditEvent;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.time.LocalDateTime;
+import java.util.List;
+
+public interface AuditEventRepository extends JpaRepository<AuditEvent, String> {
+    Page<AuditEvent> findByOwnerIdOrderByOccurredAtDesc(String ownerId, Pageable pageable);
+    Page<AuditEvent> findAllByOrderByOccurredAtDesc(Pageable pageable);
+    List<AuditEvent> findTop10ByRiskLevelOrderByOccurredAtDesc(String riskLevel);
+    long countByOccurredAtAfterAndResult(LocalDateTime after, String result);
+    long countByOwnerIdAndOccurredAtAfterAndResult(String ownerId, LocalDateTime after, String result);
+    long countByOccurredAtAfterAndRiskLevel(LocalDateTime after, String riskLevel);
+}

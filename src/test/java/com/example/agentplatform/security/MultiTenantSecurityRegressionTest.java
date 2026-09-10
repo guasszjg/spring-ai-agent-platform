@@ -96,7 +96,8 @@ class MultiTenantSecurityRegressionTest {
                 toolSecretService,
                 resourceAuthService,
                 knowledgeBaseRepository,
-                resourceGrantRepository
+                resourceGrantRepository,
+                new OwnerNameResolver(userRepository)
         );
 
         lenient().when(difyProvider.getProviderType()).thenReturn("DIFY");
@@ -107,13 +108,15 @@ class MultiTenantSecurityRegressionTest {
                 resourceAuthService,
                 resourceGrantRepository,
                 List.of(difyProvider),
-                new ObjectMapper()
+                new ObjectMapper(),
+                new OwnerNameResolver(userRepository)
         );
 
         templateService = new AgentTemplateService(
                 templateRepository,
                 resourceAuthService,
-                resourceGrantRepository
+                resourceGrantRepository,
+                new OwnerNameResolver(userRepository)
         );
 
         aiChatService = new AiChatService(

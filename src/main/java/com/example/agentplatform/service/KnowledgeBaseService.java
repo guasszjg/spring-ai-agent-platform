@@ -72,6 +72,7 @@ public class KnowledgeBaseService {
     private final ResourceGrantRepository resourceGrantRepository;
     private final Map<String, KnowledgeBaseProvider> providerMap = new HashMap<>();
     private final ObjectMapper objectMapper;
+    private final OwnerNameResolver ownerNameResolver;
 
     public KnowledgeBaseService(KnowledgeBaseRepository knowledgeBaseRepository,
                                 KnowledgeDocumentRepository documentRepository,
@@ -79,13 +80,15 @@ public class KnowledgeBaseService {
                                 ResourceAuthorizationService resourceAuthorizationService,
                                 ResourceGrantRepository resourceGrantRepository,
                                 List<KnowledgeBaseProvider> providers,
-                                @Autowired(required = false) ObjectMapper objectMapper) {
+                                @Autowired(required = false) ObjectMapper objectMapper,
+                                OwnerNameResolver ownerNameResolver) {
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.documentRepository = documentRepository;
         this.faqRepository = faqRepository;
         this.resourceAuthorizationService = resourceAuthorizationService;
         this.resourceGrantRepository = resourceGrantRepository;
         this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
+        this.ownerNameResolver = ownerNameResolver;
         for (KnowledgeBaseProvider p : providers) {
             this.providerMap.put(p.getProviderType().toUpperCase(), p);
         }
@@ -112,10 +115,20 @@ public class KnowledgeBaseService {
 
     @Transactional(readOnly = true)
     public PageResult<KnowledgeBase> searchKnowledgeBases(String keyword, String provider, int page, int size, CurrentActor actor) {
+        return searchKnowledgeBases(keyword, provider, page, size, actor, null);
+    }
+
+    @Transactional(readOnly = true)
+    public PageResult<KnowledgeBase> searchKnowledgeBases(String keyword, String provider, int page, int size, CurrentActor actor, String ownerId) {
         List<KnowledgeBase> all = knowledgeBaseRepository.findAll(Sort.by(Sort.Direction.DESC, "updatedAt"));
+        Map<String, String> names = ownerNameResolver.usernames(
+                all.stream().map(KnowledgeBase::getOwnerId).collect(Collectors.toSet()));
         List<KnowledgeBase> filtered = all.stream()
                 .filter(kb -> {
                     if (actor != null && !resourceAuthorizationService.canViewKnowledgeBase(actor, kb)) {
+                        return false;
+                    }
+                    if (!OwnerNameResolver.matchesOwner(kb.getOwnerId(), ownerId)) {
                         return false;
                     }
                     if (provider != null && !provider.isBlank()) {
@@ -127,7 +140,13 @@ public class KnowledgeBaseService {
                         String kw = keyword.trim().toLowerCase();
                         boolean matchName = kb.getName() != null && kb.getName().toLowerCase().contains(kw);
                         boolean matchDesc = kb.getDescription() != null && kb.getDescription().toLowerCase().contains(kw);
-                        if (!matchName && !matchDesc) {
+                        String ownerName = kb.getOwnerUsername();
+                        if (ownerName == null || ownerName.isBlank()) {
+                            ownerName = OwnerNameResolver.lookup(names, kb.getOwnerId());
+                        }
+                        String ownerKw = kw.startsWith("@") ? kw.substring(1) : kw;
+                        boolean matchOwner = ownerName != null && ownerName.toLowerCase().contains(ownerKw);
+                        if (!matchName && !matchDesc && !matchOwner) {
                             return false;
                         }
                     }
@@ -141,6 +160,11 @@ public class KnowledgeBaseService {
         int fromIndex = Math.min((safePage - 1) * safeSize, total);
         int toIndex = Math.min(fromIndex + safeSize, total);
         List<KnowledgeBase> pageRecords = filtered.subList(fromIndex, toIndex);
+        for (KnowledgeBase kb : pageRecords) {
+            if (kb.getOwnerUsername() == null || kb.getOwnerUsername().isBlank()) {
+                kb.setOwnerUsername(OwnerNameResolver.lookup(names, kb.getOwnerId()));
+            }
+        }
         return new PageResult<>(pageRecords, total, safePage, safeSize);
     }
 

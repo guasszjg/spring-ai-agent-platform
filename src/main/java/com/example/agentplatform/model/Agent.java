@@ -1,6 +1,7 @@
 package com.example.agentplatform.model;
 
 import com.example.agentplatform.config.StringListJsonConverter;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.CollectionTable;
 import jakarta.persistence.Column;
@@ -233,6 +234,7 @@ public class Agent {
         this.knowledgeBaseIds = knowledgeBaseIds != null ? knowledgeBaseIds : new ArrayList<>();
     }
 
+    @JsonIgnore
     public String getApiKey() {
         return apiKey;
     }

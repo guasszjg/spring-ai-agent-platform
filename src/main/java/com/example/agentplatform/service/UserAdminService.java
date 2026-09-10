@@ -112,6 +112,12 @@ public class UserAdminService {
         return result;
     }
 
+    @Transactional(readOnly = true)
+    public AppUser findEntity(String userId) {
+        return userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("用户不存在"));
+    }
+
     public UserSummaryDto updateUserProfile(String userId, UpdateUserProfileRequest request) {
         AppUser user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("用户不存在"));

@@ -19,7 +19,8 @@ public interface AgentTemplateRepository extends JpaRepository<AgentTemplate, St
             "LOWER(t.name) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
             "LOWER(t.description) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
             "LOWER(t.systemPrompt) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
-            "LOWER(t.tags) LIKE LOWER(CONCAT('%', :keyword, '%'))) " +
+            "LOWER(t.tags) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
+            "LOWER(t.ownerUsername) LIKE LOWER(CONCAT('%', :keyword, '%'))) " +
             "ORDER BY t.sortOrder ASC, t.createdAt DESC")
     List<AgentTemplate> searchTemplates(@Param("keyword") String keyword, @Param("category") String category);
 }

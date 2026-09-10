@@ -24,7 +24,7 @@ public class WebMvcConfig implements WebMvcConfigurer {
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(sessionAuthInterceptor)
                 .addPathPatterns("/api/**")
-                .excludePathPatterns("/api/auth/login", "/api/auth/logout", "/api/auth/session", "/api/v1/**");
+                .excludePathPatterns("/api/auth/login", "/api/auth/logout", "/api/auth/session", "/api/v1/**", "/open/v1/**");
     }
 
     @Override
@@ -47,7 +47,7 @@ public class WebMvcConfig implements WebMvcConfigurer {
                         if (requested.exists() && requested.isReadable()) {
                             return requested;
                         }
-                        if (resourcePath.startsWith("api/")) {
+                        if (resourcePath.startsWith("api/") || resourcePath.startsWith("open/")) {
                             return null;
                         }
                         return new ClassPathResource("/static/index.html");

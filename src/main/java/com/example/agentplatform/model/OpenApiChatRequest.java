@@ -12,6 +12,12 @@ public class OpenApiChatRequest {
     @JsonProperty("conversation_id")
     private String conversationId;
 
+    @JsonProperty("agent_id")
+    private String agentId;
+
+    @JsonProperty("end_user")
+    private String endUser;
+
     private String user;
 
     public String getMessage() {
@@ -44,5 +50,21 @@ public class OpenApiChatRequest {
 
     public void setUser(String user) {
         this.user = user;
+    }
+
+    public String getAgentId() {
+        return agentId;
+    }
+
+    public void setAgentId(String agentId) {
+        this.agentId = agentId;
+    }
+
+    public String getEndUser() {
+        return endUser;
+    }
+
+    public void setEndUser(String endUser) {
+        this.endUser = endUser;
     }
 }

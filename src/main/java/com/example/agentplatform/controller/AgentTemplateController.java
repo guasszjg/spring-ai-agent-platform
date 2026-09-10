@@ -2,6 +2,7 @@ package com.example.agentplatform.controller;
 
 import com.example.agentplatform.model.AgentTemplate;
 import com.example.agentplatform.model.ApiResponse;
+import com.example.agentplatform.security.CurrentActor;
 import com.example.agentplatform.service.AgentTemplateService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -31,12 +32,13 @@ public class AgentTemplateController {
     public ResponseEntity<ApiResponse<?>> listTemplates(
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String category,
+            @RequestParam(required = false) String ownerId,
             @RequestParam(required = false) Integer page,
             @RequestParam(required = false) Integer size) {
         if (page != null && size != null) {
-            return ResponseEntity.ok(ApiResponse.ok(templateService.searchTemplates(keyword, category, page, size)));
+            return ResponseEntity.ok(ApiResponse.ok(templateService.searchTemplates(keyword, category, ownerId, page, size, CurrentActor.get())));
         }
-        return ResponseEntity.ok(ApiResponse.ok(templateService.list(keyword, category)));
+        return ResponseEntity.ok(ApiResponse.ok(templateService.list(keyword, category, ownerId, CurrentActor.get())));
     }
 
     @GetMapping("/{id}")

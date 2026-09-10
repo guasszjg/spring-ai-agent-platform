@@ -113,7 +113,7 @@ public class AgentTemplate {
         updatedAt = LocalDateTime.now();
     }
 
-    @JsonProperty("tags")
+    @JsonProperty(value = "tags", access = JsonProperty.Access.READ_ONLY)
     public List<String> getTagList() {
         if (tags == null || tags.isBlank()) {
             return new ArrayList<>();
@@ -130,6 +130,19 @@ public class AgentTemplate {
         } else {
             this.tags = String.join(", ", tagList);
         }
+    }
+
+    @com.fasterxml.jackson.annotation.JsonSetter("tags")
+    public void setTagsFromJson(Object value) {
+        if (value == null) {
+            this.tags = "";
+            return;
+        }
+        if (value instanceof List<?> list) {
+            setTagList(list.stream().map(String::valueOf).toList());
+            return;
+        }
+        this.tags = String.valueOf(value);
     }
 
     // Getters and Setters
@@ -221,12 +234,14 @@ public class AgentTemplate {
         this.tags = tags;
     }
 
+    @JsonProperty("isBuiltin")
     public Boolean getIsBuiltin() {
-        return isBuiltin;
+        return Boolean.TRUE.equals(isBuiltin);
     }
 
+    @JsonProperty("isBuiltin")
     public void setIsBuiltin(Boolean isBuiltin) {
-        this.isBuiltin = isBuiltin;
+        this.isBuiltin = isBuiltin != null && isBuiltin;
     }
 
     public Integer getSortOrder() {

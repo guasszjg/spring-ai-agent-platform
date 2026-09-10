@@ -42,14 +42,17 @@ public class AgentController {
     private final AiChatService aiChatService;
     private final AgentConversationService conversationService;
     private final com.example.agentplatform.service.ResourceAuthorizationService authService;
+    private final com.example.agentplatform.service.OpenApiKeyService openApiKeyService;
 
     public AgentController(AgentService agentService, AiChatService aiChatService,
                            AgentConversationService conversationService,
-                           com.example.agentplatform.service.ResourceAuthorizationService authService) {
+                           com.example.agentplatform.service.ResourceAuthorizationService authService,
+                           com.example.agentplatform.service.OpenApiKeyService openApiKeyService) {
         this.agentService = agentService;
         this.aiChatService = aiChatService;
         this.conversationService = conversationService;
         this.authService = authService;
+        this.openApiKeyService = openApiKeyService;
     }
 
     @GetMapping
@@ -58,9 +61,10 @@ public class AgentController {
             @RequestParam(required = false) String category,
             @RequestParam(required = false) AgentStatus status,
             @RequestParam(required = false) String scope,
+            @RequestParam(required = false) String ownerId,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "6") int size) {
-        PageResult<Agent> result = agentService.searchAgents(keyword, category, status, scope, CurrentActor.get(), page, size);
+        PageResult<Agent> result = agentService.searchAgents(keyword, category, status, scope, ownerId, CurrentActor.get(), page, size);
         return ResponseEntity.ok(ApiResponse.ok(result));
     }
 
@@ -131,17 +135,19 @@ public class AgentController {
     }
 
     @PostMapping("/{id}/regenerate-api-key")
-    public ResponseEntity<ApiResponse<java.util.Map<String, String>>> regenerateApiKey(@PathVariable String id) {
+    public ResponseEntity<ApiResponse<java.util.Map<String, Object>>> regenerateApiKey(@PathVariable String id) {
         return agentService.getById(id).map(agent -> {
             CurrentActor actor = CurrentActor.get();
             if (!authService.canManageAgent(actor, agent)) {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                        .<ApiResponse<java.util.Map<String, String>>>body(ApiResponse.error("权限不足：无法重置他人智能体的 API Key"));
+                        .<ApiResponse<java.util.Map<String, Object>>>body(ApiResponse.error("权限不足：无法重置他人智能体的 API Key"));
             }
-            String newKey = "sk-agent-" + java.util.UUID.randomUUID().toString().replace("-", "");
-            agent.setApiKey(newKey);
-            agentService.update(id, agent);
-            return ResponseEntity.ok(ApiResponse.ok("API Key 已重新生成", java.util.Map.of("apiKey", newKey)));
+            try {
+                java.util.Map<String, Object> created = openApiKeyService.createChatKeyForAgent(agent, actor);
+                return ResponseEntity.ok(ApiResponse.ok("已签发新的开放凭证，明文仅显示一次", created));
+            } catch (IllegalArgumentException | IllegalStateException e) {
+                return ResponseEntity.badRequest().<ApiResponse<java.util.Map<String, Object>>>body(ApiResponse.error(e.getMessage()));
+            }
         }).orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(ApiResponse.error("未找到指定的智能体: " + id)));
     }

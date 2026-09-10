@@ -49,9 +49,11 @@ public class KnowledgeBaseController {
     public ResponseEntity<ApiResponse<PageResult<KnowledgeBase>>> list(
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String provider,
+            @RequestParam(required = false) String ownerId,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "12") int size) {
-        PageResult<KnowledgeBase> result = knowledgeBaseService.searchKnowledgeBases(keyword, provider, page, size);
+        PageResult<KnowledgeBase> result = knowledgeBaseService.searchKnowledgeBases(
+                keyword, provider, page, size, CurrentActor.get(), ownerId);
         return ResponseEntity.ok(ApiResponse.ok(result));
     }
 

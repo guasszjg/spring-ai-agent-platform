@@ -37,6 +37,7 @@ public class DataInitializer implements ApplicationRunner {
     private final LlmProviderRepository llmProviderRepository;
     private final GatewayPolicyRepository gatewayPolicyRepository;
     private final PasswordEncoder passwordEncoder;
+    private final com.example.agentplatform.service.OpenApiKeyService openApiKeyService;
     private final boolean seedDemoUsers;
     private final ToolConfigSanitizer toolConfigSanitizer;
     private final com.example.agentplatform.repository.KnowledgeBaseRepository knowledgeBaseRepository;
@@ -52,6 +53,7 @@ public class DataInitializer implements ApplicationRunner {
                            ToolConfigSanitizer toolConfigSanitizer,
                            com.example.agentplatform.repository.KnowledgeBaseRepository knowledgeBaseRepository,
                            com.example.agentplatform.service.KnowledgeBaseService knowledgeBaseService,
+                           com.example.agentplatform.service.OpenApiKeyService openApiKeyService,
                            @Value("${app.seed.demo-users:false}") boolean seedDemoUsers) {
         this.userRepository = userRepository;
         this.agentRepository = agentRepository;
@@ -63,6 +65,7 @@ public class DataInitializer implements ApplicationRunner {
         this.toolConfigSanitizer = toolConfigSanitizer;
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.knowledgeBaseService = knowledgeBaseService;
+        this.openApiKeyService = openApiKeyService;
         this.seedDemoUsers = seedDemoUsers;
     }
 
@@ -73,6 +76,10 @@ public class DataInitializer implements ApplicationRunner {
         seedAgents();
         seedTemplates();
         ensureAgentApiKeys();
+        try {
+            openApiKeyService.migrateLegacyAgentKeys();
+        } catch (Exception ignored) {
+        }
         syncAgentCallStats();
         scrubPersistedToolSecrets();
         seedLlmGateway();

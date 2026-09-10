@@ -34,6 +34,7 @@ public class AgentService {
     private final ResourceAuthorizationService resourceAuthService;
     private final com.example.agentplatform.repository.KnowledgeBaseRepository knowledgeBaseRepository;
     private final com.example.agentplatform.repository.ResourceGrantRepository resourceGrantRepository;
+    private final OwnerNameResolver ownerNameResolver;
 
     public AgentService(AgentRepository agentRepository,
                         AgentDailyStatRepository dailyStatRepository,
@@ -42,7 +43,8 @@ public class AgentService {
                         AgentToolSecretService toolSecretService,
                         ResourceAuthorizationService resourceAuthService,
                         com.example.agentplatform.repository.KnowledgeBaseRepository knowledgeBaseRepository,
-                        com.example.agentplatform.repository.ResourceGrantRepository resourceGrantRepository) {
+                        com.example.agentplatform.repository.ResourceGrantRepository resourceGrantRepository,
+                        OwnerNameResolver ownerNameResolver) {
         this.agentRepository = agentRepository;
         this.dailyStatRepository = dailyStatRepository;
         this.conversationService = conversationService;
@@ -51,6 +53,7 @@ public class AgentService {
         this.resourceAuthService = resourceAuthService;
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.resourceGrantRepository = resourceGrantRepository;
+        this.ownerNameResolver = ownerNameResolver;
     }
 
     @Transactional(readOnly = true)
@@ -60,7 +63,14 @@ public class AgentService {
 
     @Transactional(readOnly = true)
     public PageResult<Agent> searchAgents(String keyword, String category, AgentStatus status, String scope, CurrentActor actor, int page, int size) {
+        return searchAgents(keyword, category, status, scope, null, actor, page, size);
+    }
+
+    @Transactional(readOnly = true)
+    public PageResult<Agent> searchAgents(String keyword, String category, AgentStatus status, String scope, String ownerId, CurrentActor actor, int page, int size) {
         List<Agent> all = agentRepository.findAll(Sort.by(Sort.Direction.DESC, "updatedAt"));
+        Map<String, String> names = ownerNameResolver.usernames(
+                all.stream().map(Agent::getOwnerId).collect(Collectors.toSet()));
 
         List<Agent> filtered = all.stream()
                 .filter(a -> {
@@ -85,6 +95,9 @@ public class AgentService {
                             return false;
                         }
                     }
+                    if (!OwnerNameResolver.matchesOwner(a.getOwnerId(), ownerId)) {
+                        return false;
+                    }
 
                     // 3. Keyword search
                     if (keyword != null && !keyword.trim().isEmpty()) {
@@ -93,7 +106,12 @@ public class AgentService {
                         boolean matchDesc = a.getDescription() != null && a.getDescription().toLowerCase().contains(kw);
                         boolean matchCode = a.getCode() != null && a.getCode().toLowerCase().contains(kw);
                         boolean matchTag = a.getTags() != null && a.getTags().stream().anyMatch(t -> t.toLowerCase().contains(kw));
-                        boolean matchOwner = a.getOwnerUsername() != null && a.getOwnerUsername().toLowerCase().contains(kw);
+                        String ownerName = a.getOwnerUsername();
+                        if (ownerName == null || ownerName.isBlank()) {
+                            ownerName = OwnerNameResolver.lookup(names, a.getOwnerId());
+                        }
+                        String ownerKw = kw.startsWith("@") ? kw.substring(1) : kw;
+                        boolean matchOwner = ownerName != null && ownerName.toLowerCase().contains(ownerKw);
                         if (!matchName && !matchDesc && !matchCode && !matchTag && !matchOwner) {
                             return false;
                         }
@@ -119,6 +137,11 @@ public class AgentService {
         int toIndex = Math.min(fromIndex + safeSize, total);
 
         List<Agent> pageRecords = filtered.subList(fromIndex, toIndex);
+        for (Agent agent : pageRecords) {
+            if (agent.getOwnerUsername() == null || agent.getOwnerUsername().isBlank()) {
+                agent.setOwnerUsername(OwnerNameResolver.lookup(names, agent.getOwnerId()));
+            }
+        }
         return new PageResult<>(pageRecords, total, safePage, safeSize);
     }
 

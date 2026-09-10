@@ -54,6 +54,9 @@ class KnowledgeBaseServiceTest {
     @Mock
     private KnowledgeBaseProvider difyProvider;
 
+    @Mock
+    private OwnerNameResolver ownerNameResolver;
+
     private KnowledgeBaseService knowledgeBaseService;
 
     @BeforeEach
@@ -66,7 +69,8 @@ class KnowledgeBaseServiceTest {
                 resourceAuthorizationService,
                 resourceGrantRepository,
                 List.of(difyProvider),
-                new ObjectMapper()
+                new ObjectMapper(),
+                ownerNameResolver
         );
     }
 

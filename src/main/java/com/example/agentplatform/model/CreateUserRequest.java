@@ -6,6 +6,7 @@ public class CreateUserRequest {
     private String role;
     private String password;
     private Boolean mustChangePassword;
+    private java.util.List<IdentityBindRequest> identities;
 
     public CreateUserRequest() {
     }
@@ -48,5 +49,13 @@ public class CreateUserRequest {
 
     public void setMustChangePassword(Boolean mustChangePassword) {
         this.mustChangePassword = mustChangePassword;
+    }
+
+    public java.util.List<IdentityBindRequest> getIdentities() {
+        return identities;
+    }
+
+    public void setIdentities(java.util.List<IdentityBindRequest> identities) {
+        this.identities = identities;
     }
 }

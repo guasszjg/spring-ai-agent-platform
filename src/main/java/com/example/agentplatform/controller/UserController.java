@@ -7,6 +7,7 @@ import com.example.agentplatform.model.CreateUserRequest;
 import com.example.agentplatform.model.UpdateUserProfileRequest;
 import com.example.agentplatform.model.UserSummaryDto;
 import com.example.agentplatform.security.CurrentActor;
+import com.example.agentplatform.service.IdentitySyncService;
 import com.example.agentplatform.service.UserAdminService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -27,9 +28,12 @@ import java.util.Map;
 public class UserController {
 
     private final UserAdminService userAdminService;
+    private final IdentitySyncService identitySyncService;
 
-    public UserController(UserAdminService userAdminService) {
+    public UserController(UserAdminService userAdminService,
+                          IdentitySyncService identitySyncService) {
         this.userAdminService = userAdminService;
+        this.identitySyncService = identitySyncService;
     }
 
     private boolean checkAdmin() {
@@ -58,6 +62,15 @@ public class UserController {
         }
         try {
             Map<String, Object> created = userAdminService.createUser(request);
+            try {
+                UserSummaryDto user = (UserSummaryDto) created.get("user");
+                if (user != null) {
+                    created.put("identities", identitySyncService.bindOnUserCreated(
+                            userAdminService.findEntity(user.getId()), request.getIdentities()));
+                }
+            } catch (Exception e) {
+                created.put("identityWarning", "本地账号已创建，第三方同步未完成，可稍后在开放平台重试");
+            }
             return ResponseEntity.ok(ApiResponse.ok("用户创建成功", created));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));

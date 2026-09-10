@@ -20,9 +20,11 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -67,6 +69,32 @@ public class LlmGatewayService {
         overview.setEnabledCount((int) providers.stream().filter(LlmProviderView::isEnabled).count());
         overview.setReadyCount((int) providers.stream().filter(item -> item.isEnabled() && item.isConfigured()).count());
         return overview;
+    }
+
+    @Transactional
+    public Map<String, String> activeRoute() {
+        GatewayPolicy policy = ensurePolicy();
+        String defaultId = policy.getDefaultProviderId();
+        List<LlmProvider> providers = providerRepository.findAllByOrderByBuiltinDescCreatedAtAsc();
+        LlmProvider primary = null;
+        for (LlmProvider provider : providers) {
+            if (Boolean.TRUE.equals(provider.getEnabled()) && hasKey(provider) && provider.getId().equals(defaultId)) {
+                primary = provider;
+                break;
+            }
+        }
+        if (primary == null) {
+            for (LlmProvider provider : providers) {
+                if (Boolean.TRUE.equals(provider.getEnabled()) && hasKey(provider)) {
+                    primary = provider;
+                    break;
+                }
+            }
+        }
+        Map<String, String> route = new LinkedHashMap<>();
+        route.put("channel", primary != null && primary.getName() != null ? primary.getName() : "");
+        route.put("model", primary != null && primary.getDefaultModel() != null ? primary.getDefaultModel() : "");
+        return route;
     }
 
     @Transactional

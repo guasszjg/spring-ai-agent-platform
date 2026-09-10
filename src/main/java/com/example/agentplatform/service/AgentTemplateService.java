@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -19,13 +20,16 @@ public class AgentTemplateService {
     private final AgentTemplateRepository templateRepository;
     private final ResourceAuthorizationService resourceAuthService;
     private final ResourceGrantRepository grantRepository;
+    private final OwnerNameResolver ownerNameResolver;
 
     public AgentTemplateService(AgentTemplateRepository templateRepository,
                                 ResourceAuthorizationService resourceAuthService,
-                                ResourceGrantRepository grantRepository) {
+                                ResourceGrantRepository grantRepository,
+                                OwnerNameResolver ownerNameResolver) {
         this.templateRepository = templateRepository;
         this.resourceAuthService = resourceAuthService;
         this.grantRepository = grantRepository;
+        this.ownerNameResolver = ownerNameResolver;
     }
 
     @Transactional(readOnly = true)
@@ -35,9 +39,35 @@ public class AgentTemplateService {
 
     @Transactional(readOnly = true)
     public List<AgentTemplate> list(String keyword, String category, CurrentActor actor) {
-        List<AgentTemplate> all = templateRepository.searchTemplates(keyword, category);
+        return list(keyword, category, null, actor);
+    }
+
+    @Transactional(readOnly = true)
+    public List<AgentTemplate> list(String keyword, String category, String ownerId, CurrentActor actor) {
+        List<AgentTemplate> all = templateRepository.searchTemplates(null, category);
+        Map<String, String> names = ownerNameResolver.usernames(
+                all.stream().map(AgentTemplate::getOwnerId).collect(Collectors.toSet()));
+        String kw = keyword != null ? keyword.trim().toLowerCase() : "";
         return all.stream()
                 .filter(t -> actor == null || resourceAuthService.canViewTemplate(actor, t))
+                .filter(t -> OwnerNameResolver.matchesOwner(t.getOwnerId(), ownerId))
+                .peek(t -> {
+                    if (t.getOwnerUsername() == null || t.getOwnerUsername().isBlank()) {
+                        t.setOwnerUsername(OwnerNameResolver.lookup(names, t.getOwnerId()));
+                    }
+                })
+                .filter(t -> {
+                    if (kw.isEmpty()) {
+                        return true;
+                    }
+                    boolean matchName = t.getName() != null && t.getName().toLowerCase().contains(kw);
+                    boolean matchDesc = t.getDescription() != null && t.getDescription().toLowerCase().contains(kw);
+                    boolean matchPrompt = t.getSystemPrompt() != null && t.getSystemPrompt().toLowerCase().contains(kw);
+                    boolean matchTags = t.getTags() != null && t.getTags().toLowerCase().contains(kw);
+                    boolean matchOwner = t.getOwnerUsername() != null && t.getOwnerUsername().toLowerCase()
+                            .contains(kw.startsWith("@") ? kw.substring(1) : kw);
+                    return matchName || matchDesc || matchPrompt || matchTags || matchOwner;
+                })
                 .collect(Collectors.toList());
     }
 
@@ -48,7 +78,12 @@ public class AgentTemplateService {
 
     @Transactional(readOnly = true)
     public PageResult<AgentTemplate> searchTemplates(String keyword, String category, int page, int size, CurrentActor actor) {
-        List<AgentTemplate> filtered = list(keyword, category, actor);
+        return searchTemplates(keyword, category, null, page, size, actor);
+    }
+
+    @Transactional(readOnly = true)
+    public PageResult<AgentTemplate> searchTemplates(String keyword, String category, String ownerId, int page, int size, CurrentActor actor) {
+        List<AgentTemplate> filtered = list(keyword, category, ownerId, actor);
         int total = filtered.size();
         int safePage = Math.max(1, page);
         int safeSize = Math.max(1, size);
@@ -87,6 +122,9 @@ public class AgentTemplateService {
             throw new IllegalArgumentException("系统提示词不能为空");
         }
         template.setId(null);
+        if (template.getIsBuiltin() == null) {
+            template.setIsBuiltin(false);
+        }
         if (actor != null) {
             template.setOwnerId(actor.getUserId());
             template.setOwnerUsername(actor.getUsername());

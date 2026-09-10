@@ -27,6 +27,7 @@ import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.net.URI;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/model-gateway")
@@ -50,6 +51,11 @@ public class ModelGatewayController {
                     .body(ApiResponse.error("权限不足：仅超级管理员可查看网关概览"));
         }
         return ResponseEntity.ok(ApiResponse.ok(gatewayService.overview()));
+    }
+
+    @GetMapping("/active-route")
+    public ResponseEntity<ApiResponse<Map<String, String>>> activeRoute() {
+        return ResponseEntity.ok(ApiResponse.ok(gatewayService.activeRoute()));
     }
 
     @GetMapping("/catalog")
