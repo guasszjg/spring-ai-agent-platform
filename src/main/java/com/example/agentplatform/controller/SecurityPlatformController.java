@@ -157,15 +157,41 @@ public class SecurityPlatformController {
     @GetMapping("/audit-events")
     public ResponseEntity<ApiResponse<PageResult<AuditEvent>>> auditEvents(
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int size) {
+            @RequestParam(defaultValue = "10") int size,
+            @RequestParam(required = false) String riskLevel,
+            @RequestParam(required = false) String result) {
         CurrentActor actor = CurrentActor.get();
         int pageNum = Math.max(page, 1);
         int pageSize = Math.min(Math.max(size, 1), 100);
         PageRequest pr = PageRequest.of(pageNum - 1, pageSize);
-        Page<AuditEvent> result = actor != null && actor.isSuperAdmin()
-                ? auditEventRepository.findAllByOrderByOccurredAtDesc(pr)
-                : auditEventRepository.findByOwnerIdOrderByOccurredAtDesc(actor != null ? actor.getUserId() : "", pr);
-        return ResponseEntity.ok(ApiResponse.ok(new PageResult<>(result.getContent(), result.getTotalElements(), pageNum, pageSize)));
+        boolean admin = actor != null && actor.isSuperAdmin();
+        String ownerId = actor != null ? actor.getUserId() : "";
+
+        Page<AuditEvent> pageRes;
+        if (riskLevel != null && !riskLevel.isBlank()) {
+            pageRes = admin ? auditEventRepository.findByRiskLevelOrderByOccurredAtDesc(riskLevel, pr)
+                            : auditEventRepository.findByOwnerIdAndRiskLevelOrderByOccurredAtDesc(ownerId, riskLevel, pr);
+        } else if (result != null && !result.isBlank()) {
+            pageRes = admin ? auditEventRepository.findByResultOrderByOccurredAtDesc(result, pr)
+                            : auditEventRepository.findByOwnerIdAndResultOrderByOccurredAtDesc(ownerId, result, pr);
+        } else {
+            pageRes = admin ? auditEventRepository.findAllByOrderByOccurredAtDesc(pr)
+                            : auditEventRepository.findByOwnerIdOrderByOccurredAtDesc(ownerId, pr);
+        }
+        return ResponseEntity.ok(ApiResponse.ok(new PageResult<>(pageRes.getContent(), pageRes.getTotalElements(), pageNum, pageSize)));
+    }
+
+    @GetMapping(value = "/audit-events/export-csv", produces = "text/csv; charset=UTF-8")
+    public ResponseEntity<String> exportAuditEventsCsv(
+            @RequestParam(required = false) String riskLevel,
+            @RequestParam(required = false) String result,
+            jakarta.servlet.http.HttpServletResponse response) {
+        try {
+            response.setHeader("Content-Disposition", "attachment; filename=audit_events.csv");
+            return ResponseEntity.ok(securityPlatformService.exportAuditEventsCsv(CurrentActor.get(), riskLevel, result));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body("导出失败: " + e.getMessage());
+        }
     }
 
     @GetMapping("/identity-providers")

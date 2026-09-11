@@ -13,6 +13,10 @@ import com.example.agentplatform.repository.GuardrailPolicyRepository;
 import com.example.agentplatform.security.CurrentActor;
 import com.example.agentplatform.security.OpenApiContext;
 import com.example.agentplatform.security.OpenApiScopes;
+import com.example.agentplatform.security.guardrail.ContentGuardService;
+import com.example.agentplatform.security.guardrail.InputGuardResult;
+import com.example.agentplatform.security.guardrail.OutputGuardResult;
+import com.example.agentplatform.security.guardrail.StreamingSlidingWindowGuard;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
@@ -42,6 +46,7 @@ public class OpenChatService {
     private final AuditRecorder auditRecorder;
     private final UsageRecorder usageRecorder;
     private final ObjectMapper objectMapper;
+    private final ContentGuardService contentGuardService;
 
     public OpenChatService(AgentRepository agentRepository,
                            AiChatService aiChatService,
@@ -49,7 +54,8 @@ public class OpenChatService {
                            GuardrailPolicyRepository policyRepository,
                            AuditRecorder auditRecorder,
                            UsageRecorder usageRecorder,
-                           ObjectMapper objectMapper) {
+                           ObjectMapper objectMapper,
+                           ContentGuardService contentGuardService) {
         this.agentRepository = agentRepository;
         this.aiChatService = aiChatService;
         this.authorizationService = authorizationService;
@@ -57,6 +63,7 @@ public class OpenChatService {
         this.auditRecorder = auditRecorder;
         this.usageRecorder = usageRecorder;
         this.objectMapper = objectMapper;
+        this.contentGuardService = contentGuardService;
     }
 
     public Object chat(OpenApiChatRequest request, HttpServletRequest httpRequest) {
@@ -95,25 +102,19 @@ public class OpenChatService {
             auditRecorder.record("chat.denied", "AGENT", agent.getId(), "DENIED", "kill_switch", "HIGH", null);
             return error(HttpStatus.FORBIDDEN, "kill_switch", "该开发者的开放调用已被紧急停用");
         }
-        if (request.getMessage() == null || request.getMessage().isBlank()) {
-            return error(HttpStatus.BAD_REQUEST, "input_too_long", "请求参数 message 不能为空");
+
+        InputGuardResult inputCheck = contentGuardService.inspectInput(policy, request.getMessage());
+        if (inputCheck.isBlocked()) {
+            auditRecorder.record("chat.denied", "AGENT", agent.getId(), "DENIED", inputCheck.getReasonCode(), "HIGH", inputCheck.getMatchedTerm());
+            return error(HttpStatus.UNPROCESSABLE_ENTITY, inputCheck.getReasonCode(), inputCheck.getMessage());
         }
-        if (policy != null && request.getMessage().length() > policy.getMaxInputChars()) {
-            return error(HttpStatus.UNPROCESSABLE_ENTITY, "input_too_long", "输入超过最大长度 " + policy.getMaxInputChars());
-        }
-        if (policy != null && !policy.getSensitiveWords().isEmpty() && "BLOCK".equalsIgnoreCase(policy.getSensitiveAction())) {
-            String lower = request.getMessage().toLowerCase();
-            for (String word : policy.getSensitiveWords()) {
-                if (word != null && !word.isBlank() && lower.contains(word.toLowerCase())) {
-                    auditRecorder.record("chat.denied", "AGENT", agent.getId(), "DENIED", "sensitive_content", "HIGH", word);
-                    return error(HttpStatus.UNPROCESSABLE_ENTITY, "sensitive_content", "输入包含敏感内容");
-                }
-            }
+        if (inputCheck.getAuditType() != null) {
+            auditRecorder.record("chat.warning", "AGENT", agent.getId(), "LOGGED", inputCheck.getAuditType(), "MEDIUM", inputCheck.getMatchedTerm());
         }
 
         ChatRequest chatReq = new ChatRequest();
         chatReq.setAgentId(agent.getId());
-        chatReq.setMessage(request.getMessage().trim());
+        chatReq.setMessage(inputCheck.getProcessedText().trim());
         chatReq.setConversationId(request.getConversationId());
         String endUser = request.getEndUser() != null && !request.getEndUser().isBlank()
                 ? request.getEndUser().trim()
@@ -124,10 +125,19 @@ public class OpenChatService {
 
         boolean streaming = "streaming".equalsIgnoreCase(request.getResponseMode());
         if (streaming) {
-            return stream(chatReq, agent);
+            return stream(chatReq, agent, policy);
         }
         try {
             ChatResponse chatResp = aiChatService.chat(chatReq);
+            String rawReply = chatResp.getReply();
+            OutputGuardResult outputCheck = contentGuardService.inspectOutput(policy, rawReply);
+            if (outputCheck.isBlocked()) {
+                auditRecorder.record("chat.output_blocked", "AGENT", agent.getId(), "BLOCKED", outputCheck.getReasonCode(), "HIGH", outputCheck.getMatchedTerm());
+                chatResp.setReply("【内容安全告警】智能体回复内容未通过合规安全审核，已被系统拦截。");
+            } else {
+                chatResp.setReply(outputCheck.getProcessedText());
+            }
+
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("conversation_id", chatResp.getConversationId());
             data.put("message_id", "msg-" + UUID.randomUUID().toString().substring(0, 8));
@@ -138,6 +148,9 @@ public class OpenChatService {
             data.put("latency_ms", chatResp.getLatencyMs());
             data.put("created_at", System.currentTimeMillis() / 1000);
             data.put("request_id", ctx.getRequestId());
+            if (outputCheck.isBlocked()) {
+                data.put("guardrail", "blocked");
+            }
             auditRecorder.record("chat.invoke", "AGENT", agent.getId(), "SUCCESS", null, "LOW", null);
             usageRecorder.record("chat", agent.getId(), chatResp.getConversationId(), 200, null,
                     chatResp.getLatencyMs() != null ? chatResp.getLatencyMs().intValue() : 0,
@@ -157,7 +170,7 @@ public class OpenChatService {
                 .body(errorBody("not_supported", "停止生成尚未接入上游取消，taskId=" + taskId));
     }
 
-    private Object stream(ChatRequest chatReq, Agent agent) {
+    private Object stream(ChatRequest chatReq, Agent agent, GuardrailPolicy policy) {
         SseEmitter emitter = new SseEmitter(180_000L);
         CompletableFuture.runAsync(() -> {
             try {
@@ -166,18 +179,62 @@ public class OpenChatService {
                 String convId = chatResp.getConversationId() != null ? chatResp.getConversationId() : "conv-" + UUID.randomUUID().toString().substring(0, 8);
                 String msgId = "msg-" + UUID.randomUUID().toString().substring(0, 8);
                 long createdAt = System.currentTimeMillis() / 1000;
+
+                StreamingSlidingWindowGuard slidingGuard = contentGuardService.createStreamingGuard(policy);
+                boolean wasBlocked = false;
+
                 int chunkSize = 3;
                 for (int i = 0; i < reply.length(); i += chunkSize) {
                     int end = Math.min(reply.length(), i + chunkSize);
-                    Map<String, Object> chunkPayload = new LinkedHashMap<>();
-                    chunkPayload.put("event", "message");
-                    chunkPayload.put("conversation_id", convId);
-                    chunkPayload.put("message_id", msgId);
-                    chunkPayload.put("answer", reply.substring(i, end));
-                    chunkPayload.put("created_at", createdAt);
-                    emitter.send(SseEmitter.event().name("message").data(objectMapper.writeValueAsString(chunkPayload)));
+                    String rawChunk = reply.substring(i, end);
+                    List<String> safeChunks = slidingGuard.processChunk(rawChunk);
+                    if (slidingGuard.isViolationDetected()) {
+                        wasBlocked = true;
+                        Map<String, Object> guardPayload = new LinkedHashMap<>();
+                        guardPayload.put("event", "guardrail");
+                        guardPayload.put("action", "blocked");
+                        guardPayload.put("reason", "output_violation");
+                        guardPayload.put("message", "输出命中敏感内容，流式传输已即时中断");
+                        emitter.send(SseEmitter.event().name("guardrail").data(objectMapper.writeValueAsString(guardPayload)));
+                        auditRecorder.record("chat.output_blocked", "AGENT", agent.getId(), "BLOCKED", "streaming_violation", "HIGH", slidingGuard.getViolatedTerm());
+                        break;
+                    }
+                    for (String sc : safeChunks) {
+                        if (!sc.isEmpty()) {
+                            Map<String, Object> chunkPayload = new LinkedHashMap<>();
+                            chunkPayload.put("event", "message");
+                            chunkPayload.put("conversation_id", convId);
+                            chunkPayload.put("message_id", msgId);
+                            chunkPayload.put("answer", sc);
+                            chunkPayload.put("created_at", createdAt);
+                            emitter.send(SseEmitter.event().name("message").data(objectMapper.writeValueAsString(chunkPayload)));
+                        }
+                    }
                     Thread.sleep(25);
                 }
+
+                if (!wasBlocked) {
+                    String remaining = slidingGuard.flush();
+                    if (slidingGuard.isViolationDetected()) {
+                        wasBlocked = true;
+                        Map<String, Object> guardPayload = new LinkedHashMap<>();
+                        guardPayload.put("event", "guardrail");
+                        guardPayload.put("action", "blocked");
+                        guardPayload.put("reason", "output_violation");
+                        guardPayload.put("message", "输出命中敏感内容，流式传输已即时中断");
+                        emitter.send(SseEmitter.event().name("guardrail").data(objectMapper.writeValueAsString(guardPayload)));
+                        auditRecorder.record("chat.output_blocked", "AGENT", agent.getId(), "BLOCKED", "streaming_violation", "HIGH", slidingGuard.getViolatedTerm());
+                    } else if (!remaining.isEmpty()) {
+                        Map<String, Object> chunkPayload = new LinkedHashMap<>();
+                        chunkPayload.put("event", "message");
+                        chunkPayload.put("conversation_id", convId);
+                        chunkPayload.put("message_id", msgId);
+                        chunkPayload.put("answer", remaining);
+                        chunkPayload.put("created_at", createdAt);
+                        emitter.send(SseEmitter.event().name("message").data(objectMapper.writeValueAsString(chunkPayload)));
+                    }
+                }
+
                 Map<String, Object> endPayload = new LinkedHashMap<>();
                 endPayload.put("event", "message_end");
                 endPayload.put("conversation_id", convId);
@@ -187,11 +244,16 @@ public class OpenChatService {
                 metadata.put("tokens_used", chatResp.getTokensUsed() != null ? chatResp.getTokensUsed() : 0);
                 metadata.put("latency_ms", chatResp.getLatencyMs() != null ? chatResp.getLatencyMs() : 0);
                 metadata.put("tool_called", chatResp.getToolCalled());
+                if (wasBlocked) {
+                    metadata.put("guardrail", "blocked");
+                }
                 endPayload.put("metadata", metadata);
                 emitter.send(SseEmitter.event().name("message_end").data(objectMapper.writeValueAsString(endPayload)));
                 emitter.complete();
-                auditRecorder.record("chat.invoke", "AGENT", agent.getId(), "SUCCESS", null, "LOW", null);
-                usageRecorder.record("chat", agent.getId(), convId, 200, null,
+                if (!wasBlocked) {
+                    auditRecorder.record("chat.invoke", "AGENT", agent.getId(), "SUCCESS", null, "LOW", null);
+                }
+                usageRecorder.record("chat", agent.getId(), convId, wasBlocked ? 422 : 200, null,
                         chatResp.getLatencyMs() != null ? chatResp.getLatencyMs().intValue() : 0,
                         chatResp.getTokensUsed() != null ? chatResp.getTokensUsed() : 0,
                         0, chatResp.getModel() != null ? chatResp.getModel() : agent.getModelName());

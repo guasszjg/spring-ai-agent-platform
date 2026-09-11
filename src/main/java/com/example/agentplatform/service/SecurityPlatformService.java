@@ -311,6 +311,43 @@ public class SecurityPlatformService {
         return Map.of("total", success + failed, "imported", success, "failed", failed, "errors", errors);
     }
 
+    @Transactional(readOnly = true)
+    public String exportAuditEventsCsv(CurrentActor actor, String riskLevel, String result) {
+        List<com.example.agentplatform.model.AuditEvent> list;
+        if (actor != null && actor.isSuperAdmin()) {
+            list = auditEventRepository.findAllByOrderByOccurredAtDesc();
+        } else {
+            String ownerId = actor != null ? actor.getUserId() : "";
+            list = auditEventRepository.findByOwnerIdOrderByOccurredAtDesc(ownerId);
+        }
+        if (riskLevel != null && !riskLevel.isBlank()) {
+            list = list.stream().filter(e -> riskLevel.equalsIgnoreCase(e.getRiskLevel())).toList();
+        }
+        if (result != null && !result.isBlank()) {
+            list = list.stream().filter(e -> result.equalsIgnoreCase(e.getResult())).toList();
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("\uFEFF");
+        sb.append("事件ID,发生时间,主体类型,主体用户,API_Key,终端ID,行为,资源类型,资源ID,结果,风险等级,原因码,客户端IP,请求ID\n");
+        for (com.example.agentplatform.model.AuditEvent e : list) {
+            sb.append(escapeCsv(e.getId())).append(",")
+              .append(e.getOccurredAt() != null ? e.getOccurredAt().toString() : "").append(",")
+              .append(escapeCsv(e.getActorType())).append(",")
+              .append(escapeCsv(e.getActorUserId())).append(",")
+              .append(escapeCsv(e.getApiKeyId())).append(",")
+              .append(escapeCsv(e.getClientCredentialId())).append(",")
+              .append(escapeCsv(e.getAction())).append(",")
+              .append(escapeCsv(e.getResourceType())).append(",")
+              .append(escapeCsv(e.getResourceId())).append(",")
+              .append(escapeCsv(e.getResult())).append(",")
+              .append(escapeCsv(e.getRiskLevel())).append(",")
+              .append(escapeCsv(e.getReasonCode())).append(",")
+              .append(escapeCsv(e.getClientIp())).append(",")
+              .append(escapeCsv(e.getRequestId())).append("\n");
+        }
+        return sb.toString();
+    }
+
     private static String escapeCsv(String value) {
         if (value == null) return "";
         if (value.contains(",") || value.contains("\"") || value.contains("\n")) {

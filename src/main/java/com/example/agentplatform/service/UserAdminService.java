@@ -9,6 +9,7 @@ import com.example.agentplatform.model.UserStatus;
 import com.example.agentplatform.model.UserSummaryDto;
 import com.example.agentplatform.repository.UserRepository;
 import com.example.agentplatform.security.CurrentActor;
+import com.example.agentplatform.security.audit.AuditedAction;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -64,6 +65,7 @@ public class UserAdminService {
                 .collect(Collectors.toList());
     }
 
+    @AuditedAction(action = "user.create", resourceType = "USER", riskLevel = "MEDIUM")
     public Map<String, Object> createUser(CreateUserRequest request) {
         if (request.getUsername() == null || request.getUsername().trim().isBlank()) {
             throw new IllegalArgumentException("用户名不能为空");
@@ -118,6 +120,7 @@ public class UserAdminService {
                 .orElseThrow(() -> new IllegalArgumentException("用户不存在"));
     }
 
+    @AuditedAction(action = "user.profile_update", resourceType = "USER", riskLevel = "LOW")
     public UserSummaryDto updateUserProfile(String userId, UpdateUserProfileRequest request) {
         AppUser user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("用户不存在"));
@@ -133,6 +136,7 @@ public class UserAdminService {
         return new UserSummaryDto(saved);
     }
 
+    @AuditedAction(action = "user.role_update", resourceType = "USER", riskLevel = "HIGH")
     public UserSummaryDto changeUserRole(String userId, String newRoleRaw) {
         AppUser user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("用户不存在"));
@@ -158,6 +162,7 @@ public class UserAdminService {
         return new UserSummaryDto(saved);
     }
 
+    @AuditedAction(action = "user.status_update", resourceType = "USER", riskLevel = "MEDIUM")
     public UserSummaryDto changeUserStatus(String userId, String targetStatus) {
         AppUser user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("用户不存在"));
@@ -191,6 +196,7 @@ public class UserAdminService {
         return new UserSummaryDto(saved);
     }
 
+    @AuditedAction(action = "user.reset_password", resourceType = "USER", riskLevel = "HIGH")
     public Map<String, Object> resetPassword(String userId, String customPassword, Boolean mustChangePassword) {
         AppUser user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("用户不存在"));
