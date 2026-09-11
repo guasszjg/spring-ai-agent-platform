@@ -27,4 +27,13 @@ public class OpenApiFilterConfig {
         bean.setOrder(Ordered.HIGHEST_PRECEDENCE + 20);
         return bean;
     }
+
+    @Bean
+    public FilterRegistrationBean<com.example.agentplatform.security.OpenApiIdempotencyFilter> openApiIdempotencyFilter() {
+        FilterRegistrationBean<com.example.agentplatform.security.OpenApiIdempotencyFilter> bean = new FilterRegistrationBean<>();
+        bean.setFilter(new com.example.agentplatform.security.OpenApiIdempotencyFilter());
+        bean.addUrlPatterns("/open/v1/*");
+        bean.setOrder(Ordered.HIGHEST_PRECEDENCE + 30);
+        return bean;
+    }
 }
