@@ -22,5 +22,13 @@ public interface OpenApiCallLogRepository extends JpaRepository<OpenApiCallLog, 
 
     long countByOwnerIdAndHttpStatusGreaterThanEqualAndTsAfter(String ownerId, int minStatus, LocalDateTime after);
 
+    long countByTsAfter(LocalDateTime after);
+
+    long countByHttpStatusGreaterThanEqualAndTsAfter(int minStatus, LocalDateTime after);
+
+    long countByHttpStatusAndTsAfter(int httpStatus, LocalDateTime after);
+
+    long countByOwnerIdAndHttpStatusAndTsAfter(String ownerId, int httpStatus, LocalDateTime after);
+
     long deleteByTsBefore(LocalDateTime before);
 }

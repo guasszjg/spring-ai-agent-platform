@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 public class OpenApiKeyService {
@@ -151,6 +152,53 @@ public class OpenApiKeyService {
     }
 
     @Transactional
+    public Map<String, Object> rotate(String id, Integer graceHours, CurrentActor actor) {
+        if (actor == null || actor.isViewer()) {
+            throw new IllegalStateException("无权轮换开放凭证");
+        }
+        OpenApiKey oldKey = requireOwned(id, actor);
+        if ("REVOKED".equalsIgnoreCase(oldKey.getStatus()) || "DISABLED".equalsIgnoreCase(oldKey.getStatus())) {
+            throw new IllegalArgumentException("当前凭证不可用，无法进行轮换");
+        }
+
+        int hours = (graceHours != null && graceHours > 0) ? graceHours : 24;
+        LocalDateTime graceExpiresAt = LocalDateTime.now().plusHours(hours);
+
+        String newPlaintext = generatePlaintext();
+        OpenApiKey newKey = new OpenApiKey();
+        newKey.setId("oak-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16));
+        newKey.setOwnerId(oldKey.getOwnerId());
+        newKey.setCreatedBy(actor.getUserId());
+        newKey.setIssuerAuthVersion(actor.getAuthVersion());
+        newKey.setName(oldKey.getName() + " (轮换)");
+        newKey.setKeyPrefix(newPlaintext.substring(0, Math.min(16, newPlaintext.length())));
+        newKey.setKeyHash(sha256(newPlaintext));
+        newKey.setScopes(new ArrayList<>(oldKey.getScopes()));
+        newKey.setAgentScope(new ArrayList<>(oldKey.getAgentScope()));
+        newKey.setIpAllowlist(new ArrayList<>(oldKey.getIpAllowlist()));
+        newKey.setRateLimitRpm(oldKey.getRateLimitRpm());
+        newKey.setDailyTokenQuota(oldKey.getDailyTokenQuota());
+        newKey.setStatus("ACTIVE");
+        newKey = keyRepository.save(newKey);
+
+        oldKey.setStatus("ROTATING");
+        oldKey.setGraceExpiresAt(graceExpiresAt);
+        oldKey.setRotatedToKeyId(newKey.getId());
+        keyRepository.save(oldKey);
+
+        auditRecorder.record("key.rotate", "API_KEY", oldKey.getId(), "SUCCESS", null, "MEDIUM",
+                "轮换至新Key: " + newKey.getKeyPrefix() + "，宽限期 " + hours + " 小时");
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("newKey", toView(newKey));
+        result.put("newPlaintext", newPlaintext);
+        result.put("oldKey", toView(oldKey));
+        result.put("graceHours", hours);
+        result.put("graceExpiresAt", graceExpiresAt);
+        return result;
+    }
+
+    @Transactional
     public OpenApiKey updateStatus(String id, String status, CurrentActor actor) {
         OpenApiKey key = requireOwned(id, actor);
         String normalized = status != null ? status.trim().toUpperCase() : "";
@@ -183,7 +231,13 @@ public class OpenApiKeyService {
         }
         Optional<OpenApiKey> stored = keyRepository.findByKeyHash(sha256(plaintext.trim()));
         if (stored.isPresent()) {
-            return stored.map(ResolvedKey::fromStored);
+            OpenApiKey k = stored.get();
+            if ("ROTATING".equals(k.getStatus()) && k.getGraceExpiresAt() != null && LocalDateTime.now().isAfter(k.getGraceExpiresAt())) {
+                k.setStatus("REVOKED");
+                k.setRevokedAt(LocalDateTime.now());
+                keyRepository.save(k);
+            }
+            return Optional.of(ResolvedKey.fromStored(k));
         }
         return agentRepository.findByApiKey(plaintext.trim()).map(ResolvedKey::fromLegacyAgent);
     }
@@ -257,6 +311,8 @@ public class OpenApiKeyService {
         map.put("status", key.getStatus());
         map.put("expiresAt", key.getExpiresAt());
         map.put("revokedAt", key.getRevokedAt());
+        map.put("graceExpiresAt", key.getGraceExpiresAt());
+        map.put("rotatedToKeyId", key.getRotatedToKeyId());
         map.put("lastUsedAt", key.getLastUsedAt());
         map.put("lastUsedIp", key.getLastUsedIp());
         map.put("migrated", key.getMigrated());

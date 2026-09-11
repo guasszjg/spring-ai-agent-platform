@@ -14,6 +14,9 @@ public class UserSummaryDto {
     private String avatar;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+    private Long keyCount = 0L;
+    private Long clientCount = 0L;
+    private Long todayCalls = 0L;
 
     public UserSummaryDto() {
     }
@@ -120,4 +123,11 @@ public class UserSummaryDto {
     public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
     }
+
+    public Long getKeyCount() { return keyCount != null ? keyCount : 0L; }
+    public void setKeyCount(Long keyCount) { this.keyCount = keyCount; }
+    public Long getClientCount() { return clientCount != null ? clientCount : 0L; }
+    public void setClientCount(Long clientCount) { this.clientCount = clientCount; }
+    public Long getTodayCalls() { return todayCalls != null ? todayCalls : 0L; }
+    public void setTodayCalls(Long todayCalls) { this.todayCalls = todayCalls; }
 }

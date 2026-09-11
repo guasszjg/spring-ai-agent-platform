@@ -61,6 +61,23 @@ public class OpenApiKeyController {
         }
     }
 
+    @PostMapping("/{id}/rotate")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> rotate(
+            @PathVariable String id,
+            @RequestBody(required = false) Map<String, Object> body) {
+        try {
+            Integer graceHours = body != null && body.get("graceHours") != null
+                    ? Integer.parseInt(String.valueOf(body.get("graceHours")))
+                    : 24;
+            return ResponseEntity.ok(ApiResponse.ok("凭证已平滑轮换，旧凭证进入宽限期",
+                    openApiKeyService.rotate(id, graceHours, CurrentActor.get())));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<Void>> delete(@PathVariable String id) {
         try {

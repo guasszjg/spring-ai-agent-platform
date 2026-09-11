@@ -8,6 +8,11 @@ import com.example.agentplatform.model.UserRole;
 import com.example.agentplatform.model.UserStatus;
 import com.example.agentplatform.model.UserSummaryDto;
 import com.example.agentplatform.repository.UserRepository;
+import com.example.agentplatform.repository.OpenApiKeyRepository;
+import com.example.agentplatform.repository.ClientCredentialRepository;
+import com.example.agentplatform.repository.OpenApiCallLogRepository;
+import org.springframework.beans.factory.annotation.Autowired;
+import java.time.LocalDate;
 import com.example.agentplatform.security.CurrentActor;
 import com.example.agentplatform.security.audit.AuditedAction;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -33,10 +38,25 @@ public class UserAdminService {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+    private final OpenApiKeyRepository keyRepository;
+    private final ClientCredentialRepository clientRepository;
+    private final OpenApiCallLogRepository callLogRepository;
 
     public UserAdminService(UserRepository userRepository, PasswordEncoder passwordEncoder) {
+        this(userRepository, passwordEncoder, null, null, null);
+    }
+
+    @Autowired
+    public UserAdminService(UserRepository userRepository,
+                            PasswordEncoder passwordEncoder,
+                            OpenApiKeyRepository keyRepository,
+                            ClientCredentialRepository clientRepository,
+                            OpenApiCallLogRepository callLogRepository) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
+        this.keyRepository = keyRepository;
+        this.clientRepository = clientRepository;
+        this.callLogRepository = callLogRepository;
     }
 
     @Transactional(readOnly = true)
@@ -61,7 +81,19 @@ public class UserAdminService {
                     return true;
                 })
                 .sorted(Comparator.comparing(AppUser::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
-                .map(UserSummaryDto::new)
+                .map(u -> {
+                    UserSummaryDto dto = new UserSummaryDto(u);
+                    if (keyRepository != null && clientRepository != null && callLogRepository != null) {
+                        try {
+                            LocalDateTime todayStart = LocalDate.now().atStartOfDay();
+                            dto.setKeyCount(keyRepository.countByOwnerIdAndStatus(u.getId(), "ACTIVE"));
+                            dto.setClientCount(clientRepository.countByOwnerIdAndStatus(u.getId(), "ACTIVE"));
+                            dto.setTodayCalls(callLogRepository.countByOwnerIdAndTsAfter(u.getId(), todayStart));
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    return dto;
+                })
                 .collect(Collectors.toList());
     }
 

@@ -67,6 +67,12 @@ public class OpenApiKey {
     @Column(name = "revoked_at")
     private LocalDateTime revokedAt;
 
+    @Column(name = "grace_expires_at")
+    private LocalDateTime graceExpiresAt;
+
+    @Column(name = "rotated_to_key_id", length = 64)
+    private String rotatedToKeyId;
+
     @Column(name = "last_used_at")
     private LocalDateTime lastUsedAt;
 
@@ -137,6 +143,10 @@ public class OpenApiKey {
     public void setExpiresAt(LocalDateTime expiresAt) { this.expiresAt = expiresAt; }
     public LocalDateTime getRevokedAt() { return revokedAt; }
     public void setRevokedAt(LocalDateTime revokedAt) { this.revokedAt = revokedAt; }
+    public LocalDateTime getGraceExpiresAt() { return graceExpiresAt; }
+    public void setGraceExpiresAt(LocalDateTime graceExpiresAt) { this.graceExpiresAt = graceExpiresAt; }
+    public String getRotatedToKeyId() { return rotatedToKeyId; }
+    public void setRotatedToKeyId(String rotatedToKeyId) { this.rotatedToKeyId = rotatedToKeyId; }
     public LocalDateTime getLastUsedAt() { return lastUsedAt; }
     public void setLastUsedAt(LocalDateTime lastUsedAt) { this.lastUsedAt = lastUsedAt; }
     public String getLastUsedIp() { return lastUsedIp; }

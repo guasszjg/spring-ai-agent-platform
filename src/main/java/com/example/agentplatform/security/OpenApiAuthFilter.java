@@ -85,6 +85,16 @@ public class OpenApiAuthFilter extends OncePerRequestFilter {
             write(response, 401, "key_revoked", "凭证已停用", requestId);
             return;
         }
+        if ("ROTATING".equalsIgnoreCase(key.getStatus())) {
+            if (key.getGraceExpiresAt() != null && LocalDateTime.now().isAfter(key.getGraceExpiresAt())) {
+                write(response, 401, "key_expired", "轮换凭证已过 24h 宽限期，请切换使用新凭证", requestId);
+                return;
+            }
+            response.setHeader("X-Key-Status", "ROTATING");
+            if (key.getGraceExpiresAt() != null) {
+                response.setHeader("X-Key-Grace-Expires", key.getGraceExpiresAt().toString());
+            }
+        }
         if (key.getExpiresAt() != null && key.getExpiresAt().isBefore(LocalDateTime.now())) {
             write(response, 401, "key_expired", "凭证已过期", requestId);
             return;

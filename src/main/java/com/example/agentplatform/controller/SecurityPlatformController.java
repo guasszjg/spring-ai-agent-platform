@@ -2,6 +2,7 @@ package com.example.agentplatform.controller;
 
 import com.example.agentplatform.identity.IdentitySyncResult;
 import com.example.agentplatform.model.ApiResponse;
+import com.example.agentplatform.model.AlertRule;
 import com.example.agentplatform.model.AuditEvent;
 import com.example.agentplatform.model.ClientCredential;
 import com.example.agentplatform.model.ExternalIdentity;
@@ -31,6 +32,7 @@ import com.example.agentplatform.model.OpenApiCallLog;
 import com.example.agentplatform.model.UsageDaily;
 import com.example.agentplatform.repository.OpenApiCallLogRepository;
 import com.example.agentplatform.service.UsageRecorder;
+import com.example.agentplatform.service.AlertService;
 import org.springframework.format.annotation.DateTimeFormat;
 
 import java.time.LocalDate;
@@ -46,17 +48,20 @@ public class SecurityPlatformController {
     private final AuditEventRepository auditEventRepository;
     private final UsageRecorder usageRecorder;
     private final OpenApiCallLogRepository openApiCallLogRepository;
+    private final AlertService alertService;
 
     public SecurityPlatformController(SecurityPlatformService securityPlatformService,
                                       IdentitySyncService identitySyncService,
                                       AuditEventRepository auditEventRepository,
                                       UsageRecorder usageRecorder,
-                                      OpenApiCallLogRepository openApiCallLogRepository) {
+                                      OpenApiCallLogRepository openApiCallLogRepository,
+                                      AlertService alertService) {
         this.securityPlatformService = securityPlatformService;
         this.identitySyncService = identitySyncService;
         this.auditEventRepository = auditEventRepository;
         this.usageRecorder = usageRecorder;
         this.openApiCallLogRepository = openApiCallLogRepository;
+        this.alertService = alertService;
     }
 
     @GetMapping("/overview")
@@ -337,5 +342,43 @@ public class SecurityPlatformController {
                 ? openApiCallLogRepository.findAllByOrderByTsDesc(pr)
                 : openApiCallLogRepository.findByOwnerIdOrderByTsDesc(actor != null ? actor.getUserId() : "", pr);
         return ResponseEntity.ok(ApiResponse.ok(new PageResult<>(result.getContent(), result.getTotalElements(), pageNum, pageSize)));
+    }
+    @GetMapping("/alerts/rules")
+    public ResponseEntity<ApiResponse<List<AlertRule>>> listAlertRules() {
+        return ResponseEntity.ok(ApiResponse.ok(alertService.listRules(CurrentActor.get())));
+    }
+
+    @PostMapping("/alerts/rules")
+    public ResponseEntity<ApiResponse<AlertRule>> saveAlertRule(@RequestBody AlertRule rule) {
+        try {
+            return ResponseEntity.ok(ApiResponse.ok("告警规则已保存", alertService.saveRule(rule, CurrentActor.get())));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/alerts/rules/{id}")
+    public ResponseEntity<ApiResponse<Void>> deleteAlertRule(@PathVariable String id) {
+        try {
+            alertService.deleteRule(id, CurrentActor.get());
+            return ResponseEntity.ok(ApiResponse.ok("告警规则已删除", null));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/alerts/rules/{id}/test")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> testAlertRule(@PathVariable String id) {
+        try {
+            return ResponseEntity.ok(ApiResponse.ok("连通性测试完成", alertService.testWebhook(id, CurrentActor.get())));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
     }
 }

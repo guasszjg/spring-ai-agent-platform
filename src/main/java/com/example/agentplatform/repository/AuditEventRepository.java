@@ -20,6 +20,7 @@ public interface AuditEventRepository extends JpaRepository<AuditEvent, String> 
     long countByOccurredAtAfterAndResult(LocalDateTime after, String result);
     long countByOwnerIdAndOccurredAtAfterAndResult(String ownerId, LocalDateTime after, String result);
     long countByOccurredAtAfterAndRiskLevel(LocalDateTime after, String riskLevel);
+    long countByOwnerIdAndOccurredAtAfterAndRiskLevel(String ownerId, LocalDateTime after, String riskLevel);
     long deleteByOccurredAtBefore(LocalDateTime before);
     List<AuditEvent> findByOwnerIdOrderByOccurredAtDesc(String ownerId);
     List<AuditEvent> findAllByOrderByOccurredAtDesc();
