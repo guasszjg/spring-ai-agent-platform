@@ -46,4 +46,10 @@ public interface UsageDailyRepository extends JpaRepository<UsageDaily, String> 
            "FROM UsageDaily u WHERE u.statDate BETWEEN :from AND :to")
     Object[] getAggregatedSummaryAll(@Param("from") LocalDate from,
                                      @Param("to") LocalDate to);
+
+    @Query("SELECT COALESCE(SUM(u.promptTokens + u.completionTokens), 0) FROM UsageDaily u WHERE u.ownerId = :ownerId AND u.statDate = :today")
+    long getTodayTokensByOwner(@Param("ownerId") String ownerId, @Param("today") LocalDate today);
+
+    @Query("SELECT COALESCE(SUM(u.promptTokens + u.completionTokens), 0) FROM UsageDaily u WHERE u.clientCredentialId = :clientId AND u.statDate = :today")
+    long getTodayTokensByClient(@Param("clientId") String clientId, @Param("today") LocalDate today);
 }

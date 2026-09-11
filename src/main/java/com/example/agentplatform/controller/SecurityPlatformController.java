@@ -114,6 +114,36 @@ public class SecurityPlatformController {
         }
     }
 
+    @PostMapping("/clients/batch-approve")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> batchApprove(@RequestBody Map<String, List<String>> body) {
+        try {
+            List<String> ids = body != null ? body.get("ids") : List.of();
+            return ResponseEntity.ok(ApiResponse.ok("审批完成", securityPlatformService.batchApprove(ids, CurrentActor.get())));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @GetMapping(value = "/clients/export-csv", produces = "text/csv; charset=UTF-8")
+    public ResponseEntity<String> exportCsv(jakarta.servlet.http.HttpServletResponse response) {
+        try {
+            response.setHeader("Content-Disposition", "attachment; filename=clients.csv");
+            return ResponseEntity.ok(securityPlatformService.exportClientsCsv(CurrentActor.get()));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body("导出失败: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/clients/import-csv")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> importCsv(@RequestBody Map<String, String> body) {
+        try {
+            String csv = body != null ? body.get("csv") : null;
+            return ResponseEntity.ok(ApiResponse.ok("导入完成", securityPlatformService.importClientsCsv(csv, CurrentActor.get())));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
     @DeleteMapping("/clients/{id}")
     public ResponseEntity<ApiResponse<Void>> deleteClient(@PathVariable String id) {
         try {

@@ -8,6 +8,8 @@ import com.example.agentplatform.model.UserStatus;
 import com.example.agentplatform.repository.ClientCredentialRepository;
 import com.example.agentplatform.repository.GuardrailPolicyRepository;
 import com.example.agentplatform.repository.UserRepository;
+import com.example.agentplatform.service.AuditRecorder;
+import com.example.agentplatform.service.GuardrailPolicyService;
 import com.example.agentplatform.service.OpenApiKeyService;
 import com.example.agentplatform.service.OpenApiKeyService.ResolvedKey;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -32,19 +34,22 @@ public class OpenApiAuthFilter extends OncePerRequestFilter {
 
     private final OpenApiKeyService openApiKeyService;
     private final UserRepository userRepository;
-    private final GuardrailPolicyRepository policyRepository;
+    private final GuardrailPolicyService policyService;
     private final ClientCredentialRepository clientRepository;
+    private final AuditRecorder auditRecorder;
     private final ObjectMapper objectMapper;
 
     public OpenApiAuthFilter(OpenApiKeyService openApiKeyService,
                              UserRepository userRepository,
-                             GuardrailPolicyRepository policyRepository,
+                             GuardrailPolicyService policyService,
                              ClientCredentialRepository clientRepository,
+                             AuditRecorder auditRecorder,
                              ObjectMapper objectMapper) {
         this.openApiKeyService = openApiKeyService;
         this.userRepository = userRepository;
-        this.policyRepository = policyRepository;
+        this.policyService = policyService;
         this.clientRepository = clientRepository;
+        this.auditRecorder = auditRecorder;
         this.objectMapper = objectMapper;
     }
 
@@ -116,14 +121,21 @@ public class OpenApiAuthFilter extends OncePerRequestFilter {
         CurrentActor.set(ctx.asActor());
         OpenApiContext.set(ctx);
 
-        GuardrailPolicy policy = policyRepository.findById(owner.getId())
-                .or(() -> policyRepository.findById("GLOBAL"))
-                .orElse(null);
+        GuardrailPolicy policy = policyService.getEffectivePolicy(owner.getId());
+        ctx.setPolicy(policy);
+
         if (policy != null && Boolean.TRUE.equals(policy.getKillSwitch())) {
             write(response, 403, "kill_switch", "该开发者的开放调用已被紧急停用", requestId);
             cleanup();
             return;
         }
+
+        if (policy != null && !policyService.isWithinAllowedHours(policy)) {
+            write(response, 403, "outside_allowed_hours", "当前时间不在允许的调用时段内 (" + policy.getAllowedHours() + ")", requestId);
+            cleanup();
+            return;
+        }
+
         String clientType = headerOr(request, "X-Client-Type", "CUSTOM_KEY");
         String clientId = request.getHeader("X-Client-Id");
         String clientPolicy = policy != null ? policy.getClientPolicy() : "OFF";
@@ -133,6 +145,8 @@ public class OpenApiAuthFilter extends OncePerRequestFilter {
                     write(response, 403, "client_required", "请提供 X-Client-Id", requestId);
                     cleanup();
                     return;
+                } else if ("LOG_ONLY".equalsIgnoreCase(clientPolicy)) {
+                    auditRecorder.record("client.unknown", "CLIENT", "NONE", "WARNING", "CLIENT_UNKNOWN", "LOW", "LOG_ONLY 模式检测到缺失 X-Client-Id");
                 }
             } else {
                 String normalized = normalizeClientId(clientType, clientId);
@@ -141,11 +155,21 @@ public class OpenApiAuthFilter extends OncePerRequestFilter {
                         owner.getId(), clientType.toUpperCase(), hash);
                 if (existing.isPresent()) {
                     ClientCredential client = existing.get();
-                    if (!"ACTIVE".equalsIgnoreCase(client.getStatus())) {
+                    if (client.getExpiresAt() != null && client.getExpiresAt().isBefore(LocalDateTime.now())) {
+                        if ("ENFORCE".equalsIgnoreCase(clientPolicy) || "ENFORCE_AUTO_REGISTER".equalsIgnoreCase(clientPolicy)) {
+                            write(response, 403, "client_expired", "接入终端授权已过期", requestId);
+                            cleanup();
+                            return;
+                        } else if ("LOG_ONLY".equalsIgnoreCase(clientPolicy)) {
+                            auditRecorder.record("client.expired", "CLIENT", client.getClientId(), "WARNING", "CLIENT_EXPIRED", "LOW", "LOG_ONLY 模式检测到已过期终端");
+                        }
+                    } else if (!"ACTIVE".equalsIgnoreCase(client.getStatus())) {
                         if ("ENFORCE".equalsIgnoreCase(clientPolicy) || "ENFORCE_AUTO_REGISTER".equalsIgnoreCase(clientPolicy)) {
                             write(response, 403, "client_not_allowed", "终端未批准或已停用", requestId);
                             cleanup();
                             return;
+                        } else if ("LOG_ONLY".equalsIgnoreCase(clientPolicy)) {
+                            auditRecorder.record("client.inactive", "CLIENT", client.getClientId(), "WARNING", "CLIENT_INACTIVE", "LOW", "LOG_ONLY 模式检测到未启用终端: " + client.getStatus());
                         }
                     } else {
                         client.setLastSeenAt(LocalDateTime.now());
@@ -166,9 +190,12 @@ public class OpenApiAuthFilter extends OncePerRequestFilter {
                     pending.setStatus("PENDING");
                     pending.setLastSeenIp(ip);
                     clientRepository.save(pending);
+                    auditRecorder.record("client.pending", "CLIENT", pending.getClientId(), "WARNING", "AUTO_REGISTER", "LOW", "终端自动登记为待审批");
                     write(response, 403, "client_not_allowed", "终端已登记为待审批", requestId);
                     cleanup();
                     return;
+                } else if ("LOG_ONLY".equalsIgnoreCase(clientPolicy)) {
+                    auditRecorder.record("client.unknown", "CLIENT", clientId, "WARNING", "CLIENT_UNKNOWN", "LOW", "LOG_ONLY 模式检测到未登记终端: " + clientId);
                 }
             }
         }

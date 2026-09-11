@@ -2,6 +2,7 @@ package com.example.agentplatform.security;
 
 import com.example.agentplatform.model.AppUser;
 import com.example.agentplatform.model.ClientCredential;
+import com.example.agentplatform.model.GuardrailPolicy;
 import com.example.agentplatform.model.OpenApiKey;
 import com.example.agentplatform.model.UserRole;
 
@@ -17,6 +18,8 @@ public class OpenApiContext {
     private ClientCredential client;
     private String endUser;
     private String ip;
+
+    private GuardrailPolicy policy;
 
     public OpenApiContext(String requestId, OpenApiKey key, AppUser owner, String ip) {
         this.requestId = requestId;
@@ -64,4 +67,6 @@ public class OpenApiContext {
     public void setEndUser(String endUser) { this.endUser = endUser; }
     public String getIp() { return ip; }
     public void setIp(String ip) { this.ip = ip; }
+    public GuardrailPolicy getPolicy() { return policy; }
+    public void setPolicy(GuardrailPolicy policy) { this.policy = policy; }
 }
