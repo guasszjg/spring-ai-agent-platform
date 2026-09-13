@@ -231,4 +231,62 @@ class SpringAiKnowledgeBaseProviderTest {
         assertThat(hit.metadata()).containsKey("rewrittenQuery");
         assertThat(hit.metadata().get("rewrittenQuery")).isEqualTo("企业发票开具");
     }
+
+    @Test
+    void testMultimodalImageRetrievalAndMatchedBy() {
+        KnowledgeDocumentChunk imgChunk = new KnowledgeDocumentChunk();
+        imgChunk.setId("img_01");
+        imgChunk.setKnowledgeBaseId("kb_multimodal");
+        imgChunk.setChunkIndex(0);
+        imgChunk.setChunkType("IMAGE");
+        imgChunk.setImageUrl("/uploads/knowledge/docs/topo.png");
+        imgChunk.setImageCaption("微服务分布式系统架构拓扑图");
+        imgChunk.setContent("微服务分布式系统架构拓扑图，展示网关、鉴权中心与业务服务链路。");
+        imgChunk.setTokenCount(25L);
+        imgChunk.setEnabled(true);
+        imgChunk.setEmbedding(embeddingService.serializeVector(embeddingService.embedImage(imgChunk.getImageUrl(), imgChunk.getImageCaption(), 1024)));
+
+        when(knowledgeBaseRepository.findByExternalDatasetId(anyString())).thenReturn(Optional.empty());
+        when(knowledgeBaseRepository.findById(anyString())).thenReturn(Optional.empty());
+        when(chunkRepository.findByKnowledgeBaseIdAndEnabledTrueOrderByChunkIndexAsc("kb_multimodal"))
+                .thenReturn(List.of(imgChunk));
+
+        RetrievalRequest req = RetrievalRequest.builder()
+                .knowledgeBaseId("kb_multimodal")
+                .query("系统架构拓扑图")
+                .queryType("IMAGE")
+                .topK(3)
+                .scoreThreshold(0.01)
+                .build();
+
+        List<RetrievedChunk> chunks = provider.retrieve("kb_multimodal", req);
+
+        assertThat(chunks).isNotEmpty();
+        RetrievedChunk hit = chunks.get(0);
+        assertThat(hit.isImage()).isTrue();
+        assertThat(hit.imageUrl()).isEqualTo("/uploads/knowledge/docs/topo.png");
+        assertThat(hit.imageCaption()).isEqualTo("微服务分布式系统架构拓扑图");
+        assertThat(hit.matchedBy()).isEqualTo("IMAGE_VECTOR");
+    }
+
+    @Test
+    void testReembedImagesBackfill() {
+        KnowledgeDocumentChunk imgChunk = new KnowledgeDocumentChunk();
+        imgChunk.setId("img_backfill");
+        imgChunk.setKnowledgeBaseId("kb_reembed");
+        imgChunk.setChunkType("IMAGE");
+        imgChunk.setImageUrl("/uploads/knowledge/docs/arch.png");
+        imgChunk.setImageCaption("企业架构蓝图");
+        imgChunk.setEnabled(true);
+
+        when(chunkRepository.findByKnowledgeBaseIdAndEnabledTrueOrderByChunkIndexAsc("kb_reembed"))
+                .thenReturn(List.of(imgChunk));
+
+        int count = provider.reembedImages("kb_reembed");
+
+        assertThat(count).isEqualTo(1);
+        assertThat(imgChunk.getEmbedding()).isNotNull();
+        assertThat(imgChunk.getMatchedBy()).isEqualTo("IMAGE_VECTOR");
+        verify(chunkRepository).save(imgChunk);
+    }
 }

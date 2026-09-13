@@ -23,6 +23,13 @@ public class RetrievalTestRequest {
     private Integer maxContextTokens;// P2: Token 预算上限
     private Map<String, Object> extraParams;
 
+    // P4 扩展
+    private Boolean cacheEnabled = true;       // 是否启用语义缓存
+    private String queryType = "TEXT";         // TEXT, IMAGE, MULTIMODAL
+    private String queryImageUrl;              // 以图搜图时的图片地址
+    private Boolean injectImagesToLlm = false; // 原图是否注入 LLM 上下文 (Chapter 18)
+    private Boolean graphSearchEnabled = false;// 是否开启 GraphRAG 实体多跳图检索
+
     public RetrievalTestRequest() {
     }
 
@@ -136,5 +143,45 @@ public class RetrievalTestRequest {
 
     public void setExtraParams(Map<String, Object> extraParams) {
         this.extraParams = extraParams;
+    }
+
+    public Boolean getCacheEnabled() {
+        return cacheEnabled;
+    }
+
+    public void setCacheEnabled(Boolean cacheEnabled) {
+        this.cacheEnabled = cacheEnabled;
+    }
+
+    public String getQueryType() {
+        return queryType;
+    }
+
+    public void setQueryType(String queryType) {
+        this.queryType = queryType;
+    }
+
+    public String getQueryImageUrl() {
+        return queryImageUrl;
+    }
+
+    public void setQueryImageUrl(String queryImageUrl) {
+        this.queryImageUrl = queryImageUrl;
+    }
+
+    public Boolean getInjectImagesToLlm() {
+        return injectImagesToLlm;
+    }
+
+    public void setInjectImagesToLlm(Boolean injectImagesToLlm) {
+        this.injectImagesToLlm = injectImagesToLlm;
+    }
+
+    public Boolean getGraphSearchEnabled() {
+        return graphSearchEnabled;
+    }
+
+    public void setGraphSearchEnabled(Boolean graphSearchEnabled) {
+        this.graphSearchEnabled = graphSearchEnabled;
     }
 }

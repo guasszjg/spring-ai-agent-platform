@@ -79,6 +79,34 @@ public class KnowledgeDocumentChunk {
     @Column(columnDefinition = "TEXT")
     private String metadataJson;
 
+    /**
+     * P4 多模态扩展：图片受控访问地址/URL（Chapter 18）
+     */
+    @Column(length = 512)
+    private String imageUrl;
+
+    /**
+     * P4 多模态扩展：图片 VLM Caption 描述文本（用于双描述与文本召回）
+     */
+    @Column(columnDefinition = "TEXT")
+    private String imageCaption;
+
+    /**
+     * 图片宽度（像素，可为空）
+     */
+    private Integer imageWidth;
+
+    /**
+     * 图片高度（像素，可为空）
+     */
+    private Integer imageHeight;
+
+    /**
+     * 检索命中依据：TEXT_ONLY, IMAGE_VECTOR, CAPTION, HYBRID
+     */
+    @Column(length = 32)
+    private String matchedBy;
+
     @Column(nullable = false)
     private Boolean enabled = true;
 
@@ -152,6 +180,21 @@ public class KnowledgeDocumentChunk {
 
     public String getChunkType() { return chunkType; }
     public void setChunkType(String chunkType) { this.chunkType = chunkType; }
+
+    public String getImageUrl() { return imageUrl; }
+    public void setImageUrl(String imageUrl) { this.imageUrl = imageUrl; }
+
+    public String getImageCaption() { return imageCaption; }
+    public void setImageCaption(String imageCaption) { this.imageCaption = imageCaption; }
+
+    public Integer getImageWidth() { return imageWidth; }
+    public void setImageWidth(Integer imageWidth) { this.imageWidth = imageWidth; }
+
+    public Integer getImageHeight() { return imageHeight; }
+    public void setImageHeight(Integer imageHeight) { this.imageHeight = imageHeight; }
+
+    public String getMatchedBy() { return matchedBy; }
+    public void setMatchedBy(String matchedBy) { this.matchedBy = matchedBy; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

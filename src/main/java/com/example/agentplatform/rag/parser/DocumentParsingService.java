@@ -233,18 +233,24 @@ public class DocumentParsingService {
     }
 
     /**
-     * 4. 图像文档解析 (PNG/JPG/WEBP)
+     * 4. 图像文档解析 (PNG/JPG/WEBP/GIF)
      */
     private ParseResult parseImage(byte[] bytes, String filename, String ext) {
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("fileSize", bytes.length);
         meta.put("imageFormat", ext.toUpperCase());
+        meta.put("isImage", true);
+        String relativeUrl = "/uploads/knowledge/docs/" + filename;
+        meta.put("imageUrl", relativeUrl);
+        String caption = "图片文档: " + filename;
+        meta.put("imageCaption", caption);
 
         if (ocrService != null && ocrService.isAvailable()) {
             OcrService.OcrResult ocrRes = ocrService.parseImage(bytes, filename);
             if (ocrRes.success() && !ocrRes.text().isBlank()) {
                 meta.put("ocrConfidence", ocrRes.confidence());
                 meta.put("ocrProvider", ocrService.getProviderName());
+                meta.put("imageCaption", ocrRes.text());
                 return ParseResult.ofScanned(ocrRes.text(), ext.toUpperCase(), "IMAGE_OCR_PARSER", 1, meta);
             }
         }
@@ -263,11 +269,29 @@ public class DocumentParsingService {
     }
 
     /**
-     * 6. 通用纯文本解析 (TXT/MD/源码): 智能编码探测 (UTF-8 / GBK)
+     * 6. 通用纯文本解析 (TXT/MD/源码): 智能编码探测 (UTF-8 / GBK) 与内嵌 Markdown 图片识别
      */
     private ParseResult parsePlainText(byte[] bytes, String ext) {
         String decoded = decodeBestEffort(bytes);
-        return ParseResult.ofText(decoded, ext.toUpperCase(), "DIRECT_TEXT_PARSER", Map.of("charset", "UTF-8/GBK_AUTO"));
+        Map<String, Object> meta = new LinkedHashMap<>();
+        meta.put("charset", "UTF-8/GBK_AUTO");
+
+        // 识别 Markdown 图片: ![alt](url)
+        Pattern imgPattern = Pattern.compile("!\\[(.*?)\\]\\((.*?)\\)");
+        Matcher m = imgPattern.matcher(decoded);
+        List<Map<String, String>> embeddedImages = new ArrayList<>();
+        while (m.find()) {
+            Map<String, String> img = new LinkedHashMap<>();
+            img.put("caption", m.group(1));
+            img.put("url", m.group(2));
+            embeddedImages.add(img);
+        }
+        if (!embeddedImages.isEmpty()) {
+            meta.put("hasEmbeddedImages", true);
+            meta.put("embeddedImages", embeddedImages);
+        }
+
+        return ParseResult.ofText(decoded, ext.toUpperCase(), "DIRECT_TEXT_PARSER", meta);
     }
 
     private String decodeBestEffort(byte[] bytes) {

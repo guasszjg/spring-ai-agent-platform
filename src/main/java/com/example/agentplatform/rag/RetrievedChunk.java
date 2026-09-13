@@ -4,7 +4,8 @@ import java.util.Collections;
 import java.util.Map;
 
 /**
- * 检索切片证据对象（支持多引擎统一溯源、高亮、打分与元数据展示）
+ * 检索切片证据对象（支持多引擎统一溯源、高亮、打分与图文跨模态元数据展示）
+ * P4 扩展：支持图片 URL、图片 Caption、matchedBy（图片向量命中/文本命中）、chunkType
  */
 public record RetrievedChunk(
         String chunkId,              // 切片唯一标识
@@ -23,15 +24,32 @@ public record RetrievedChunk(
         Double rerankScore,          // 重排打分（可为空）
         String matchType,            // 命中类型：VECTOR / KEYWORD / HYBRID / RERANK
         Integer tokenCount,          // 切片预估 token 数量
-        Map<String, Object> metadata // 自定义扩展元数据（包含分段定位、标题等）
+        Map<String, Object> metadata,// 自定义扩展元数据（包含分段定位、标题等）
+        String imageUrl,             // P4 多模态扩展：图片受控访问地址
+        String imageCaption,         // P4 多模态扩展：图片描述文本
+        String matchedBy,            // P4 多模态扩展：命中方式（IMAGE_VECTOR / TEXT_ONLY / CAPTION / HYBRID）
+        String chunkType             // P4 切片类型：STANDALONE / PARENT / CHILD / IMAGE / GRAPH
 ) {
     /**
-     * 向后兼容构造器：仅提供 (content, sourceName, score)
+     * 向后兼容 17 参数构造器 (P1~P3)
+     */
+    public RetrievedChunk(String chunkId, String documentId, String parentChunkId, String sourceName,
+                          String sourceUrl, Integer pageNumber, Integer startOffset, Integer endOffset,
+                          String content, String rawContent, Double score, Double vectorScore,
+                          Double keywordScore, Double rerankScore, String matchType, Integer tokenCount,
+                          Map<String, Object> metadata) {
+        this(chunkId, documentId, parentChunkId, sourceName, sourceUrl, pageNumber, startOffset, endOffset,
+                content, rawContent, score, vectorScore, keywordScore, rerankScore, matchType, tokenCount,
+                metadata, null, null, null, "CHILD");
+    }
+
+    /**
+     * 向后兼容极简构造器：仅提供 (content, sourceName, score)
      */
     public RetrievedChunk(String content, String sourceName, Double score) {
         this(null, null, null, sourceName, null, null, null, null,
                 content, content, score, score, null, null, "VECTOR", null,
-                Collections.emptyMap());
+                Collections.emptyMap(), null, null, null, "CHILD");
     }
 
     /**
@@ -43,6 +61,14 @@ public record RetrievedChunk(
 
     public Double fusedScore() {
         return score;
+    }
+
+    public boolean isImage() {
+        return "IMAGE".equalsIgnoreCase(chunkType) || (imageUrl != null && !imageUrl.isBlank());
+    }
+
+    public boolean isGraph() {
+        return "GRAPH".equalsIgnoreCase(chunkType) || "KNOWLEDGE_GRAPH".equalsIgnoreCase(chunkType);
     }
 
     /**
@@ -70,6 +96,10 @@ public record RetrievedChunk(
         private String matchType;
         private Integer tokenCount;
         private Map<String, Object> metadata;
+        private String imageUrl;
+        private String imageCaption;
+        private String matchedBy;
+        private String chunkType = "CHILD";
 
         public Builder chunkId(String chunkId) { this.chunkId = chunkId; return this; }
         public Builder documentId(String documentId) { this.documentId = documentId; return this; }
@@ -89,6 +119,10 @@ public record RetrievedChunk(
         public Builder matchType(String matchType) { this.matchType = matchType; return this; }
         public Builder tokenCount(Integer tokenCount) { this.tokenCount = tokenCount; return this; }
         public Builder metadata(Map<String, Object> metadata) { this.metadata = metadata; return this; }
+        public Builder imageUrl(String imageUrl) { this.imageUrl = imageUrl; return this; }
+        public Builder imageCaption(String imageCaption) { this.imageCaption = imageCaption; return this; }
+        public Builder matchedBy(String matchedBy) { this.matchedBy = matchedBy; return this; }
+        public Builder chunkType(String chunkType) { this.chunkType = chunkType; return this; }
 
         public RetrievedChunk build() {
             String finalRaw = rawContent != null ? rawContent : content;
@@ -99,7 +133,9 @@ public record RetrievedChunk(
                     finalScore, vectorScore, keywordScore, rerankScore,
                     matchType != null ? matchType : "VECTOR",
                     tokenCount,
-                    metadata != null ? metadata : Collections.emptyMap()
+                    metadata != null ? metadata : Collections.emptyMap(),
+                    imageUrl, imageCaption, matchedBy,
+                    chunkType != null ? chunkType : "CHILD"
             );
         }
     }

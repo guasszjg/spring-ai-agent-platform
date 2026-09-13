@@ -15,6 +15,9 @@ import com.example.agentplatform.rag.dto.UpdateFaqRequest;
 import com.example.agentplatform.rag.dto.UpdateKnowledgeBaseRequest;
 import com.example.agentplatform.rag.engine.RetrievalResult;
 import com.example.agentplatform.rag.engine.ShadowEvaluationResult;
+import com.example.agentplatform.rag.cache.SemanticCacheService;
+import com.example.agentplatform.rag.graph.GraphRagService;
+import com.example.agentplatform.rag.offline.OfflineRagGovernanceService;
 import com.example.agentplatform.service.KnowledgeBaseService;
 import com.example.agentplatform.security.CurrentActor;
 import org.springframework.http.HttpStatus;
@@ -335,6 +338,68 @@ public class KnowledgeBaseController {
             return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("获取成本指标失败: " + e.getMessage()));
+        }
+    }
+
+    // ==================== P4 语义缓存、多模态与 GraphRAG 端点 ====================
+
+    @GetMapping("/{id}/cache/stats")
+    public ResponseEntity<ApiResponse<SemanticCacheService.CacheStats>> getCacheStats(@PathVariable String id) {
+        try {
+            SemanticCacheService.CacheStats stats = knowledgeBaseService.getCacheStats(id);
+            return ResponseEntity.ok(ApiResponse.ok("获取语义缓存统计成功", stats));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("获取缓存统计失败: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{id}/cache/clear")
+    public ResponseEntity<ApiResponse<String>> clearCache(@PathVariable String id) {
+        try {
+            knowledgeBaseService.clearCache(id);
+            return ResponseEntity.ok(ApiResponse.ok("语义缓存已清空", "SUCCESS"));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("清空缓存失败: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{id}/images/reembed")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> reembedImages(@PathVariable String id) {
+        try {
+            int count = knowledgeBaseService.reembedImages(id);
+            return ResponseEntity.ok(ApiResponse.ok("图片多模态向量回填重计算完成", Map.of("reembeddedCount", count)));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("图片重向量化失败: " + e.getMessage()));
+        }
+    }
+
+    @GetMapping("/{id}/graph")
+    public ResponseEntity<ApiResponse<GraphRagService.KnowledgeGraphData>> getKnowledgeGraph(@PathVariable String id) {
+        try {
+            GraphRagService.KnowledgeGraphData data = knowledgeBaseService.getKnowledgeGraph(id);
+            return ResponseEntity.ok(ApiResponse.ok("获取知识图谱拓扑数据成功", data));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("获取知识图谱失败: " + e.getMessage()));
+        }
+    }
+
+    @GetMapping("/{id}/offline-status")
+    public ResponseEntity<ApiResponse<OfflineRagGovernanceService.OfflineReadinessReport>> getOfflineStatus(@PathVariable String id) {
+        try {
+            OfflineRagGovernanceService.OfflineReadinessReport report = knowledgeBaseService.getOfflineReadinessReport(id);
+            return ResponseEntity.ok(ApiResponse.ok("获取私有化离线闭环状态成功", report));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("获取离线状态失败: " + e.getMessage()));
+        }
+    }
+
+    @GetMapping("/offline-status")
+    public ResponseEntity<ApiResponse<OfflineRagGovernanceService.OfflineReadinessReport>> getGlobalOfflineStatus() {
+        try {
+            OfflineRagGovernanceService.OfflineReadinessReport report = knowledgeBaseService.getOfflineReadinessReport(null);
+            return ResponseEntity.ok(ApiResponse.ok("获取平台全局私有化离线闭环状态成功", report));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("获取全局离线状态失败: " + e.getMessage()));
         }
     }
 }

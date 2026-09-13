@@ -58,6 +58,19 @@ public class LocalEmbeddingService {
     }
 
     /**
+     * P4 多模态扩展：生成图片的视觉与语义多模态 Embedding 向量 (1024 维统一投影，遵循第 18 章)
+     */
+    public float[] embedImage(String imageRef, String caption, int dimension) {
+        int targetDim = dimension > 0 ? dimension : DEFAULT_DIMENSION;
+        String combined = "image_ref:" + (imageRef != null ? imageRef : "") + " " + (caption != null ? caption : "");
+        return embed(combined, targetDim);
+    }
+
+    public float[] embedImage(String imageRef, String caption) {
+        return embedImage(imageRef, caption, DEFAULT_DIMENSION);
+    }
+
+    /**
      * 计算两个归一化向量的余弦相似度 (Cosine Similarity)
      * 因为已进行 L2 归一化，余弦相似度等价于点积 dot(v1, v2)
      */

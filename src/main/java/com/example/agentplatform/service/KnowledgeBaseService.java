@@ -32,6 +32,10 @@ import com.example.agentplatform.repository.KnowledgeSourceRevisionRepository;
 import com.example.agentplatform.storage.ObjectStorageService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.example.agentplatform.rag.SpringAiKnowledgeBaseProvider;
+import com.example.agentplatform.rag.cache.SemanticCacheService;
+import com.example.agentplatform.rag.graph.GraphRagService;
+import com.example.agentplatform.rag.offline.OfflineRagGovernanceService;
 import com.example.agentplatform.repository.ResourceGrantRepository;
 import com.example.agentplatform.security.CurrentActor;
 import org.slf4j.Logger;
@@ -94,6 +98,9 @@ public class KnowledgeBaseService {
     private final DifyRagEngineAdapter difyRagEngineAdapter;
     private final ContextBudgetPruner budgetPruner;
     private final OcrService ocrService;
+    private final SemanticCacheService semanticCacheService;
+    private final GraphRagService graphRagService;
+    private final OfflineRagGovernanceService offlineRagGovernanceService;
 
     @Autowired
     public KnowledgeBaseService(KnowledgeBaseRepository knowledgeBaseRepository,
@@ -109,7 +116,10 @@ public class KnowledgeBaseService {
                                 @Autowired(required = false) KnowledgeIndexVersionRepository indexVersionRepository,
                                 @Autowired(required = false) DifyRagEngineAdapter difyRagEngineAdapter,
                                 @Autowired(required = false) ContextBudgetPruner budgetPruner,
-                                @Autowired(required = false) OcrService ocrService) {
+                                @Autowired(required = false) OcrService ocrService,
+                                @Autowired(required = false) SemanticCacheService semanticCacheService,
+                                @Autowired(required = false) GraphRagService graphRagService,
+                                @Autowired(required = false) OfflineRagGovernanceService offlineRagGovernanceService) {
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.documentRepository = documentRepository;
         this.faqRepository = faqRepository;
@@ -123,6 +133,9 @@ public class KnowledgeBaseService {
         this.difyRagEngineAdapter = difyRagEngineAdapter;
         this.budgetPruner = budgetPruner != null ? budgetPruner : new ContextBudgetPruner();
         this.ocrService = ocrService;
+        this.semanticCacheService = semanticCacheService;
+        this.graphRagService = graphRagService;
+        this.offlineRagGovernanceService = offlineRagGovernanceService != null ? offlineRagGovernanceService : new OfflineRagGovernanceService();
         for (KnowledgeBaseProvider p : providers) {
             this.providerMap.put(p.getProviderType().toUpperCase(), p);
         }
@@ -136,7 +149,7 @@ public class KnowledgeBaseService {
                                 List<KnowledgeBaseProvider> providers,
                                 ObjectMapper objectMapper,
                                 OwnerNameResolver ownerNameResolver) {
-        this(knowledgeBaseRepository, documentRepository, faqRepository, resourceAuthorizationService, resourceGrantRepository, providers, objectMapper, ownerNameResolver, null, null, null, null, null, null);
+        this(knowledgeBaseRepository, documentRepository, faqRepository, resourceAuthorizationService, resourceGrantRepository, providers, objectMapper, ownerNameResolver, null, null, null, null, null, null, null, null, null);
     }
 
     public KnowledgeBaseService(KnowledgeBaseRepository knowledgeBaseRepository,
@@ -151,7 +164,7 @@ public class KnowledgeBaseService {
                                 KnowledgeSourceRevisionRepository sourceRevisionRepository,
                                 KnowledgeIndexVersionRepository indexVersionRepository,
                                 DifyRagEngineAdapter difyRagEngineAdapter) {
-        this(knowledgeBaseRepository, documentRepository, faqRepository, resourceAuthorizationService, resourceGrantRepository, providers, objectMapper, ownerNameResolver, objectStorageService, sourceRevisionRepository, indexVersionRepository, difyRagEngineAdapter, null, null);
+        this(knowledgeBaseRepository, documentRepository, faqRepository, resourceAuthorizationService, resourceGrantRepository, providers, objectMapper, ownerNameResolver, objectStorageService, sourceRevisionRepository, indexVersionRepository, difyRagEngineAdapter, null, null, null, null, null);
     }
 
     public KnowledgeBaseService(KnowledgeBaseRepository knowledgeBaseRepository,
@@ -167,7 +180,7 @@ public class KnowledgeBaseService {
                                 KnowledgeIndexVersionRepository indexVersionRepository,
                                 DifyRagEngineAdapter difyRagEngineAdapter,
                                 ContextBudgetPruner budgetPruner) {
-        this(knowledgeBaseRepository, documentRepository, faqRepository, resourceAuthorizationService, resourceGrantRepository, providers, objectMapper, ownerNameResolver, objectStorageService, sourceRevisionRepository, indexVersionRepository, difyRagEngineAdapter, budgetPruner, null);
+        this(knowledgeBaseRepository, documentRepository, faqRepository, resourceAuthorizationService, resourceGrantRepository, providers, objectMapper, ownerNameResolver, objectStorageService, sourceRevisionRepository, indexVersionRepository, difyRagEngineAdapter, budgetPruner, null, null, null, null);
     }
 
     private KnowledgeBaseProvider resolveProvider(String providerType) {
@@ -467,6 +480,11 @@ public class KnowledgeBaseService {
                 .rewriteEnabled(req.getRewriteEnabled() != null ? req.getRewriteEnabled() : false)
                 .expandParent(req.getExpandParent() != null ? req.getExpandParent() : true)
                 .maxContextTokens(req.getMaxContextTokens() != null ? req.getMaxContextTokens() : 3000)
+                .cacheEnabled(req.getCacheEnabled() != null ? req.getCacheEnabled() : true)
+                .queryType(req.getQueryType() != null ? req.getQueryType() : "TEXT")
+                .queryImageUrl(req.getQueryImageUrl())
+                .injectImagesToLlm(req.getInjectImagesToLlm() != null ? req.getInjectImagesToLlm() : false)
+                .graphSearchEnabled(req.getGraphSearchEnabled() != null ? req.getGraphSearchEnabled() : false)
                 .build();
 
         // 4. 执行检索并统计耗时
@@ -485,9 +503,24 @@ public class KnowledgeBaseService {
         metrics.put("rewriteEnabled", req.getRewriteEnabled() != null ? req.getRewriteEnabled() : false);
         metrics.put("expandParent", req.getExpandParent() != null ? req.getExpandParent() : true);
         metrics.put("maxContextTokens", req.getMaxContextTokens() != null ? req.getMaxContextTokens() : 3000);
+        metrics.put("cacheEnabled", req.getCacheEnabled() != null ? req.getCacheEnabled() : true);
+        metrics.put("queryType", req.getQueryType() != null ? req.getQueryType() : "TEXT");
+        metrics.put("graphSearchEnabled", Boolean.TRUE.equals(req.getGraphSearchEnabled()));
+        metrics.put("injectImagesToLlm", Boolean.TRUE.equals(req.getInjectImagesToLlm()));
         metrics.put("totalHits", chunks.size());
         int totalTokens = chunks.stream().mapToInt(c -> c.tokenCount() != null ? c.tokenCount() : 0).sum();
         metrics.put("totalTokens", totalTokens);
+
+        // P4: 检测是否命中语义缓存 (命中徽标与节约统计)
+        boolean cacheHit = chunks.stream().anyMatch(c -> c.metadata() != null && Boolean.TRUE.equals(c.metadata().get("semanticCacheHit")));
+        metrics.put("semanticCacheHit", cacheHit);
+        if (cacheHit) {
+            chunks.stream()
+                    .filter(c -> c.metadata() != null && c.metadata().containsKey("cacheSimilarity"))
+                    .findFirst()
+                    .ifPresent(c -> metrics.put("cacheSimilarity", c.metadata().get("cacheSimilarity")));
+        }
+
         for (RetrievedChunk chunk : chunks) {
             if (chunk.metadata() != null && chunk.metadata().containsKey("rewrittenQuery")) {
                 metrics.put("rewrittenQuery", chunk.metadata().get("rewrittenQuery"));
@@ -1545,5 +1578,49 @@ public class KnowledgeBaseService {
                 kb.setVectorWeight(((Number) ((Map<?, ?>) vecObj).get("vector_weight")).doubleValue());
             }
         }
+    }
+
+    // ==================== P4 语义缓存、图谱与离线治理 ====================
+
+    @Transactional(readOnly = true)
+    public SemanticCacheService.CacheStats getCacheStats(String kbId) {
+        if (semanticCacheService == null) {
+            return new SemanticCacheService.CacheStats(kbId, 0, 0, 0, 0);
+        }
+        return semanticCacheService.getCacheStats(kbId);
+    }
+
+    @Transactional
+    public void clearCache(String kbId) {
+        if (semanticCacheService != null) {
+            semanticCacheService.clearCache(kbId);
+        }
+    }
+
+    @Transactional
+    public int reembedImages(String kbId) {
+        KnowledgeBase kb = getKnowledgeBaseById(kbId);
+        KnowledgeBaseProvider provider = resolveProvider(kb.getProvider());
+        if (provider instanceof SpringAiKnowledgeBaseProvider springAiProvider) {
+            return springAiProvider.reembedImages(kbId);
+        }
+        return 0;
+    }
+
+    @Transactional(readOnly = true)
+    public GraphRagService.KnowledgeGraphData getKnowledgeGraph(String kbId) {
+        if (graphRagService == null) {
+            return new GraphRagService.KnowledgeGraphData(Collections.emptyList(), Collections.emptyList(), 0);
+        }
+        return graphRagService.getKnowledgeGraph(kbId);
+    }
+
+    public OfflineRagGovernanceService.OfflineReadinessReport getOfflineReadinessReport(String kbId) {
+        if (offlineRagGovernanceService == null) {
+            return new OfflineRagGovernanceService.OfflineReadinessReport(
+                    true, "AIR_GAPPED_PRIVATE_CLOUD", System.currentTimeMillis(), Map.of(), "自研 RAG 闭环运行就绪"
+            );
+        }
+        return offlineRagGovernanceService.getOfflineReadinessReport(kbId);
     }
 }

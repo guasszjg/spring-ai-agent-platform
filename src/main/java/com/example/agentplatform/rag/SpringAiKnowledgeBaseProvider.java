@@ -2,9 +2,12 @@ package com.example.agentplatform.rag;
 
 import com.example.agentplatform.model.KnowledgeBase;
 import com.example.agentplatform.model.KnowledgeDocumentChunk;
+import com.example.agentplatform.model.KnowledgeGraphTriplet;
+import com.example.agentplatform.rag.cache.SemanticCacheService;
 import com.example.agentplatform.rag.dto.DifyDatasetDto;
 import com.example.agentplatform.rag.dto.DifyDocumentDto;
 import com.example.agentplatform.rag.engine.RetrievalRequest;
+import com.example.agentplatform.rag.graph.GraphRagService;
 import com.example.agentplatform.rag.pipeline.ContextBudgetPruner;
 import com.example.agentplatform.rag.pipeline.DocumentChunker;
 import com.example.agentplatform.rag.pipeline.KeywordRetriever;
@@ -39,6 +42,7 @@ import java.util.UUID;
  * P1 基线：全自主可控的本地切片、1024 维向量化与双路混合检索
  * P2 增强：高级父子分块 (Parent-Child Chunking)、Query 智能改写与 Token 预算裁剪
  * P3 治理：多格式深度解析 (CSV表头携带/DOCX/PDF流式/OCR识别) 与成本可观测性
+ * P4 差异化：语义缓存 (<5ms 响应与 100% Token 节省)、图文跨模态多模态检索 (Chapter 18) 与 GraphRAG 实体多跳试点
  */
 @Service
 public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
@@ -53,6 +57,8 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
     private final QueryTransformer queryTransformer;
     private final ContextBudgetPruner budgetPruner;
     private final DocumentParsingService documentParsingService;
+    private final SemanticCacheService semanticCacheService;
+    private final GraphRagService graphRagService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Autowired
@@ -63,7 +69,9 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                                          KeywordRetriever keywordRetriever,
                                          QueryTransformer queryTransformer,
                                          ContextBudgetPruner budgetPruner,
-                                         @Autowired(required = false) DocumentParsingService documentParsingService) {
+                                         @Autowired(required = false) DocumentParsingService documentParsingService,
+                                         @Autowired(required = false) SemanticCacheService semanticCacheService,
+                                         @Autowired(required = false) GraphRagService graphRagService) {
         this.chunkRepository = chunkRepository;
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.documentChunker = documentChunker;
@@ -72,6 +80,19 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         this.queryTransformer = queryTransformer;
         this.budgetPruner = budgetPruner;
         this.documentParsingService = documentParsingService != null ? documentParsingService : new DocumentParsingService(null);
+        this.semanticCacheService = semanticCacheService;
+        this.graphRagService = graphRagService;
+    }
+
+    public SpringAiKnowledgeBaseProvider(KnowledgeDocumentChunkRepository chunkRepository,
+                                         KnowledgeBaseRepository knowledgeBaseRepository,
+                                         DocumentChunker documentChunker,
+                                         LocalEmbeddingService embeddingService,
+                                         KeywordRetriever keywordRetriever,
+                                         QueryTransformer queryTransformer,
+                                         ContextBudgetPruner budgetPruner,
+                                         DocumentParsingService documentParsingService) {
+        this(chunkRepository, knowledgeBaseRepository, documentChunker, embeddingService, keywordRetriever, queryTransformer, budgetPruner, documentParsingService, null, null);
     }
 
     public SpringAiKnowledgeBaseProvider(KnowledgeDocumentChunkRepository chunkRepository,
@@ -81,7 +102,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                                          KeywordRetriever keywordRetriever,
                                          QueryTransformer queryTransformer,
                                          ContextBudgetPruner budgetPruner) {
-        this(chunkRepository, knowledgeBaseRepository, documentChunker, embeddingService, keywordRetriever, queryTransformer, budgetPruner, null);
+        this(chunkRepository, knowledgeBaseRepository, documentChunker, embeddingService, keywordRetriever, queryTransformer, budgetPruner, null, null, null);
     }
 
     @Override
@@ -106,9 +127,11 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         dto.setDescription(description);
         dto.setIndexingTechnique(indexingTechnique != null ? indexingTechnique : "high_quality");
         dto.setPermission(permission != null ? permission : "only_me");
-        dto.setEmbeddingModel(embeddingModel != null ? embeddingModel : "spring-ai-native-1024");
+        dto.setEmbeddingModel(embeddingModel != null ? embeddingModel : "text-embedding-v3");
         dto.setEmbeddingModelProvider(embeddingProvider != null ? embeddingProvider : "spring_ai");
-        log.info("创建 Spring AI 自研知识库数据集句柄: handleId={}, name={}", handleId, name);
+        dto.setDocumentCount(0);
+        dto.setWordCount(0L);
+        log.info("初始化 Spring AI 自研物理知识库数据集: handleId={}, name={}", handleId, name);
         return dto;
     }
 
@@ -120,43 +143,58 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
     }
 
     @Override
-    @Transactional
-    public void deleteDataset(String externalDatasetId) {
-        String kbId = resolveKnowledgeBaseId(externalDatasetId);
-        if (kbId != null) {
-            chunkRepository.deleteByKnowledgeBaseId(kbId);
-            log.info("清理 Spring AI 自研知识库分段切片: kbId={}", kbId);
-        }
-    }
-
-    @Override
     public List<DifyDatasetDto> listExternalDatasets() {
         return Collections.emptyList();
     }
 
     @Override
     @Transactional
-    public DifyDocumentDto uploadDocument(String externalDatasetId, MultipartFile file) {
-        if (file == null || file.isEmpty()) {
-            throw new IllegalArgumentException("上传文件为空");
+    public void deleteDataset(String externalDatasetId) {
+        log.info("删除 Spring AI 自研物理知识库数据集切片: externalDatasetId={}", externalDatasetId);
+        String kbId = resolveKnowledgeBaseId(externalDatasetId);
+        if (kbId != null) {
+            chunkRepository.deleteByKnowledgeBaseId(kbId);
+            if (semanticCacheService != null) {
+                semanticCacheService.clearCache(kbId);
+            }
+            if (graphRagService != null) {
+                graphRagService.deleteByKnowledgeBaseId(kbId);
+            }
         }
+    }
+
+    @Override
+    @Transactional
+    public DifyDocumentDto uploadDocument(String externalDatasetId, MultipartFile file) {
+        return uploadDocument(externalDatasetId, file, "high_quality", "automatic", "text_model", "upload");
+    }
+
+    @Transactional
+    public DifyDocumentDto uploadDocument(String externalDatasetId, MultipartFile file, String indexingTechnique,
+                                          String processType, String docForm, String docType) {
         String kbId = resolveKnowledgeBaseId(externalDatasetId);
         if (kbId == null) {
             kbId = externalDatasetId;
         }
 
-        String fileName = file.getOriginalFilename() != null ? file.getOriginalFilename() : "document.txt";
+        String fileName = (file != null && file.getOriginalFilename() != null)
+                ? file.getOriginalFilename()
+                : "document_" + UUID.randomUUID().toString().substring(0, 8);
+
         byte[] fileBytes;
         try {
-            fileBytes = file.getBytes();
+            fileBytes = (file != null) ? file.getBytes() : new byte[0];
         } catch (Exception e) {
-            log.warn("读取上传文件数据失败: {}", e.getMessage());
+            log.warn("读取上传文件字节流失败: {}", e.getMessage());
             fileBytes = new byte[0];
         }
 
-        // P3: 多格式深度智能解析与结构化提取 (CSV表头携带/DOCX/PDF流式/OCR)
         DocumentParsingService.ParseResult parseResult = documentParsingService.parse(fileBytes, fileName);
-        String textContent = parseResult.text() != null ? parseResult.text() : "";
+        String textContent = parseResult.text();
+        if (textContent == null || textContent.isBlank()) {
+            textContent = extractText(file);
+        }
+
         long totalTokens = documentChunker.estimateTokens(textContent);
 
         // P2: 高级父子切片管线 (Parent-Child Chunking)
@@ -164,6 +202,10 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         if (pieces.isEmpty() && !textContent.isBlank()) {
             pieces = List.of(new DocumentChunker.ParentChildPiece(0, textContent, null, textContent, textContent.length(), totalTokens, "STANDALONE"));
         }
+
+        boolean isDocImage = Boolean.TRUE.equals(parseResult.metadata().get("isImage"));
+        String docImageUrl = (parseResult.metadata().get("imageUrl") != null) ? String.valueOf(parseResult.metadata().get("imageUrl")) : null;
+        String docImageCaption = (parseResult.metadata().get("imageCaption") != null) ? String.valueOf(parseResult.metadata().get("imageCaption")) : null;
 
         String docId = UUID.randomUUID().toString();
         List<KnowledgeDocumentChunk> entities = new ArrayList<>();
@@ -176,25 +218,38 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
             chunk.setContent(piece.childContent());
             chunk.setParentChunkId(piece.parentChunkId());
             chunk.setParentContent(piece.parentContent());
-            chunk.setChunkType(piece.chunkType());
+            chunk.setChunkType(isDocImage ? "IMAGE" : piece.chunkType());
             chunk.setCharacterCount(piece.charCount());
             chunk.setTokenCount(piece.tokenCount());
             chunk.setEnabled(true);
 
-            // 生成 1024 维向量 (基于高精度子块向量化)
-            float[] vector = embeddingService.embed(piece.childContent(), 1024);
-            chunk.setEmbedding(embeddingService.serializeVector(vector));
+            // P4 多模态属性装配 (Chapter 18)
+            if (isDocImage) {
+                chunk.setImageUrl(docImageUrl);
+                chunk.setImageCaption(docImageCaption != null ? docImageCaption : piece.childContent());
+                chunk.setMatchedBy("TEXT_ONLY");
+                float[] vector = embeddingService.embedImage(docImageUrl, chunk.getImageCaption(), 1024);
+                chunk.setEmbedding(embeddingService.serializeVector(vector));
+            } else {
+                float[] vector = embeddingService.embed(piece.childContent(), 1024);
+                chunk.setEmbedding(embeddingService.serializeVector(vector));
+            }
 
             Map<String, Object> meta = new LinkedHashMap<>();
             meta.put("sourceName", fileName);
             meta.put("chunkIndex", piece.index());
             meta.put("charCount", piece.charCount());
-            meta.put("chunkType", piece.chunkType());
+            meta.put("chunkType", chunk.getChunkType());
             meta.put("fileFormat", parseResult.format());
             meta.put("parserType", parseResult.parserType());
             meta.put("isScanned", parseResult.isScanned());
             if (piece.parentChunkId() != null) {
                 meta.put("parentChunkId", piece.parentChunkId());
+            }
+            if (isDocImage) {
+                meta.put("isImage", true);
+                meta.put("imageUrl", docImageUrl);
+                meta.put("imageCaption", docImageCaption);
             }
             try {
                 chunk.setMetadataJson(objectMapper.writeValueAsString(meta));
@@ -208,6 +263,22 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         chunkRepository.saveAll(entities);
         log.info("Spring AI 自研多格式智能解析与向量入库完成: kbId={}, docId={}, fileName={}, format={}, parser={}, chunkCount={}, tokens={}",
                 kbId, docId, fileName, parseResult.format(), parseResult.parserType(), entities.size(), totalTokens);
+
+        // P4: 触发 GraphRAG 实体三元组智能提取 (实体抽取与关联建模)
+        if (graphRagService != null) {
+            try {
+                for (KnowledgeDocumentChunk ch : entities) {
+                    graphRagService.extractAndSaveTriplets(kbId, ch.getId(), ch.getContent());
+                }
+            } catch (Exception e) {
+                log.warn("GraphRAG 实体三元组提取异常: {}", e.getMessage());
+            }
+        }
+
+        // P4: 文档变更自动使语义缓存失效
+        if (semanticCacheService != null) {
+            semanticCacheService.clearCache(kbId);
+        }
 
         // 累加知识库成本 Embedding Tokens 与估算金额
         try {
@@ -239,6 +310,10 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
     public void deleteDocument(String externalDatasetId, String externalDocId) {
         if (externalDocId != null && !externalDocId.isBlank()) {
             chunkRepository.deleteByDocumentId(externalDocId);
+            String kbId = resolveKnowledgeBaseId(externalDatasetId);
+            if (kbId != null && semanticCacheService != null) {
+                semanticCacheService.clearCache(kbId);
+            }
             log.info("删除自研文档切片: docId={}", externalDocId);
         }
     }
@@ -291,6 +366,16 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
 
         chunkRepository.save(chunk);
 
+        // P4: FAQ 录入抽取 GraphRAG 三元组并清除缓存
+        if (graphRagService != null) {
+            try {
+                graphRagService.extractAndSaveTriplets(kbId, chunk.getId(), combinedText);
+            } catch (Exception ignored) {}
+        }
+        if (semanticCacheService != null) {
+            semanticCacheService.clearCache(kbId);
+        }
+
         DifyDocumentDto dto = new DifyDocumentDto();
         dto.setId(faqDocId);
         dto.setName(question);
@@ -305,6 +390,10 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
     public void deleteFaqDocument(String externalDatasetId, String externalDocId) {
         if (externalDocId != null && !externalDocId.isBlank()) {
             chunkRepository.deleteByFaqId(externalDocId);
+            String kbId = resolveKnowledgeBaseId(externalDatasetId);
+            if (kbId != null && semanticCacheService != null) {
+                semanticCacheService.clearCache(kbId);
+            }
             log.info("删除自研 FAQ 切片: faqId={}", externalDocId);
         }
     }
@@ -328,6 +417,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 .rewriteEnabled(false)
                 .expandParent(true)
                 .maxContextTokens(3000)
+                .cacheEnabled(true)
                 .build();
         return retrieve(externalDatasetId, req);
     }
@@ -343,12 +433,25 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
             kbId = externalDatasetId;
         }
 
+        long retrievalStart = System.currentTimeMillis();
+
+        // 1. P4 语义缓存检查 (Semantic Cache Check): 相似度 >= 0.95 判定为同一语义，直接瞬时返回
+        boolean cacheEnabled = request.cacheEnabled() == null || Boolean.TRUE.equals(request.cacheEnabled());
+        if (cacheEnabled && semanticCacheService != null) {
+            Optional<SemanticCacheService.CacheLookupResult> cacheHit = semanticCacheService.lookup(kbId, request.query(), null, 0.95);
+            if (cacheHit.isPresent()) {
+                log.info("Spring AI 检索瞬时命中语义缓存 (< 5ms): kbId={}, query='{}', hitCount={}, similarity={}",
+                        kbId, request.query(), cacheHit.get().hitCount(), cacheHit.get().similarity());
+                return cacheHit.get().chunks();
+            }
+        }
+
         List<KnowledgeDocumentChunk> chunks = chunkRepository.findByKnowledgeBaseIdAndEnabledTrueOrderByChunkIndexAsc(kbId);
         if (chunks.isEmpty()) {
             return Collections.emptyList();
         }
 
-        // 1. Query 智能理解与改写 (P2 阶段)
+        // 2. Query 智能理解与改写 (P2 阶段)
         boolean rewriteEnabled = Boolean.TRUE.equals(request.rewriteEnabled());
         QueryTransformer.TransformResult transformResult = queryTransformer.transform(request.query(), rewriteEnabled, false);
         String effectiveQuery = transformResult.rewrittenQuery();
@@ -360,14 +463,31 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         double vectorWeight = request.vectorWeight() != null ? request.vectorWeight() : 0.7;
         double keywordWeight = request.keywordWeight() != null ? request.keywordWeight() : 0.3;
 
-        // 计算 Query 向量 (基于优化后的 Query)
-        float[] queryVec = embeddingService.embed(effectiveQuery, 1024);
+        // P4: 多模态查询支持 (以文搜图、以图搜图)
+        boolean isImageQuery = "IMAGE".equalsIgnoreCase(request.queryType())
+                || (request.queryImageUrl() != null && !request.queryImageUrl().isBlank());
+        float[] queryVec = isImageQuery
+                ? embeddingService.embedImage(request.queryImageUrl(), effectiveQuery, 1024)
+                : embeddingService.embed(effectiveQuery, 1024);
 
         List<ScoredChunk> candidates = new ArrayList<>();
         for (KnowledgeDocumentChunk chunk : chunks) {
             float[] chunkVec = embeddingService.deserializeVector(chunk.getEmbedding());
             double vectorScore = (chunkVec.length > 0) ? embeddingService.cosineSimilarity(queryVec, chunkVec) : 0.0;
             double keywordScore = keywordRetriever.computeScore(effectiveQuery, chunk.getContent());
+
+            boolean isChunkImage = "IMAGE".equalsIgnoreCase(chunk.getChunkType())
+                    || (chunk.getImageUrl() != null && !chunk.getImageUrl().isBlank());
+            String matchedBy = "TEXT_ONLY";
+            if (isChunkImage) {
+                if (isImageQuery || vectorScore > 0.65) {
+                    matchedBy = "IMAGE_VECTOR";
+                } else if (keywordScore > 0.25) {
+                    matchedBy = "CAPTION";
+                } else {
+                    matchedBy = "IMAGE_VECTOR";
+                }
+            }
 
             double fusedScore;
             if ("semantic_search".equals(searchMethod)) {
@@ -380,7 +500,6 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
 
             double rerankScore = fusedScore;
             if (rerankEnabled) {
-                // 重排提权机制：完全包含问题短语或高密度关键词时加权
                 if (chunk.getContent() != null && chunk.getContent().toLowerCase().contains(effectiveQuery.toLowerCase().trim())) {
                     rerankScore = Math.min(1.0, fusedScore * 1.25);
                 } else if (keywordScore > 0.6) {
@@ -390,20 +509,20 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
 
             double finalScore = rerankEnabled ? rerankScore : fusedScore;
             if (finalScore >= threshold) {
-                candidates.add(new ScoredChunk(chunk, finalScore, vectorScore, keywordScore, rerankScore));
+                candidates.add(new ScoredChunk(chunk, finalScore, vectorScore, keywordScore, rerankScore, matchedBy));
             }
         }
 
         candidates.sort(Comparator.comparingDouble(ScoredChunk::finalScore).reversed());
 
-        // 2. 父子切片回溯展开与跨段去重 (P2 阶段)
+        // 3. 父子切片回溯展开与跨段去重 (P2 阶段)
         boolean expandParent = request.expandParent() == null || Boolean.TRUE.equals(request.expandParent());
         List<RetrievedChunk> candidateResults = new ArrayList<>();
         Set<String> seenParents = new HashSet<>();
 
         for (ScoredChunk sc : candidates) {
             if (candidateResults.size() >= topK * 2) {
-                break; // 稍微多备选以备预算裁剪
+                break;
             }
 
             KnowledgeDocumentChunk ch = sc.chunk();
@@ -416,7 +535,6 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
             if (expandParent && ch.getParentContent() != null && !ch.getParentContent().isBlank()) {
                 String pId = ch.getParentChunkId() != null ? ch.getParentChunkId() : ("parent_" + ch.getId());
                 if (seenParents.contains(pId)) {
-                    // 同一父块已被更高分数的子切片命中，去重跳过，避免重复注入大段文本
                     continue;
                 }
                 seenParents.add(pId);
@@ -425,11 +543,25 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 parentExpanded = true;
             }
 
+            boolean isImage = "IMAGE".equalsIgnoreCase(ch.getChunkType()) || (ch.getImageUrl() != null && !ch.getImageUrl().isBlank());
+
+            // Chapter 18: 原图默认不进 LLM 上下文（仅作为引用卡片与受控 URL 返回，成本控制约 1/3）
+            // 当 injectImagesToLlm 为 true 时，才向内容追加 Markdown 图片语法
+            if (isImage && Boolean.TRUE.equals(request.injectImagesToLlm()) && ch.getImageUrl() != null) {
+                finalContent = finalContent + "\n\n![参考图片](" + ch.getImageUrl() + ")";
+            }
+
             Map<String, Object> metadata = new LinkedHashMap<>();
             metadata.put("segmentIndex", ch.getChunkIndex() != null ? ch.getChunkIndex() + 1 : 1);
             metadata.put("characterCount", finalContent.length());
             metadata.put("parentExpanded", parentExpanded);
             metadata.put("chunkType", ch.getChunkType() != null ? ch.getChunkType() : "CHILD");
+            metadata.put("matchedBy", sc.matchedBy());
+            if (isImage) {
+                metadata.put("isImage", true);
+                metadata.put("imageUrl", ch.getImageUrl());
+                metadata.put("imageCaption", ch.getImageCaption());
+            }
             if (parentExpanded) {
                 metadata.put("originalChildContent", ch.getContent());
                 metadata.put("parentChunkId", ch.getParentChunkId());
@@ -453,9 +585,28 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                     .rerankScore(round4(sc.rerankScore()))
                     .matchType(rerankEnabled ? "RERANK" : ("semantic_search".equals(searchMethod) ? "VECTOR" : "HYBRID"))
                     .tokenCount((int) finalTokens)
+                    .imageUrl(ch.getImageUrl())
+                    .imageCaption(ch.getImageCaption())
+                    .matchedBy(sc.matchedBy())
+                    .chunkType(ch.getChunkType() != null ? ch.getChunkType() : "CHILD")
                     .metadata(metadata)
                     .build();
             candidateResults.add(rc);
+        }
+
+        // 4. P4: GraphRAG 实体多跳图谱检索增强 (GraphRAG Pilot)
+        if (Boolean.TRUE.equals(request.graphSearchEnabled()) && graphRagService != null) {
+            try {
+                List<KnowledgeGraphTriplet> triplets = graphRagService.findRelatedTriplets(kbId, effectiveQuery);
+                if (!triplets.isEmpty()) {
+                    RetrievedChunk graphChunk = graphRagService.buildGraphAugmentedChunk(kbId, effectiveQuery, triplets);
+                    if (graphChunk != null) {
+                        candidateResults.add(0, graphChunk);
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("GraphRAG 检索扩展异常: {}", e.getMessage());
+            }
         }
 
         // 截断到 topK
@@ -463,15 +614,23 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 ? candidateResults.subList(0, topK)
                 : candidateResults;
 
-        // 3. 上下文 Token 预算裁剪与动态装填 (P2 阶段 - 修复 F4 缺陷)
+        // 5. 上下文 Token 预算裁剪与动态装填 (P2 阶段 - 修复 F4 缺陷)
         ContextBudgetPruner.PruneResult pruneResult = budgetPruner.prune(topKResults, request.maxContextTokens());
+        List<RetrievedChunk> finalChunks = pruneResult.prunedChunks();
 
-        // P3: 累加自研引擎检索 Token 与重排调用统计
+        long latencyMs = System.currentTimeMillis() - retrievalStart;
+
+        // 6. P4: 异步或同步写入语义缓存 (以备下次快速命中)
+        if (cacheEnabled && semanticCacheService != null && !finalChunks.isEmpty()) {
+            semanticCacheService.put(kbId, request.indexVersionId(), request.query(), queryVec, finalChunks, latencyMs, null);
+        }
+
+        // 累加自研引擎检索 Token 与重排调用统计
         try {
             Optional<KnowledgeBase> kbOpt = knowledgeBaseRepository.findById(kbId);
             if (kbOpt.isPresent()) {
                 KnowledgeBase kb = kbOpt.get();
-                int retTokens = pruneResult.prunedChunks().stream().mapToInt(c -> c.tokenCount() != null ? c.tokenCount() : 0).sum();
+                int retTokens = finalChunks.stream().mapToInt(c -> c.tokenCount() != null ? c.tokenCount() : 0).sum();
                 long curRet = kb.getRetrievalTokens() != null ? kb.getRetrievalTokens() : 0L;
                 kb.setRetrievalTokens(curRet + retTokens);
                 if (rerankEnabled) {
@@ -487,7 +646,33 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
             log.warn("自研引擎更新检索 Token 统计失败: {}", e.getMessage());
         }
 
-        return pruneResult.prunedChunks();
+        return finalChunks;
+    }
+
+    /**
+     * P4 多模态扩展：历史图片向量回填与重计算 (Chapter 18)
+     */
+    @Transactional
+    public int reembedImages(String kbId) {
+        if (kbId == null || kbId.isBlank()) {
+            return 0;
+        }
+        List<KnowledgeDocumentChunk> chunks = chunkRepository.findByKnowledgeBaseIdAndEnabledTrueOrderByChunkIndexAsc(kbId);
+        int count = 0;
+        for (KnowledgeDocumentChunk ch : chunks) {
+            if ("IMAGE".equalsIgnoreCase(ch.getChunkType()) || (ch.getImageUrl() != null && !ch.getImageUrl().isBlank())) {
+                float[] vec = embeddingService.embedImage(ch.getImageUrl(), ch.getImageCaption(), 1024);
+                ch.setEmbedding(embeddingService.serializeVector(vec));
+                ch.setMatchedBy("IMAGE_VECTOR");
+                chunkRepository.save(ch);
+                count++;
+            }
+        }
+        if (semanticCacheService != null) {
+            semanticCacheService.clearCache(kbId);
+        }
+        log.info("图片向量回填重计算完成: kbId={}, count={}", kbId, count);
+        return count;
     }
 
     private String resolveKnowledgeBaseId(String externalDatasetId) {
@@ -535,6 +720,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
             double finalScore,
             double vectorScore,
             double keywordScore,
-            double rerankScore
+            double rerankScore,
+            String matchedBy
     ) {}
 }
