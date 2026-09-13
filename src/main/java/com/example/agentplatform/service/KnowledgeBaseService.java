@@ -483,8 +483,11 @@ public class KnowledgeBaseService {
         String providerType = (req.getProvider() != null && !req.getProvider().isBlank()) ? req.getProvider() : "DIFY";
         KnowledgeBaseProvider provider = resolveProvider(providerType);
 
-        String embeddingModel = (req.getEmbeddingModel() != null && !req.getEmbeddingModel().isBlank()) ? req.getEmbeddingModel() : "text-embedding-v3";
-        String embeddingProvider = (req.getEmbeddingProvider() != null && !req.getEmbeddingProvider().isBlank()) ? req.getEmbeddingProvider() : "langgenius/tongyi/tongyi";
+        boolean isSpringAi = "SPRING_AI".equalsIgnoreCase(providerType);
+        String defaultEmbedding = isSpringAi ? "spring-ai-native-1024" : "text-embedding-v3";
+        String defaultEmbeddingProvider = isSpringAi ? "spring_ai" : "langgenius/tongyi/tongyi";
+        String embeddingModel = (req.getEmbeddingModel() != null && !req.getEmbeddingModel().isBlank()) ? req.getEmbeddingModel() : defaultEmbedding;
+        String embeddingProvider = (req.getEmbeddingProvider() != null && !req.getEmbeddingProvider().isBlank()) ? req.getEmbeddingProvider() : defaultEmbeddingProvider;
         String searchMethod = (req.getSearchMethod() != null && !req.getSearchMethod().isBlank()) ? req.getSearchMethod() : "hybrid_search";
         Integer topK = (req.getTopK() != null && req.getTopK() > 0) ? req.getTopK() : 3;
         Boolean rerankEnabled = req.getRerankEnabled() != null ? req.getRerankEnabled() : true;
