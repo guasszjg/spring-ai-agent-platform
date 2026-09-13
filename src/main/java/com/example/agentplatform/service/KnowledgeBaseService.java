@@ -412,13 +412,8 @@ public class KnowledgeBaseService {
 
         // 4. 执行检索并统计耗时
         long start = System.currentTimeMillis();
-        List<RetrievedChunk> chunks;
-        if (effectiveEngine == EngineType.DIFY) {
-            KnowledgeBaseProvider provider = resolveProvider("DIFY");
-            chunks = provider.retrieve(kb.getExternalDatasetId(), internalReq);
-        } else {
-            throw new UnsupportedOperationException("底层引擎 [" + effectiveEngine + "] 尚在研发就绪中");
-        }
+        KnowledgeBaseProvider provider = resolveProvider(effectiveEngine.name());
+        List<RetrievedChunk> chunks = provider.retrieve(kb.getExternalDatasetId(), internalReq);
         long latencyMs = System.currentTimeMillis() - start;
 
         Map<String, Object> metrics = new HashMap<>();
