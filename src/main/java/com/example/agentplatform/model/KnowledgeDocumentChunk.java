@@ -50,6 +50,24 @@ public class KnowledgeDocumentChunk {
     private Long tokenCount = 0L;
 
     /**
+     * 父块标识（用于父子切分展开，可为空）
+     */
+    @Column(length = 64)
+    private String parentChunkId;
+
+    /**
+     * 父块完整内容（展开时使用）
+     */
+    @Column(columnDefinition = "TEXT")
+    private String parentContent;
+
+    /**
+     * 切片类型：STANDALONE (独立切片), PARENT (父块), CHILD (子块)
+     */
+    @Column(length = 32)
+    private String chunkType = "CHILD";
+
+    /**
      * 向量值 (JSON Array 字符串或紧凑浮点格式)，支持 1024 维密集向量
      */
     @Column(columnDefinition = "TEXT")
@@ -125,6 +143,15 @@ public class KnowledgeDocumentChunk {
 
     public Boolean getEnabled() { return enabled; }
     public void setEnabled(Boolean enabled) { this.enabled = enabled; }
+
+    public String getParentChunkId() { return parentChunkId; }
+    public void setParentChunkId(String parentChunkId) { this.parentChunkId = parentChunkId; }
+
+    public String getParentContent() { return parentContent; }
+    public void setParentContent(String parentContent) { this.parentContent = parentContent; }
+
+    public String getChunkType() { return chunkType; }
+    public void setChunkType(String chunkType) { this.chunkType = chunkType; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

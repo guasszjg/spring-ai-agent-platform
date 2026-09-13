@@ -40,6 +40,8 @@ class SpringAiKnowledgeBaseProviderTest {
     private DocumentChunker documentChunker;
     private LocalEmbeddingService embeddingService;
     private KeywordRetriever keywordRetriever;
+    private com.example.agentplatform.rag.pipeline.QueryTransformer queryTransformer;
+    private com.example.agentplatform.rag.pipeline.ContextBudgetPruner budgetPruner;
     private SpringAiKnowledgeBaseProvider provider;
 
     @BeforeEach
@@ -47,12 +49,16 @@ class SpringAiKnowledgeBaseProviderTest {
         documentChunker = new DocumentChunker();
         embeddingService = new LocalEmbeddingService(null);
         keywordRetriever = new KeywordRetriever();
+        queryTransformer = new com.example.agentplatform.rag.pipeline.QueryTransformer(null);
+        budgetPruner = new com.example.agentplatform.rag.pipeline.ContextBudgetPruner();
         provider = new SpringAiKnowledgeBaseProvider(
                 chunkRepository,
                 knowledgeBaseRepository,
                 documentChunker,
                 embeddingService,
-                keywordRetriever
+                keywordRetriever,
+                queryTransformer,
+                budgetPruner
         );
     }
 
@@ -139,5 +145,90 @@ class SpringAiKnowledgeBaseProviderTest {
         // chunk1 应该排名在 chunk2 前面
         assertThat(chunks.get(0).chunkId()).isEqualTo("c1");
         assertThat(chunks.get(0).score()).isGreaterThan(0.0);
+    }
+
+    @Test
+    void testParentChildExpansionAndDeduplication() {
+        String parentText = "退款申请提交后，财务部门将在 1-3 个工作日内原路退回款项。如果超过 3 个工作日仍未到账，请核对银行卡开户行并在工作时间联系人工客服进行流水核查。";
+
+        KnowledgeDocumentChunk child1 = new KnowledgeDocumentChunk();
+        child1.setId("child_1");
+        child1.setKnowledgeBaseId("kb_parent_test");
+        child1.setChunkIndex(0);
+        child1.setContent("退款申请提交后，财务部门将在 1-3 个工作日内原路退回款项。");
+        child1.setParentChunkId("parent_alpha");
+        child1.setParentContent(parentText);
+        child1.setChunkType("CHILD");
+        child1.setTokenCount(35L);
+        child1.setEnabled(true);
+        child1.setEmbedding(embeddingService.serializeVector(embeddingService.embed(child1.getContent(), 1024)));
+
+        KnowledgeDocumentChunk child2 = new KnowledgeDocumentChunk();
+        child2.setId("child_2");
+        child2.setKnowledgeBaseId("kb_parent_test");
+        child2.setChunkIndex(1);
+        child2.setContent("如果超过 3 个工作日仍未到账，请核对银行卡开户行并在工作时间联系人工客服进行流水核查。");
+        child2.setParentChunkId("parent_alpha");
+        child2.setParentContent(parentText);
+        child2.setChunkType("CHILD");
+        child2.setTokenCount(45L);
+        child2.setEnabled(true);
+        child2.setEmbedding(embeddingService.serializeVector(embeddingService.embed(child2.getContent(), 1024)));
+
+        when(knowledgeBaseRepository.findByExternalDatasetId(anyString())).thenReturn(Optional.empty());
+        when(knowledgeBaseRepository.findById(anyString())).thenReturn(Optional.empty());
+        when(chunkRepository.findByKnowledgeBaseIdAndEnabledTrueOrderByChunkIndexAsc("kb_parent_test"))
+                .thenReturn(List.of(child1, child2));
+
+        RetrievalRequest req = RetrievalRequest.builder()
+                .knowledgeBaseId("kb_parent_test")
+                .query("退款没有到账怎么办")
+                .topK(5)
+                .scoreThreshold(0.01)
+                .expandParent(true)
+                .rewriteEnabled(true)
+                .maxContextTokens(3000)
+                .build();
+
+        List<RetrievedChunk> chunks = provider.retrieve("kb_parent_test", req);
+
+        assertThat(chunks).hasSize(1); // 跨段去重，同一父块只出现一次
+        RetrievedChunk hit = chunks.get(0);
+        assertThat(hit.content()).isEqualTo(parentText); // 展开为了父块大上下文
+        assertThat(hit.metadata().get("parentExpanded")).isEqualTo(true);
+        assertThat(hit.metadata().get("parentChunkId")).isEqualTo("parent_alpha");
+    }
+
+    @Test
+    void testQueryRewriteNoiseRemoval() {
+        KnowledgeDocumentChunk chunk = new KnowledgeDocumentChunk();
+        chunk.setId("c_faq");
+        chunk.setKnowledgeBaseId("kb_query_rewrite");
+        chunk.setChunkIndex(0);
+        chunk.setContent("企业发票开具支持增值税专票和普票。");
+        chunk.setTokenCount(20L);
+        chunk.setEnabled(true);
+        chunk.setEmbedding(embeddingService.serializeVector(embeddingService.embed(chunk.getContent(), 1024)));
+
+        when(knowledgeBaseRepository.findByExternalDatasetId(anyString())).thenReturn(Optional.empty());
+        when(knowledgeBaseRepository.findById(anyString())).thenReturn(Optional.empty());
+        when(chunkRepository.findByKnowledgeBaseIdAndEnabledTrueOrderByChunkIndexAsc("kb_query_rewrite"))
+                .thenReturn(List.of(chunk));
+
+        RetrievalRequest req = RetrievalRequest.builder()
+                .knowledgeBaseId("kb_query_rewrite")
+                .query("请问一下企业发票开具？谢谢")
+                .topK(3)
+                .scoreThreshold(0.01)
+                .rewriteEnabled(true)
+                .expandParent(false)
+                .build();
+
+        List<RetrievedChunk> chunks = provider.retrieve("kb_query_rewrite", req);
+
+        assertThat(chunks).isNotEmpty();
+        RetrievedChunk hit = chunks.get(0);
+        assertThat(hit.metadata()).containsKey("rewrittenQuery");
+        assertThat(hit.metadata().get("rewrittenQuery")).isEqualTo("企业发票开具");
     }
 }

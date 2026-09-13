@@ -49,4 +49,5 @@ doc/*
 # Local runtime storage
 data/
 uploads/
-
+*.log
+/*.jar

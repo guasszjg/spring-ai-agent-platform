@@ -5,16 +5,22 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * 本地文档解析与智能切片器 (Document Splitter & Chunker)
- * 采用层级标点与换行分块算法，保留语义完整性与边界
+ * 采用层级标点与换行分块算法，支持普通递归切片与高级父子分块 (Parent-Child Chunking)
  */
 @Component
 public class DocumentChunker {
 
     public static final int DEFAULT_CHUNK_SIZE = 500;
     public static final int DEFAULT_CHUNK_OVERLAP = 80;
+
+    public static final int DEFAULT_PARENT_CHUNK_SIZE = 1200;
+    public static final int DEFAULT_PARENT_CHUNK_OVERLAP = 150;
+    public static final int DEFAULT_CHILD_CHUNK_SIZE = 350;
+    public static final int DEFAULT_CHILD_CHUNK_OVERLAP = 60;
 
     private static final List<String> SEPARATORS = Arrays.asList(
             "\n\n",
@@ -39,13 +45,18 @@ public class DocumentChunker {
             long tokenCount
     ) {}
 
+    public record ParentChildPiece(
+            int index,
+            String childContent,
+            String parentChunkId,
+            String parentContent,
+            int charCount,
+            long tokenCount,
+            String chunkType
+    ) {}
+
     /**
-     * 将长文本切分为有序分段列表
-     *
-     * @param text         原始正文
-     * @param chunkSize    单段目标字符数
-     * @param chunkOverlap 段间重叠字符数
-     * @return 分块结果
+     * 将长文本切分为有序分段列表（单层分块）
      */
     public List<ChunkPiece> splitText(String text, int chunkSize, int chunkOverlap) {
         if (text == null || text.isBlank()) {
@@ -71,6 +82,63 @@ public class DocumentChunker {
 
     public List<ChunkPiece> splitText(String text) {
         return splitText(text, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP);
+    }
+
+    /**
+     * 高级父子切片管线 (Parent-Child Chunking)
+     * 父块 (1200~1500字符) 保持段落大上下文；子块 (300~400字符) 用于高精度向量召回
+     */
+    public List<ParentChildPiece> splitParentChild(String text) {
+        if (text == null || text.isBlank()) {
+            return List.of();
+        }
+        String normalized = text.replace("\r\n", "\n").replace('\r', '\n').trim();
+
+        // 短文本直接作为单一切片，无需二级切割
+        if (normalized.length() <= DEFAULT_CHILD_CHUNK_SIZE + 100) {
+            long tokens = estimateTokens(normalized);
+            return List.of(new ParentChildPiece(
+                    0,
+                    normalized,
+                    null,
+                    normalized,
+                    normalized.length(),
+                    tokens,
+                    "STANDALONE"
+            ));
+        }
+
+        // 1. 先切割父块大段落
+        List<String> parentRawList = recursiveSplit(normalized, DEFAULT_PARENT_CHUNK_SIZE, DEFAULT_PARENT_CHUNK_OVERLAP, 0);
+        List<ParentChildPiece> pieces = new ArrayList<>();
+        int globalIndex = 0;
+
+        for (String parentRaw : parentRawList) {
+            String parentContent = parentRaw.trim();
+            if (parentContent.isEmpty()) continue;
+
+            String parentChunkId = "parent_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+
+            // 2. 将父块进一步细切为子块
+            List<String> childRawList = recursiveSplit(parentContent, DEFAULT_CHILD_CHUNK_SIZE, DEFAULT_CHILD_CHUNK_OVERLAP, 0);
+            for (String childRaw : childRawList) {
+                String childContent = childRaw.trim();
+                if (childContent.isEmpty()) continue;
+
+                long tokens = estimateTokens(childContent);
+                pieces.add(new ParentChildPiece(
+                        globalIndex++,
+                        childContent,
+                        parentChunkId,
+                        parentContent,
+                        childContent.length(),
+                        tokens,
+                        "CHILD"
+                ));
+            }
+        }
+
+        return pieces;
     }
 
     private List<String> recursiveSplit(String text, int targetSize, int overlap, int sepIndex) {

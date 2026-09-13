@@ -18,6 +18,9 @@ public class RetrievalTestRequest {
     private Double keywordWeight;
     private String engineOverride;   // DIFY, SPRING_AI (可为空)
     private String indexVersionId;   // 指定索引版本（可为空）
+    private Boolean rewriteEnabled;  // P2: 是否启用 Query 智能改写
+    private Boolean expandParent;    // P2: 是否展开父块大段落
+    private Integer maxContextTokens;// P2: Token 预算上限
     private Map<String, Object> extraParams;
 
     public RetrievalTestRequest() {
@@ -101,6 +104,30 @@ public class RetrievalTestRequest {
 
     public void setIndexVersionId(String indexVersionId) {
         this.indexVersionId = indexVersionId;
+    }
+
+    public Boolean getRewriteEnabled() {
+        return rewriteEnabled;
+    }
+
+    public void setRewriteEnabled(Boolean rewriteEnabled) {
+        this.rewriteEnabled = rewriteEnabled;
+    }
+
+    public Boolean getExpandParent() {
+        return expandParent;
+    }
+
+    public void setExpandParent(Boolean expandParent) {
+        this.expandParent = expandParent;
+    }
+
+    public Integer getMaxContextTokens() {
+        return maxContextTokens;
+    }
+
+    public void setMaxContextTokens(Integer maxContextTokens) {
+        this.maxContextTokens = maxContextTokens;
     }
 
     public Map<String, Object> getExtraParams() {

@@ -209,7 +209,7 @@ class KnowledgeBaseServiceTest {
         kb.setExternalDatasetId("ds-1");
 
         when(knowledgeBaseRepository.findById("kb-1")).thenReturn(Optional.of(kb));
-        when(difyProvider.retrieve(eq("ds-1"), eq("怎么重启设备"), any(), any())).thenReturn(List.of(
+        when(difyProvider.retrieve(eq("ds-1"), any(RetrievalRequest.class))).thenReturn(List.of(
                 new com.example.agentplatform.rag.RetrievedChunk("长按电源键 10 秒", "手册.pdf", 0.9)
         ));
 

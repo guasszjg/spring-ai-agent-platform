@@ -48,9 +48,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
-import java.time.LocalDateTime;
+import com.example.agentplatform.rag.pipeline.ContextBudgetPruner;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -88,6 +89,7 @@ public class KnowledgeBaseService {
     private final KnowledgeSourceRevisionRepository sourceRevisionRepository;
     private final KnowledgeIndexVersionRepository indexVersionRepository;
     private final DifyRagEngineAdapter difyRagEngineAdapter;
+    private final ContextBudgetPruner budgetPruner;
 
     @Autowired
     public KnowledgeBaseService(KnowledgeBaseRepository knowledgeBaseRepository,
@@ -101,7 +103,8 @@ public class KnowledgeBaseService {
                                 @Autowired(required = false) ObjectStorageService objectStorageService,
                                 @Autowired(required = false) KnowledgeSourceRevisionRepository sourceRevisionRepository,
                                 @Autowired(required = false) KnowledgeIndexVersionRepository indexVersionRepository,
-                                @Autowired(required = false) DifyRagEngineAdapter difyRagEngineAdapter) {
+                                @Autowired(required = false) DifyRagEngineAdapter difyRagEngineAdapter,
+                                @Autowired(required = false) ContextBudgetPruner budgetPruner) {
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.documentRepository = documentRepository;
         this.faqRepository = faqRepository;
@@ -113,6 +116,7 @@ public class KnowledgeBaseService {
         this.sourceRevisionRepository = sourceRevisionRepository;
         this.indexVersionRepository = indexVersionRepository;
         this.difyRagEngineAdapter = difyRagEngineAdapter;
+        this.budgetPruner = budgetPruner != null ? budgetPruner : new ContextBudgetPruner();
         for (KnowledgeBaseProvider p : providers) {
             this.providerMap.put(p.getProviderType().toUpperCase(), p);
         }
@@ -126,7 +130,22 @@ public class KnowledgeBaseService {
                                 List<KnowledgeBaseProvider> providers,
                                 ObjectMapper objectMapper,
                                 OwnerNameResolver ownerNameResolver) {
-        this(knowledgeBaseRepository, documentRepository, faqRepository, resourceAuthorizationService, resourceGrantRepository, providers, objectMapper, ownerNameResolver, null, null, null, null);
+        this(knowledgeBaseRepository, documentRepository, faqRepository, resourceAuthorizationService, resourceGrantRepository, providers, objectMapper, ownerNameResolver, null, null, null, null, null);
+    }
+
+    public KnowledgeBaseService(KnowledgeBaseRepository knowledgeBaseRepository,
+                                KnowledgeDocumentRepository documentRepository,
+                                KnowledgeFaqRepository faqRepository,
+                                ResourceAuthorizationService resourceAuthorizationService,
+                                ResourceGrantRepository resourceGrantRepository,
+                                List<KnowledgeBaseProvider> providers,
+                                ObjectMapper objectMapper,
+                                OwnerNameResolver ownerNameResolver,
+                                ObjectStorageService objectStorageService,
+                                KnowledgeSourceRevisionRepository sourceRevisionRepository,
+                                KnowledgeIndexVersionRepository indexVersionRepository,
+                                DifyRagEngineAdapter difyRagEngineAdapter) {
+        this(knowledgeBaseRepository, documentRepository, faqRepository, resourceAuthorizationService, resourceGrantRepository, providers, objectMapper, ownerNameResolver, objectStorageService, sourceRevisionRepository, indexVersionRepository, difyRagEngineAdapter, null);
     }
 
     private KnowledgeBaseProvider resolveProvider(String providerType) {
@@ -258,46 +277,61 @@ public class KnowledgeBaseService {
                 || query == null || query.isBlank()) {
             return "";
         }
-        StringBuilder body = new StringBuilder();
-        int index = 1;
+        List<RetrievedChunk> allChunks = new ArrayList<>();
         for (String kbId : knowledgeBaseIds) {
-            if (kbId == null || kbId.isBlank() || index > 12) {
+            if (kbId == null || kbId.isBlank()) {
                 continue;
             }
             Optional<KnowledgeBase> kbOpt = knowledgeBaseRepository.findById(kbId.trim());
-            if (kbOpt.isEmpty()) {
+            if (kbOpt.isEmpty() || Boolean.FALSE.equals(kbOpt.get().getEnabled())) {
                 continue;
             }
             KnowledgeBase kb = kbOpt.get();
-            if (Boolean.FALSE.equals(kb.getEnabled())) {
-                continue;
-            }
             String datasetId = kb.getExternalDatasetId();
             if (datasetId == null || datasetId.isBlank()) {
                 continue;
             }
             try {
                 KnowledgeBaseProvider provider = resolveProvider(kb.getProvider());
-                List<RetrievedChunk> chunks = provider.retrieve(datasetId, query, kb.getTopK(), kb.getScoreThreshold());
-                for (RetrievedChunk chunk : chunks) {
-                    if (chunk == null || chunk.content() == null || chunk.content().isBlank() || index > 12) {
-                        continue;
-                    }
-                    String content = chunk.content().trim();
-                    if (content.length() > 1500) {
-                        content = content.substring(0, 1500);
-                    }
-                    body.append("[").append(index++).append("]");
-                    if (chunk.sourceName() != null && !chunk.sourceName().isBlank()) {
-                        body.append(" 来源：").append(chunk.sourceName().trim());
-                    } else if (kb.getName() != null) {
-                        body.append(" 来源：").append(kb.getName());
-                    }
-                    body.append('\n').append(content).append("\n\n");
-                }
+                RetrievalRequest req = RetrievalRequest.builder()
+                        .knowledgeBaseId(kb.getId())
+                        .query(query)
+                        .topK(kb.getTopK() != null && kb.getTopK() > 0 ? kb.getTopK() : 5)
+                        .scoreThreshold(kb.getScoreThreshold())
+                        .searchMethod(kb.getSearchMethod())
+                        .rerankEnabled(Boolean.TRUE.equals(kb.getRerankEnabled()))
+                        .vectorWeight(kb.getVectorWeight())
+                        .keywordWeight(kb.getKeywordWeight())
+                        .expandParent(true)
+                        .rewriteEnabled(true)
+                        .maxContextTokens(3000)
+                        .build();
+                List<RetrievedChunk> chunks = provider.retrieve(datasetId, req);
+                allChunks.addAll(chunks);
             } catch (Exception e) {
                 log.warn("知识库 [{}] 检索失败: {}", kb.getName(), e.getMessage());
             }
+        }
+
+        // P2 阶段：Token 预算裁剪 (修复 F4 缺陷)
+        if (budgetPruner != null) {
+            allChunks.sort(Comparator.comparingDouble(RetrievedChunk::score).reversed());
+            allChunks = budgetPruner.prune(allChunks, 3000).prunedChunks();
+        }
+
+        StringBuilder body = new StringBuilder();
+        int index = 1;
+        for (RetrievedChunk chunk : allChunks) {
+            if (chunk == null || chunk.content() == null || chunk.content().isBlank()) {
+                continue;
+            }
+            body.append("[").append(index++).append("]");
+            if (chunk.sourceName() != null && !chunk.sourceName().isBlank()) {
+                body.append(" 来源：").append(chunk.sourceName().trim());
+            } else {
+                body.append(" 来源：企业知识库");
+            }
+            body.append('\n').append(chunk.content().trim()).append("\n\n");
         }
         if (body.isEmpty()) {
             return "";
@@ -408,6 +442,9 @@ public class KnowledgeBaseService {
                 .keywordWeight(effectiveKeywordWeight)
                 .engineOverride(req.getEngineOverride() != null && !req.getEngineOverride().isBlank() ? effectiveEngine : null)
                 .indexVersionId(activeVersion != null ? activeVersion.getId() : null)
+                .rewriteEnabled(req.getRewriteEnabled() != null ? req.getRewriteEnabled() : false)
+                .expandParent(req.getExpandParent() != null ? req.getExpandParent() : true)
+                .maxContextTokens(req.getMaxContextTokens() != null ? req.getMaxContextTokens() : 3000)
                 .build();
 
         // 4. 执行检索并统计耗时
@@ -423,7 +460,18 @@ public class KnowledgeBaseService {
         metrics.put("rerankEnabled", effectiveRerankEnabled);
         metrics.put("vectorWeight", effectiveVectorWeight);
         metrics.put("keywordWeight", effectiveKeywordWeight);
+        metrics.put("rewriteEnabled", req.getRewriteEnabled() != null ? req.getRewriteEnabled() : false);
+        metrics.put("expandParent", req.getExpandParent() != null ? req.getExpandParent() : true);
+        metrics.put("maxContextTokens", req.getMaxContextTokens() != null ? req.getMaxContextTokens() : 3000);
         metrics.put("totalHits", chunks.size());
+        int totalTokens = chunks.stream().mapToInt(c -> c.tokenCount() != null ? c.tokenCount() : 0).sum();
+        metrics.put("totalTokens", totalTokens);
+        for (RetrievedChunk chunk : chunks) {
+            if (chunk.metadata() != null && chunk.metadata().containsKey("rewrittenQuery")) {
+                metrics.put("rewrittenQuery", chunk.metadata().get("rewrittenQuery"));
+                break;
+            }
+        }
 
         return RetrievalResult.of(query, chunks, resolution, latencyMs, metrics);
     }
