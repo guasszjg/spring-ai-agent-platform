@@ -12,7 +12,18 @@ import com.example.agentplatform.repository.KnowledgeBaseRepository;
 import com.example.agentplatform.repository.KnowledgeDocumentRepository;
 import com.example.agentplatform.repository.KnowledgeFaqRepository;
 import com.example.agentplatform.repository.ResourceGrantRepository;
+import com.example.agentplatform.model.KnowledgeIndexVersion;
+import com.example.agentplatform.model.KnowledgeSourceRevision;
+import com.example.agentplatform.rag.RetrievedChunk;
+import com.example.agentplatform.rag.dto.RetrievalTestRequest;
+import com.example.agentplatform.rag.engine.RetrievalRequest;
+import com.example.agentplatform.rag.engine.RetrievalResult;
+import com.example.agentplatform.repository.KnowledgeIndexVersionRepository;
+import com.example.agentplatform.repository.KnowledgeSourceRevisionRepository;
+import com.example.agentplatform.storage.ObjectStorageService;
+import com.example.agentplatform.security.CurrentActor;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -21,6 +32,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -29,7 +41,10 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -57,11 +72,22 @@ class KnowledgeBaseServiceTest {
     @Mock
     private OwnerNameResolver ownerNameResolver;
 
+    @Mock
+    private ObjectStorageService objectStorageService;
+
+    @Mock
+    private KnowledgeSourceRevisionRepository sourceRevisionRepository;
+
+    @Mock
+    private KnowledgeIndexVersionRepository indexVersionRepository;
+
     private KnowledgeBaseService knowledgeBaseService;
 
     @BeforeEach
     void setUp() {
+        CurrentActor.clear();
         when(difyProvider.getProviderType()).thenReturn("DIFY");
+        lenient().when(resourceAuthorizationService.canViewKnowledgeBase(any(), any())).thenReturn(true);
         knowledgeBaseService = new KnowledgeBaseService(
                 knowledgeBaseRepository,
                 documentRepository,
@@ -70,8 +96,17 @@ class KnowledgeBaseServiceTest {
                 resourceGrantRepository,
                 List.of(difyProvider),
                 new ObjectMapper(),
-                ownerNameResolver
+                ownerNameResolver,
+                objectStorageService,
+                sourceRevisionRepository,
+                indexVersionRepository,
+                null
         );
+    }
+
+    @AfterEach
+    void tearDown() {
+        CurrentActor.clear();
     }
 
     @Test
@@ -261,5 +296,121 @@ class KnowledgeBaseServiceTest {
 
         String context = knowledgeBaseService.buildRetrievalContext(List.of("kb-off"), "任意问题");
         assertThat(context).isEmpty();
+    }
+
+    @Test
+    void uploadDocuments_archivesFileToObjectStorageAndCreatesRevision() {
+        KnowledgeBase kb = new KnowledgeBase();
+        kb.setId("kb-f8");
+        kb.setName("快照测试库");
+        kb.setProvider("DIFY");
+        kb.setExternalDatasetId("ds-f8");
+        when(knowledgeBaseRepository.findById("kb-f8")).thenReturn(Optional.of(kb));
+        when(resourceAuthorizationService.canManageKnowledgeBase(any(), eq(kb))).thenReturn(true);
+
+        DifyDocumentDto difyDoc = new DifyDocumentDto();
+        difyDoc.setId("ext-doc-1");
+        difyDoc.setIndexingStatus("completed");
+        difyDoc.setWordCount(100L);
+        difyDoc.setTokens(50L);
+        when(difyProvider.uploadDocument(eq("ds-f8"), any())).thenReturn(difyDoc);
+
+        when(documentRepository.save(any(KnowledgeDocument.class))).thenAnswer(i -> {
+            KnowledgeDocument doc = i.getArgument(0);
+            if (doc.getId() == null) {
+                doc.setId("doc-f8-1");
+            }
+            return doc;
+        });
+        when(objectStorageService.putObject(anyString(), any(InputStream.class), anyLong(), any()))
+                .thenReturn("abc123sha256hash");
+        when(sourceRevisionRepository.save(any(KnowledgeSourceRevision.class))).thenAnswer(i -> {
+            KnowledgeSourceRevision rev = i.getArgument(0);
+            rev.setId("ksr-f8-1");
+            return rev;
+        });
+
+        MockMultipartFile file = new MockMultipartFile("files", "guide.md", "text/markdown", "# Guide Content".getBytes());
+        List<KnowledgeDocument> uploaded = knowledgeBaseService.uploadDocuments("kb-f8", List.of(file));
+
+        assertThat(uploaded).hasSize(1);
+        KnowledgeDocument doc = uploaded.get(0);
+        assertThat(doc.getName()).isEqualTo("guide.md");
+        assertThat(doc.getSha256()).isEqualTo("abc123sha256hash");
+        assertThat(doc.getCurrentRevisionId()).isEqualTo("ksr-f8-1");
+        assertThat(doc.getObjectKey()).contains("kb/kb-f8/docs/doc-f8-1/guide.md");
+        verify(objectStorageService).putObject(anyString(), any(InputStream.class), eq(file.getSize()), eq("text/markdown"));
+        verify(sourceRevisionRepository).save(any(KnowledgeSourceRevision.class));
+    }
+
+    @Test
+    void testRetrieval_resolvesEngineAndReturnsEvidenceResult() {
+        KnowledgeBase kb = new KnowledgeBase();
+        kb.setId("kb-test-recall");
+        kb.setName("召回测试知识库");
+        kb.setProvider("DIFY");
+        kb.setExternalDatasetId("ds-recall");
+        kb.setTopK(3);
+        kb.setScoreThreshold(0.6);
+        kb.setSearchMethod("hybrid_search");
+        when(knowledgeBaseRepository.findById("kb-test-recall")).thenReturn(Optional.of(kb));
+
+        RetrievedChunk chunk = RetrievedChunk.builder()
+                .content("召回内容段落测试")
+                .sourceName("测试规范.md")
+                .score(0.89)
+                .chunkId("seg-1")
+                .tokenCount(64)
+                .vectorScore(0.92)
+                .keywordScore(0.81)
+                .build();
+        when(difyProvider.retrieve(eq("ds-recall"), any(RetrievalRequest.class)))
+                .thenReturn(List.of(chunk));
+
+        RetrievalTestRequest req = new RetrievalTestRequest();
+        req.setQuery("如何进行故障排查？");
+        req.setTopK(5);
+        req.setScoreThreshold(0.4);
+
+        RetrievalResult result = knowledgeBaseService.testRetrieval("kb-test-recall", req);
+
+        assertThat(result.query()).isEqualTo("如何进行故障排查？");
+        assertThat(result.chunks()).hasSize(1);
+        assertThat(result.chunks().get(0).content()).isEqualTo("召回内容段落测试");
+        assertThat(result.chunks().get(0).score()).isEqualTo(0.89);
+        assertThat(result.engineResolution().effectiveEngine().name()).isEqualTo("DIFY");
+        assertThat(result.engineResolution().source()).isEqualTo("L2_KB_BINDING");
+        assertThat(result.latencyMs()).isGreaterThanOrEqualTo(0);
+        assertThat(result.metrics().get("topK")).isEqualTo(5);
+        assertThat(result.metrics().get("totalHits")).isEqualTo(1);
+    }
+
+    @Test
+    void getIndexVersions_autoInitializesV1WhenEmpty() {
+        KnowledgeBase kb = new KnowledgeBase();
+        kb.setId("kb-v-init");
+        kb.setName("版本初始化库");
+        kb.setProvider("DIFY");
+        kb.setExternalDatasetId("ds-v-init");
+        kb.setSearchMethod("hybrid_search");
+        kb.setTopK(3);
+        when(knowledgeBaseRepository.findById("kb-v-init")).thenReturn(Optional.of(kb));
+        when(indexVersionRepository.findByKnowledgeBaseIdOrderByVersionNoDesc("kb-v-init"))
+                .thenReturn(List.of());
+        when(indexVersionRepository.save(any(KnowledgeIndexVersion.class))).thenAnswer(i -> {
+            KnowledgeIndexVersion v = i.getArgument(0);
+            v.setId("kiv-v1");
+            return v;
+        });
+
+        List<KnowledgeIndexVersion> versions = knowledgeBaseService.getIndexVersions("kb-v-init");
+
+        assertThat(versions).hasSize(1);
+        KnowledgeIndexVersion v1 = versions.get(0);
+        assertThat(v1.getVersionNo()).isEqualTo(1);
+        assertThat(v1.getStatus()).isEqualTo("READY");
+        assertThat(v1.getEngineType()).isEqualTo("DIFY");
+        verify(knowledgeBaseRepository).save(kb);
+        assertThat(kb.getActiveIndexVersionId()).isEqualTo("kiv-v1");
     }
 }

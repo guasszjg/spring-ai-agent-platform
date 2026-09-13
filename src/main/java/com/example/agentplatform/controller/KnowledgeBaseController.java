@@ -4,12 +4,15 @@ import com.example.agentplatform.model.ApiResponse;
 import com.example.agentplatform.model.KnowledgeBase;
 import com.example.agentplatform.model.KnowledgeDocument;
 import com.example.agentplatform.model.KnowledgeFaq;
+import com.example.agentplatform.model.KnowledgeIndexVersion;
 import com.example.agentplatform.model.PageResult;
 import com.example.agentplatform.rag.dto.CreateFaqRequest;
 import com.example.agentplatform.rag.dto.CreateKnowledgeBaseRequest;
 import com.example.agentplatform.rag.dto.KnowledgeEngineInfo;
+import com.example.agentplatform.rag.dto.RetrievalTestRequest;
 import com.example.agentplatform.rag.dto.UpdateFaqRequest;
 import com.example.agentplatform.rag.dto.UpdateKnowledgeBaseRequest;
+import com.example.agentplatform.rag.engine.RetrievalResult;
 import com.example.agentplatform.service.KnowledgeBaseService;
 import com.example.agentplatform.security.CurrentActor;
 import org.springframework.http.HttpStatus;
@@ -266,6 +269,38 @@ public class KnowledgeBaseController {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    // ==================== 召回测试与索引版本 (Phase P1) ====================
+
+    @PostMapping("/{id}/retrieval-test")
+    public ResponseEntity<ApiResponse<RetrievalResult>> testRetrieval(
+            @PathVariable String id,
+            @RequestBody RetrievalTestRequest req) {
+        try {
+            RetrievalResult result = knowledgeBaseService.testRetrieval(id, req);
+            return ResponseEntity.ok(ApiResponse.ok("召回测试完成", result));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("召回测试失败: " + e.getMessage()));
+        }
+    }
+
+    @GetMapping("/{id}/index-versions")
+    public ResponseEntity<ApiResponse<List<KnowledgeIndexVersion>>> listIndexVersions(@PathVariable String id) {
+        try {
+            List<KnowledgeIndexVersion> versions = knowledgeBaseService.getIndexVersions(id);
+            return ResponseEntity.ok(ApiResponse.ok(versions));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("获取索引版本失败: " + e.getMessage()));
         }
     }
 }

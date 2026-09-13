@@ -16,6 +16,17 @@ import com.example.agentplatform.rag.dto.UpdateKnowledgeBaseRequest;
 import com.example.agentplatform.repository.KnowledgeBaseRepository;
 import com.example.agentplatform.repository.KnowledgeDocumentRepository;
 import com.example.agentplatform.repository.KnowledgeFaqRepository;
+import com.example.agentplatform.model.KnowledgeIndexVersion;
+import com.example.agentplatform.model.KnowledgeSourceRevision;
+import com.example.agentplatform.rag.dto.RetrievalTestRequest;
+import com.example.agentplatform.rag.engine.DifyRagEngineAdapter;
+import com.example.agentplatform.rag.engine.EngineResolution;
+import com.example.agentplatform.rag.engine.EngineType;
+import com.example.agentplatform.rag.engine.RetrievalRequest;
+import com.example.agentplatform.rag.engine.RetrievalResult;
+import com.example.agentplatform.repository.KnowledgeIndexVersionRepository;
+import com.example.agentplatform.repository.KnowledgeSourceRevisionRepository;
+import com.example.agentplatform.storage.ObjectStorageService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.example.agentplatform.repository.ResourceGrantRepository;
@@ -74,6 +85,18 @@ public class KnowledgeBaseService {
     private final ObjectMapper objectMapper;
     private final OwnerNameResolver ownerNameResolver;
 
+    @Autowired(required = false)
+    private ObjectStorageService objectStorageService;
+
+    @Autowired(required = false)
+    private KnowledgeSourceRevisionRepository sourceRevisionRepository;
+
+    @Autowired(required = false)
+    private KnowledgeIndexVersionRepository indexVersionRepository;
+
+    @Autowired(required = false)
+    private DifyRagEngineAdapter difyRagEngineAdapter;
+
     public KnowledgeBaseService(KnowledgeBaseRepository knowledgeBaseRepository,
                                 KnowledgeDocumentRepository documentRepository,
                                 KnowledgeFaqRepository faqRepository,
@@ -92,6 +115,25 @@ public class KnowledgeBaseService {
         for (KnowledgeBaseProvider p : providers) {
             this.providerMap.put(p.getProviderType().toUpperCase(), p);
         }
+    }
+
+    public KnowledgeBaseService(KnowledgeBaseRepository knowledgeBaseRepository,
+                                KnowledgeDocumentRepository documentRepository,
+                                KnowledgeFaqRepository faqRepository,
+                                ResourceAuthorizationService resourceAuthorizationService,
+                                ResourceGrantRepository resourceGrantRepository,
+                                List<KnowledgeBaseProvider> providers,
+                                ObjectMapper objectMapper,
+                                OwnerNameResolver ownerNameResolver,
+                                ObjectStorageService objectStorageService,
+                                KnowledgeSourceRevisionRepository sourceRevisionRepository,
+                                KnowledgeIndexVersionRepository indexVersionRepository,
+                                DifyRagEngineAdapter difyRagEngineAdapter) {
+        this(knowledgeBaseRepository, documentRepository, faqRepository, resourceAuthorizationService, resourceGrantRepository, providers, objectMapper, ownerNameResolver);
+        this.objectStorageService = objectStorageService;
+        this.sourceRevisionRepository = sourceRevisionRepository;
+        this.indexVersionRepository = indexVersionRepository;
+        this.difyRagEngineAdapter = difyRagEngineAdapter;
     }
 
     private KnowledgeBaseProvider resolveProvider(String providerType) {
@@ -285,6 +327,156 @@ public class KnowledgeBaseService {
         return chunks;
     }
 
+    @Transactional(readOnly = true)
+    public RetrievalResult testRetrieval(String kbId, RetrievalTestRequest req) {
+        return testRetrieval(kbId, req, CurrentActor.get());
+    }
+
+    @Transactional(readOnly = true)
+    public RetrievalResult testRetrieval(String kbId, RetrievalTestRequest req, CurrentActor actor) {
+        KnowledgeBase kb = getKnowledgeBaseById(kbId, actor);
+        if (req == null || req.getQuery() == null || req.getQuery().trim().isBlank()) {
+            throw new IllegalArgumentException("检索测试 Query 不能为空");
+        }
+        String query = req.getQuery().trim();
+
+        // 1. 三级引擎决议 (L1 系统默认 -> L2 知识库绑定 -> L3 调试覆盖)
+        EngineType l1Default = EngineType.DIFY;
+        String kbProviderStr = kb.getProvider() != null && !kb.getProvider().isBlank() ? kb.getProvider().toUpperCase() : "DIFY";
+        EngineType l2Binding;
+        try {
+            l2Binding = EngineType.valueOf(kbProviderStr);
+        } catch (IllegalArgumentException e) {
+            l2Binding = EngineType.DIFY;
+        }
+
+        EngineType effectiveEngine = l2Binding;
+        String resolutionSource = "L2_KB_BINDING";
+        List<EngineResolution.ResolutionStep> steps = new ArrayList<>();
+        steps.add(new EngineResolution.ResolutionStep("L1", l1Default.name(), !l1Default.equals(l2Binding)));
+        steps.add(new EngineResolution.ResolutionStep("L2", l2Binding.name(), false));
+
+        if (req.getEngineOverride() != null && !req.getEngineOverride().isBlank()) {
+            try {
+                EngineType l3 = EngineType.valueOf(req.getEngineOverride().toUpperCase().trim());
+                steps.add(new EngineResolution.ResolutionStep("L3", l3.name(), false));
+                effectiveEngine = l3;
+                resolutionSource = "L3_DEBUG_OVERRIDE";
+            } catch (IllegalArgumentException e) {
+                log.warn("无效的引擎覆盖参数: {}", req.getEngineOverride());
+            }
+        }
+
+        // 2. 物理索引版本获取/保障
+        KnowledgeIndexVersion activeVersion = null;
+        if (req.getIndexVersionId() != null && !req.getIndexVersionId().isBlank()) {
+            activeVersion = indexVersionRepository != null ? indexVersionRepository.findById(req.getIndexVersionId()).orElse(null) : null;
+        }
+        if (activeVersion == null && kb.getActiveIndexVersionId() != null && indexVersionRepository != null) {
+            activeVersion = indexVersionRepository.findById(kb.getActiveIndexVersionId()).orElse(null);
+        }
+        if (activeVersion == null && indexVersionRepository != null) {
+            List<KnowledgeIndexVersion> versions = indexVersionRepository.findByKnowledgeBaseIdOrderByVersionNoDesc(kb.getId());
+            if (!versions.isEmpty()) {
+                activeVersion = versions.get(0);
+            }
+        }
+
+        EngineResolution resolution = EngineResolution.resolved(
+                effectiveEngine,
+                resolutionSource,
+                steps,
+                activeVersion != null ? activeVersion.getVersionNo() : 1,
+                activeVersion != null ? activeVersion.getId() : null
+        );
+
+        // 3. 计算生效参数（调试临时参数优先覆盖知识库默认配置）
+        int effectiveTopK = req.getTopK() != null && req.getTopK() > 0 ? req.getTopK()
+                : (kb.getTopK() != null && kb.getTopK() > 0 ? kb.getTopK() : 5);
+        Double effectiveScoreThreshold = req.getScoreThreshold() != null ? req.getScoreThreshold() : kb.getScoreThreshold();
+        String effectiveSearchMethod = req.getSearchMethod() != null && !req.getSearchMethod().isBlank()
+                ? req.getSearchMethod() : (kb.getSearchMethod() != null ? kb.getSearchMethod() : "hybrid_search");
+        Boolean effectiveRerankEnabled = req.getRerankEnabled() != null ? req.getRerankEnabled()
+                : Boolean.TRUE.equals(kb.getRerankEnabled());
+        Double effectiveVectorWeight = req.getVectorWeight() != null ? req.getVectorWeight()
+                : (kb.getVectorWeight() != null ? kb.getVectorWeight() : 0.7);
+        Double effectiveKeywordWeight = req.getKeywordWeight() != null ? req.getKeywordWeight()
+                : (kb.getKeywordWeight() != null ? kb.getKeywordWeight() : 0.3);
+
+        RetrievalRequest internalReq = RetrievalRequest.builder()
+                .knowledgeBaseId(kb.getId())
+                .query(query)
+                .topK(effectiveTopK)
+                .scoreThreshold(effectiveScoreThreshold)
+                .searchMethod(effectiveSearchMethod)
+                .rerankEnabled(effectiveRerankEnabled)
+                .rerankModel(req.getRerankModel() != null ? req.getRerankModel() : kb.getRerankModel())
+                .vectorWeight(effectiveVectorWeight)
+                .keywordWeight(effectiveKeywordWeight)
+                .engineOverride(req.getEngineOverride() != null && !req.getEngineOverride().isBlank() ? effectiveEngine : null)
+                .indexVersionId(activeVersion != null ? activeVersion.getId() : null)
+                .build();
+
+        // 4. 执行检索并统计耗时
+        long start = System.currentTimeMillis();
+        List<RetrievedChunk> chunks;
+        if (effectiveEngine == EngineType.DIFY) {
+            KnowledgeBaseProvider provider = resolveProvider("DIFY");
+            chunks = provider.retrieve(kb.getExternalDatasetId(), internalReq);
+        } else {
+            throw new UnsupportedOperationException("底层引擎 [" + effectiveEngine + "] 尚在研发就绪中");
+        }
+        long latencyMs = System.currentTimeMillis() - start;
+
+        Map<String, Object> metrics = new HashMap<>();
+        metrics.put("topK", effectiveTopK);
+        metrics.put("scoreThreshold", effectiveScoreThreshold != null ? effectiveScoreThreshold : 0.0);
+        metrics.put("searchMethod", effectiveSearchMethod);
+        metrics.put("rerankEnabled", effectiveRerankEnabled);
+        metrics.put("vectorWeight", effectiveVectorWeight);
+        metrics.put("keywordWeight", effectiveKeywordWeight);
+        metrics.put("totalHits", chunks.size());
+
+        return RetrievalResult.of(query, chunks, resolution, latencyMs, metrics);
+    }
+
+    @Transactional
+    public List<KnowledgeIndexVersion> getIndexVersions(String kbId) {
+        return getIndexVersions(kbId, CurrentActor.get());
+    }
+
+    @Transactional
+    public List<KnowledgeIndexVersion> getIndexVersions(String kbId, CurrentActor actor) {
+        KnowledgeBase kb = getKnowledgeBaseById(kbId, actor);
+        if (indexVersionRepository == null) {
+            return Collections.emptyList();
+        }
+        List<KnowledgeIndexVersion> versions = indexVersionRepository.findByKnowledgeBaseIdOrderByVersionNoDesc(kb.getId());
+        if (versions.isEmpty()) {
+            // 首次自愈：为已有历史知识库补齐不可变 V1 索引版本记录
+            KnowledgeIndexVersion v1 = new KnowledgeIndexVersion();
+            v1.setKnowledgeBaseId(kb.getId());
+            v1.setVersionNo(1);
+            v1.setEngineType(kb.getProvider() != null ? kb.getProvider().toUpperCase() : "DIFY");
+            v1.setProviderHandle(kb.getExternalDatasetId());
+            v1.setStatus("READY");
+            v1.setSearchMethod(kb.getSearchMethod());
+            v1.setTopK(kb.getTopK());
+            v1.setScoreThreshold(kb.getScoreThreshold());
+            v1.setVectorWeight(kb.getVectorWeight());
+            v1.setKeywordWeight(kb.getKeywordWeight());
+            v1.setRerankModel(kb.getRerankModel());
+            v1.setEmbeddingModel(kb.getEmbeddingModel());
+            v1.setEmbeddingProvider(kb.getEmbeddingProvider());
+            v1.setCreatedBy(kb.getOwnerUsername() != null ? kb.getOwnerUsername() : "system");
+            v1 = indexVersionRepository.save(v1);
+
+            kb.setActiveIndexVersionId(v1.getId());
+            knowledgeBaseRepository.save(kb);
+            versions = List.of(v1);
+        }
+        return versions;
+    }
 
     @Transactional
     public KnowledgeBase createKnowledgeBase(CreateKnowledgeBaseRequest req) {
@@ -367,7 +559,33 @@ public class KnowledgeBaseService {
             kb.setOwnerId("system");
         }
 
-        return knowledgeBaseRepository.save(kb);
+        kb = knowledgeBaseRepository.save(kb);
+
+        if (indexVersionRepository != null) {
+            KnowledgeIndexVersion v1 = new KnowledgeIndexVersion();
+            v1.setKnowledgeBaseId(kb.getId());
+            v1.setVersionNo(1);
+            v1.setEngineType(providerType);
+            v1.setProviderHandle(kb.getExternalDatasetId());
+            v1.setStatus("READY");
+            v1.setSearchMethod(searchMethod);
+            v1.setTopK(topK);
+            v1.setScoreThreshold(kb.getScoreThreshold());
+            v1.setVectorWeight(vectorWeight);
+            v1.setKeywordWeight(keywordWeight);
+            v1.setRerankModel(rerankModel);
+            v1.setEmbeddingModel(embeddingModel);
+            v1.setEmbeddingProvider(embeddingProvider);
+            v1.setCreatedBy(kb.getOwnerUsername());
+            v1 = indexVersionRepository.save(v1);
+
+            if (v1 != null && v1.getId() != null) {
+                kb.setActiveIndexVersionId(v1.getId());
+                kb = knowledgeBaseRepository.save(kb);
+            }
+        }
+
+        return kb;
     }
 
     @Transactional
@@ -625,6 +843,40 @@ public class KnowledgeBaseService {
                 doc.setEnabled(true);
 
                 doc = documentRepository.save(doc);
+
+                // 3. F8 修复: 本地对象存储持久化归档与不可变 Source Revision 快照记录
+                if (objectStorageService != null && sourceRevisionRepository != null) {
+                    try {
+                        String objectKey = "kb/" + kb.getId() + "/docs/" + doc.getId() + "/" + doc.getName();
+                        String sha256 = objectStorageService.putObject(
+                                objectKey,
+                                file.getInputStream(),
+                                file.getSize(),
+                                file.getContentType() != null ? file.getContentType() : "application/octet-stream"
+                        );
+
+                        KnowledgeSourceRevision revision = new KnowledgeSourceRevision();
+                        revision.setKnowledgeBaseId(kb.getId());
+                        revision.setDocumentId(doc.getId());
+                        revision.setRevisionNo(1);
+                        revision.setFileName(doc.getName());
+                        revision.setExtension(doc.getExtension());
+                        revision.setMimeType(file.getContentType());
+                        revision.setSizeBytes(file.getSize());
+                        revision.setSha256(sha256);
+                        revision.setObjectKey(objectKey);
+                        revision.setStorageType("LOCAL");
+                        revision = sourceRevisionRepository.save(revision);
+
+                        doc.setCurrentRevisionId(revision.getId());
+                        doc.setSha256(sha256);
+                        doc.setObjectKey(objectKey);
+                        doc = documentRepository.save(doc);
+                    } catch (Exception se) {
+                        log.warn("文档原件本地归档失败 (docId={}): {}", doc.getId(), se.getMessage());
+                    }
+                }
+
                 results.add(doc);
             } catch (Exception e) {
                 log.error("上传文件「{}」失败: {}", file.getOriginalFilename(), e.getMessage(), e);

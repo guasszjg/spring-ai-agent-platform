@@ -62,14 +62,14 @@ class DifyRagEngineAdapterTest {
 
     @Test
     void retrieve_delegatesToDifyProviderWithParameters() {
-        when(difyProvider.retrieve("ds-100", "如何配置网络？", 5, 0.6))
-                .thenReturn(List.of(new RetrievedChunk("配置说明", "网络手册.pdf", 0.88)));
-
         RetrievalRequest request = RetrievalRequest.builder()
                 .query("如何配置网络？")
                 .topK(5)
                 .scoreThreshold(0.6)
                 .build();
+
+        when(difyProvider.retrieve("ds-100", request))
+                .thenReturn(List.of(new RetrievedChunk("配置说明", "网络手册.pdf", 0.88)));
 
         List<RetrievedChunk> chunks = adapter.retrieve("ds-100", request);
         assertThat(chunks).hasSize(1);

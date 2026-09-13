@@ -78,6 +78,6 @@ public class DifyRagEngineAdapter implements RagEngineProvider {
         if (handleId == null || handleId.isBlank() || request == null || request.query() == null || request.query().isBlank()) {
             return Collections.emptyList();
         }
-        return difyProvider.retrieve(handleId, request.query(), request.topK(), request.scoreThreshold());
+        return difyProvider.retrieve(handleId, request);
     }
 }

@@ -438,6 +438,60 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
         }
     }
 
+    @Override
+    public List<RetrievedChunk> retrieve(String externalDatasetId, com.example.agentplatform.rag.engine.RetrievalRequest request) {
+        if (externalDatasetId == null || externalDatasetId.isBlank()
+                || request == null || request.query() == null || request.query().isBlank()) {
+            return new ArrayList<>();
+        }
+        ensureConfigured();
+        try {
+            Map<String, Object> req = new HashMap<>();
+            req.put("query", request.query().trim());
+            Map<String, Object> retrievalModel = new HashMap<>();
+            if (request.topK() != null && request.topK() > 0) {
+                retrievalModel.put("top_k", request.topK());
+            }
+            if (request.scoreThreshold() != null && request.scoreThreshold() > 0) {
+                retrievalModel.put("score_threshold_enabled", true);
+                retrievalModel.put("score_threshold", request.scoreThreshold());
+            }
+            if (request.searchMethod() != null && !request.searchMethod().isBlank()) {
+                retrievalModel.put("search_method", request.searchMethod());
+            }
+            if (request.rerankEnabled() != null) {
+                retrievalModel.put("reranking_enable", request.rerankEnabled());
+                if (Boolean.TRUE.equals(request.rerankEnabled())) {
+                    if (request.rerankModel() != null && !request.rerankModel().isBlank()) {
+                        retrievalModel.put("reranking_mode", "reranking_model");
+                    } else {
+                        retrievalModel.put("reranking_mode", "weighted_score");
+                    }
+                }
+            }
+            if (request.vectorWeight() != null && request.keywordWeight() != null) {
+                retrievalModel.put("weights", Map.of(
+                        "vector_setting", Map.of("vector_weight", request.vectorWeight()),
+                        "keyword_setting", Map.of("keyword_weight", request.keywordWeight())
+                ));
+            }
+            if (!retrievalModel.isEmpty()) {
+                req.put("retrieval_model", retrievalModel);
+            }
+            String response = restClient.post()
+                    .uri("/datasets/{datasetId}/retrieve", externalDatasetId)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(req)
+                    .retrieve()
+                    .body(String.class);
+            return parseRetrieveResponse(objectMapper.readTree(response));
+        } catch (Exception e) {
+            log.warn("Dify 知识库检索失败 (datasetId: {}): {}", externalDatasetId, e.getMessage());
+            return new ArrayList<>();
+        }
+    }
+
+
     static List<RetrievedChunk> parseRetrieveResponse(JsonNode root) {
         List<RetrievedChunk> chunks = new ArrayList<>();
         if (root == null) {

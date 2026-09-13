@@ -85,4 +85,14 @@ public interface KnowledgeBaseProvider {
     default List<RetrievedChunk> retrieve(String externalDatasetId, String query, Integer topK, Double scoreThreshold) {
         return retrieve(externalDatasetId, query);
     }
+
+    /**
+     * 引擎中立的统一切片检索接口，支持指定检索模式、重排配置与自定义参数
+     */
+    default List<RetrievedChunk> retrieve(String externalDatasetId, com.example.agentplatform.rag.engine.RetrievalRequest request) {
+        if (request == null) {
+            return java.util.Collections.emptyList();
+        }
+        return retrieve(externalDatasetId, request.query(), request.topK(), request.scoreThreshold());
+    }
 }
