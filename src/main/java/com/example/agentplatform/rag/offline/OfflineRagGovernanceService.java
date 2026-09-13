@@ -24,6 +24,17 @@ public class OfflineRagGovernanceService {
             String summary
     ) {}
 
+    private final com.example.agentplatform.rag.parser.OcrService ocrService;
+
+    public OfflineRagGovernanceService() {
+        this(null);
+    }
+
+    public OfflineRagGovernanceService(@org.springframework.beans.factory.annotation.Autowired(required = false)
+                                       com.example.agentplatform.rag.parser.OcrService ocrService) {
+        this.ocrService = ocrService;
+    }
+
     public OfflineReadinessReport getOfflineReadinessReport(String kbId) {
         Map<String, ComponentStatus> components = new LinkedHashMap<>();
 
@@ -45,18 +56,22 @@ public class OfflineRagGovernanceService {
 
         // 3. 嵌入服务
         components.put("embeddingEngine", new ComponentStatus(
-                "本地安全嵌入引擎 (LocalEmbeddingService)",
+                "1024 维统一多模态嵌入服务 (LocalEmbeddingService)",
                 true,
                 "AIR_GAPPED_FALLBACK",
                 "具备确定性 1024 维特征映射与本地模型适配器，完全支持断网离线环境"
         ));
 
-        // 4. 文档解析与 OCR
+        // 4. 文档解析与 OCR (支持本地部署与在线 API 双模)
+        String ocrProvider = (ocrService != null) ? ocrService.getProviderName() : "LOCAL_PADDLE_OCR";
+        boolean isOnlineOcr = "ONLINE_CLOUD_API".equalsIgnoreCase(ocrProvider);
         components.put("parsingEngine", new ComponentStatus(
-                "多格式文档智能解析器与本地 PaddleOCR",
+                "多格式文档智能解析器与可插拔 OCR (本地部署 / 在线 API 双模)",
                 true,
-                "LOCAL_PROCESS",
-                "TXT/MD/CSV/DOCX/PDF 纯本地流式解析，PaddleOCR CPU/GPU 本地容器化无外网调用"
+                isOnlineOcr ? "ONLINE_CLOUD_API" : "LOCAL_PROCESS",
+                isOnlineOcr
+                        ? "文档纯本地流式解析，OCR 采用云端高精多模态 Vision API（开箱即用）"
+                        : "文档纯本地流式解析，OCR 采用 PaddleOCR 本地容器化运行（100% 局域网无外网调用）"
         ));
 
         // 5. 语义缓存
