@@ -45,3 +45,8 @@ src/main/resources/application-secret.properties
 # Requirement and local docs (keep schema.sql tracked)
 doc/*
 !doc/schema.sql
+
+# Local runtime storage
+data/
+uploads/
+

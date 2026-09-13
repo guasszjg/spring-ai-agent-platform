@@ -98,10 +98,7 @@ public class KnowledgeBaseService {
         String key = (providerType != null && !providerType.isBlank()) ? providerType.toUpperCase() : "DIFY";
         KnowledgeBaseProvider provider = providerMap.get(key);
         if (provider == null) {
-            provider = providerMap.get("DIFY");
-        }
-        if (provider == null) {
-            throw new IllegalStateException("未找到对应的 RAG 知识库服务提供方: " + providerType);
+            throw new IllegalArgumentException("未找到支持的 RAG 知识库服务提供方: " + providerType);
         }
         return provider;
     }
@@ -246,7 +243,7 @@ public class KnowledgeBaseService {
             }
             try {
                 KnowledgeBaseProvider provider = resolveProvider(kb.getProvider());
-                List<RetrievedChunk> chunks = provider.retrieve(datasetId, query);
+                List<RetrievedChunk> chunks = provider.retrieve(datasetId, query, kb.getTopK(), kb.getScoreThreshold());
                 for (RetrievedChunk chunk : chunks) {
                     if (chunk == null || chunk.content() == null || chunk.content().isBlank() || index > 12) {
                         continue;
@@ -280,9 +277,10 @@ public class KnowledgeBaseService {
             return List.of();
         }
         KnowledgeBaseProvider provider = resolveProvider(kb.getProvider());
-        List<RetrievedChunk> chunks = provider.retrieve(kb.getExternalDatasetId(), query);
-        if (topK > 0 && chunks.size() > topK) {
-            return chunks.subList(0, topK);
+        int effectiveTopK = topK > 0 ? topK : (kb.getTopK() != null && kb.getTopK() > 0 ? kb.getTopK() : 5);
+        List<RetrievedChunk> chunks = provider.retrieve(kb.getExternalDatasetId(), query, effectiveTopK, kb.getScoreThreshold());
+        if (effectiveTopK > 0 && chunks.size() > effectiveTopK) {
+            return chunks.subList(0, effectiveTopK);
         }
         return chunks;
     }
@@ -353,6 +351,7 @@ public class KnowledgeBaseService {
         kb.setRerankModelProvider(rerankModelProvider);
         kb.setVectorWeight(vectorWeight);
         kb.setKeywordWeight(keywordWeight);
+        kb.setScoreThreshold(req.getScoreThreshold() != null ? req.getScoreThreshold() : 0.5);
         kb.setDocumentCount(0);
         kb.setWordCount(0L);
         kb.setFaqCount(0);
@@ -416,6 +415,9 @@ public class KnowledgeBaseService {
         }
         if (req.getKeywordWeight() != null) {
             kb.setKeywordWeight(req.getKeywordWeight());
+        }
+        if (req.getScoreThreshold() != null) {
+            kb.setScoreThreshold(req.getScoreThreshold());
         }
 
         // 同步更新外部 Dify 数据集元数据及检索模式与权重

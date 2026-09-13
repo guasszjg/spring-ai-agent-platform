@@ -81,6 +81,15 @@ public class KnowledgeBase {
 
     private Double keywordWeight = 0.3;
 
+    @Column(name = "score_threshold")
+    private Double scoreThreshold = 0.5;
+
+    @Column(name = "active_index_version_id", length = 64)
+    private String activeIndexVersionId;
+
+    @Column(name = "source_snapshot_no")
+    private Integer sourceSnapshotNo = 1;
+
     @Column(name = "owner_id", length = 64)
     private String ownerId;
 
@@ -152,6 +161,12 @@ public class KnowledgeBase {
         }
         if (this.keywordWeight == null || this.keywordWeight <= 0) {
             this.keywordWeight = 0.3;
+        }
+        if (this.scoreThreshold == null || this.scoreThreshold <= 0) {
+            this.scoreThreshold = 0.5;
+        }
+        if (this.sourceSnapshotNo == null || this.sourceSnapshotNo <= 0) {
+            this.sourceSnapshotNo = 1;
         }
         LocalDateTime now = LocalDateTime.now();
         this.createdAt = now;
@@ -388,5 +403,29 @@ public class KnowledgeBase {
 
     public void setIsSystem(Boolean isSystem) {
         this.isSystem = isSystem;
+    }
+
+    public Double getScoreThreshold() {
+        return scoreThreshold;
+    }
+
+    public void setScoreThreshold(Double scoreThreshold) {
+        this.scoreThreshold = scoreThreshold;
+    }
+
+    public String getActiveIndexVersionId() {
+        return activeIndexVersionId;
+    }
+
+    public void setActiveIndexVersionId(String activeIndexVersionId) {
+        this.activeIndexVersionId = activeIndexVersionId;
+    }
+
+    public Integer getSourceSnapshotNo() {
+        return sourceSnapshotNo;
+    }
+
+    public void setSourceSnapshotNo(Integer sourceSnapshotNo) {
+        this.sourceSnapshotNo = sourceSnapshotNo;
     }
 }

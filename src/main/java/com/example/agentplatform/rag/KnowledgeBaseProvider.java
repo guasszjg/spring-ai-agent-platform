@@ -78,4 +78,11 @@ public interface KnowledgeBaseProvider {
      * 按用户问题检索切片，供智能体对话注入上下文
      */
     List<RetrievedChunk> retrieve(String externalDatasetId, String query);
+
+    /**
+     * 按用户问题检索切片，支持指定 topK 与 scoreThreshold 过滤
+     */
+    default List<RetrievedChunk> retrieve(String externalDatasetId, String query, Integer topK, Double scoreThreshold) {
+        return retrieve(externalDatasetId, query);
+    }
 }

@@ -17,6 +17,7 @@ public class CreateKnowledgeBaseRequest {
     private String rerankModelProvider = "langgenius/tongyi/tongyi";
     private Double vectorWeight = 0.7;
     private Double keywordWeight = 0.3;
+    private Double scoreThreshold = 0.5;
 
     public String getName() {
         return name;
@@ -144,5 +145,13 @@ public class CreateKnowledgeBaseRequest {
 
     public void setKeywordWeight(Double keywordWeight) {
         this.keywordWeight = keywordWeight;
+    }
+
+    public Double getScoreThreshold() {
+        return scoreThreshold;
+    }
+
+    public void setScoreThreshold(Double scoreThreshold) {
+        this.scoreThreshold = scoreThreshold;
     }
 }

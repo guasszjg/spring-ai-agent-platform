@@ -13,6 +13,7 @@ public class UpdateKnowledgeBaseRequest {
     private String rerankModelProvider;
     private Double vectorWeight;
     private Double keywordWeight;
+    private Double scoreThreshold;
 
     public String getName() {
         return name;
@@ -108,5 +109,13 @@ public class UpdateKnowledgeBaseRequest {
 
     public void setKeywordWeight(Double keywordWeight) {
         this.keywordWeight = keywordWeight;
+    }
+
+    public Double getScoreThreshold() {
+        return scoreThreshold;
+    }
+
+    public void setScoreThreshold(Double scoreThreshold) {
+        this.scoreThreshold = scoreThreshold;
     }
 }

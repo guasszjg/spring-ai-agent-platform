@@ -174,7 +174,7 @@ class KnowledgeBaseServiceTest {
         kb.setExternalDatasetId("ds-1");
 
         when(knowledgeBaseRepository.findById("kb-1")).thenReturn(Optional.of(kb));
-        when(difyProvider.retrieve("ds-1", "怎么重启设备")).thenReturn(List.of(
+        when(difyProvider.retrieve(eq("ds-1"), eq("怎么重启设备"), any(), any())).thenReturn(List.of(
                 new com.example.agentplatform.rag.RetrievedChunk("长按电源键 10 秒", "手册.pdf", 0.9)
         ));
 
@@ -183,6 +183,17 @@ class KnowledgeBaseServiceTest {
         assertThat(context).contains("【知识库检索结果】");
         assertThat(context).contains("手册.pdf");
         assertThat(context).contains("长按电源键 10 秒");
+    }
+
+    @Test
+    void createKnowledgeBase_unsupportedProvider_throwsIllegalArgumentException() {
+        CreateKnowledgeBaseRequest req = new CreateKnowledgeBaseRequest();
+        req.setName("测试未知引擎");
+        req.setProvider("UNSUPPORTED_ENGINE");
+
+        assertThatThrownBy(() -> knowledgeBaseService.createKnowledgeBase(req))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("未找到支持的 RAG 知识库服务提供方");
     }
 
     @Test

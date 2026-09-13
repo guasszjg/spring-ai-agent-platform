@@ -51,6 +51,15 @@ public class KnowledgeDocument {
     @Column(columnDefinition = "TEXT")
     private String errorMessage;
 
+    @Column(name = "current_revision_id", length = 64)
+    private String currentRevisionId;
+
+    @Column(length = 64)
+    private String sha256;
+
+    @Column(name = "object_key", length = 512)
+    private String objectKey;
+
     private Boolean enabled = true;
 
     private LocalDateTime createdAt;
@@ -200,5 +209,29 @@ public class KnowledgeDocument {
 
     public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public String getCurrentRevisionId() {
+        return currentRevisionId;
+    }
+
+    public void setCurrentRevisionId(String currentRevisionId) {
+        this.currentRevisionId = currentRevisionId;
+    }
+
+    public String getSha256() {
+        return sha256;
+    }
+
+    public void setSha256(String sha256) {
+        this.sha256 = sha256;
+    }
+
+    public String getObjectKey() {
+        return objectKey;
+    }
+
+    public void setObjectKey(String objectKey) {
+        this.objectKey = objectKey;
     }
 }

@@ -399,6 +399,11 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
 
     @Override
     public List<RetrievedChunk> retrieve(String externalDatasetId, String query) {
+        return retrieve(externalDatasetId, query, null, null);
+    }
+
+    @Override
+    public List<RetrievedChunk> retrieve(String externalDatasetId, String query, Integer topK, Double scoreThreshold) {
         if (externalDatasetId == null || externalDatasetId.isBlank()
                 || query == null || query.isBlank()) {
             return new ArrayList<>();
@@ -407,6 +412,19 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
         try {
             Map<String, Object> req = new HashMap<>();
             req.put("query", query.trim());
+            if (topK != null || scoreThreshold != null) {
+                Map<String, Object> retrievalModel = new HashMap<>();
+                if (topK != null && topK > 0) {
+                    retrievalModel.put("top_k", topK);
+                }
+                if (scoreThreshold != null && scoreThreshold > 0) {
+                    retrievalModel.put("score_threshold_enabled", true);
+                    retrievalModel.put("score_threshold", scoreThreshold);
+                }
+                if (!retrievalModel.isEmpty()) {
+                    req.put("retrieval_model", retrievalModel);
+                }
+            }
             String response = restClient.post()
                     .uri("/datasets/{datasetId}/retrieve", externalDatasetId)
                     .contentType(MediaType.APPLICATION_JSON)
@@ -438,15 +456,55 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
             if (contentNode == null || contentNode.isNull() || contentNode.asText().isBlank()) {
                 continue;
             }
+            String content = contentNode.asText();
             String sourceName = null;
+            String documentId = null;
             JsonNode document = segment.get("document");
-            if (document != null && document.hasNonNull("name")) {
-                sourceName = document.get("name").asText();
+            if (document != null && !document.isNull()) {
+                if (document.hasNonNull("name")) {
+                    sourceName = document.get("name").asText();
+                }
+                if (document.hasNonNull("id")) {
+                    documentId = document.get("id").asText();
+                }
             }
+            if (documentId == null && segment.hasNonNull("document_id")) {
+                documentId = segment.get("document_id").asText();
+            }
+            String chunkId = segment.hasNonNull("id") ? segment.get("id").asText() : null;
             Double score = record.has("score") && record.get("score").isNumber()
                     ? record.get("score").asDouble()
                     : null;
-            chunks.add(new RetrievedChunk(contentNode.asText(), sourceName, score));
+            Integer tokenCount = null;
+            if (segment.hasNonNull("tokens") && segment.get("tokens").isInt()) {
+                tokenCount = segment.get("tokens").asInt();
+            } else if (segment.hasNonNull("word_count") && segment.get("word_count").isInt()) {
+                tokenCount = segment.get("word_count").asInt();
+            }
+
+            Map<String, Object> meta = new HashMap<>();
+            if (segment.hasNonNull("position")) {
+                meta.put("position", segment.get("position").asInt());
+            }
+            if (documentId != null) {
+                meta.put("documentId", documentId);
+            }
+            if (segment.hasNonNull("status")) {
+                meta.put("status", segment.get("status").asText());
+            }
+
+            chunks.add(RetrievedChunk.builder()
+                    .chunkId(chunkId)
+                    .documentId(documentId)
+                    .sourceName(sourceName)
+                    .content(content)
+                    .rawContent(content)
+                    .score(score)
+                    .vectorScore(score)
+                    .matchType("VECTOR")
+                    .tokenCount(tokenCount)
+                    .metadata(meta)
+                    .build());
         }
         return chunks;
     }
