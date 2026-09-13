@@ -10,12 +10,14 @@ import com.example.agentplatform.rag.pipeline.DocumentChunker;
 import com.example.agentplatform.rag.pipeline.KeywordRetriever;
 import com.example.agentplatform.rag.pipeline.LocalEmbeddingService;
 import com.example.agentplatform.rag.pipeline.QueryTransformer;
+import com.example.agentplatform.rag.parser.DocumentParsingService;
 import com.example.agentplatform.repository.KnowledgeBaseRepository;
 import com.example.agentplatform.repository.KnowledgeDocumentChunkRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -36,6 +38,7 @@ import java.util.UUID;
  * Spring AI 原生自研 RAG 引擎 Provider 实现
  * P1 基线：全自主可控的本地切片、1024 维向量化与双路混合检索
  * P2 增强：高级父子分块 (Parent-Child Chunking)、Query 智能改写与 Token 预算裁剪
+ * P3 治理：多格式深度解析 (CSV表头携带/DOCX/PDF流式/OCR识别) 与成本可观测性
  */
 @Service
 public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
@@ -49,7 +52,27 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
     private final KeywordRetriever keywordRetriever;
     private final QueryTransformer queryTransformer;
     private final ContextBudgetPruner budgetPruner;
+    private final DocumentParsingService documentParsingService;
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Autowired
+    public SpringAiKnowledgeBaseProvider(KnowledgeDocumentChunkRepository chunkRepository,
+                                         KnowledgeBaseRepository knowledgeBaseRepository,
+                                         DocumentChunker documentChunker,
+                                         LocalEmbeddingService embeddingService,
+                                         KeywordRetriever keywordRetriever,
+                                         QueryTransformer queryTransformer,
+                                         ContextBudgetPruner budgetPruner,
+                                         @Autowired(required = false) DocumentParsingService documentParsingService) {
+        this.chunkRepository = chunkRepository;
+        this.knowledgeBaseRepository = knowledgeBaseRepository;
+        this.documentChunker = documentChunker;
+        this.embeddingService = embeddingService;
+        this.keywordRetriever = keywordRetriever;
+        this.queryTransformer = queryTransformer;
+        this.budgetPruner = budgetPruner;
+        this.documentParsingService = documentParsingService != null ? documentParsingService : new DocumentParsingService(null);
+    }
 
     public SpringAiKnowledgeBaseProvider(KnowledgeDocumentChunkRepository chunkRepository,
                                          KnowledgeBaseRepository knowledgeBaseRepository,
@@ -58,13 +81,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                                          KeywordRetriever keywordRetriever,
                                          QueryTransformer queryTransformer,
                                          ContextBudgetPruner budgetPruner) {
-        this.chunkRepository = chunkRepository;
-        this.knowledgeBaseRepository = knowledgeBaseRepository;
-        this.documentChunker = documentChunker;
-        this.embeddingService = embeddingService;
-        this.keywordRetriever = keywordRetriever;
-        this.queryTransformer = queryTransformer;
-        this.budgetPruner = budgetPruner;
+        this(chunkRepository, knowledgeBaseRepository, documentChunker, embeddingService, keywordRetriever, queryTransformer, budgetPruner, null);
     }
 
     @Override
@@ -129,10 +146,20 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         }
 
         String fileName = file.getOriginalFilename() != null ? file.getOriginalFilename() : "document.txt";
-        String textContent = extractText(file);
+        byte[] fileBytes;
+        try {
+            fileBytes = file.getBytes();
+        } catch (Exception e) {
+            log.warn("读取上传文件数据失败: {}", e.getMessage());
+            fileBytes = new byte[0];
+        }
+
+        // P3: 多格式深度智能解析与结构化提取 (CSV表头携带/DOCX/PDF流式/OCR)
+        DocumentParsingService.ParseResult parseResult = documentParsingService.parse(fileBytes, fileName);
+        String textContent = parseResult.text() != null ? parseResult.text() : "";
         long totalTokens = documentChunker.estimateTokens(textContent);
 
-        // P2 高级父子切片管线 (Parent-Child Chunking)
+        // P2: 高级父子切片管线 (Parent-Child Chunking)
         List<DocumentChunker.ParentChildPiece> pieces = documentChunker.splitParentChild(textContent);
         if (pieces.isEmpty() && !textContent.isBlank()) {
             pieces = List.of(new DocumentChunker.ParentChildPiece(0, textContent, null, textContent, textContent.length(), totalTokens, "STANDALONE"));
@@ -163,6 +190,9 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
             meta.put("chunkIndex", piece.index());
             meta.put("charCount", piece.charCount());
             meta.put("chunkType", piece.chunkType());
+            meta.put("fileFormat", parseResult.format());
+            meta.put("parserType", parseResult.parserType());
+            meta.put("isScanned", parseResult.isScanned());
             if (piece.parentChunkId() != null) {
                 meta.put("parentChunkId", piece.parentChunkId());
             }
@@ -176,8 +206,24 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         }
 
         chunkRepository.saveAll(entities);
-        log.info("Spring AI 自研父子切片与向量入库完成: kbId={}, docId={}, fileName={}, chunkCount={}, tokens={}",
-                kbId, docId, fileName, entities.size(), totalTokens);
+        log.info("Spring AI 自研多格式智能解析与向量入库完成: kbId={}, docId={}, fileName={}, format={}, parser={}, chunkCount={}, tokens={}",
+                kbId, docId, fileName, parseResult.format(), parseResult.parserType(), entities.size(), totalTokens);
+
+        // 累加知识库成本 Embedding Tokens 与估算金额
+        try {
+            Optional<KnowledgeBase> kbOpt = knowledgeBaseRepository.findById(kbId);
+            if (kbOpt.isPresent()) {
+                KnowledgeBase kb = kbOpt.get();
+                long curEmbedTokens = kb.getEmbeddingTokens() != null ? kb.getEmbeddingTokens() : 0L;
+                kb.setEmbeddingTokens(curEmbedTokens + totalTokens);
+                double embedCost = kb.getEmbeddingTokens() * 0.0000005;
+                double rkCost = (kb.getRerankCalls() != null ? kb.getRerankCalls() : 0L) * 0.003;
+                kb.setEstimatedCost(Math.round((embedCost + rkCost) * 10000.0) / 10000.0);
+                knowledgeBaseRepository.save(kb);
+            }
+        } catch (Exception e) {
+            log.warn("更新知识库 Embedding Tokens 成本统计失败: {}", e.getMessage());
+        }
 
         DifyDocumentDto dto = new DifyDocumentDto();
         dto.setId(docId);
@@ -419,6 +465,28 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
 
         // 3. 上下文 Token 预算裁剪与动态装填 (P2 阶段 - 修复 F4 缺陷)
         ContextBudgetPruner.PruneResult pruneResult = budgetPruner.prune(topKResults, request.maxContextTokens());
+
+        // P3: 累加自研引擎检索 Token 与重排调用统计
+        try {
+            Optional<KnowledgeBase> kbOpt = knowledgeBaseRepository.findById(kbId);
+            if (kbOpt.isPresent()) {
+                KnowledgeBase kb = kbOpt.get();
+                int retTokens = pruneResult.prunedChunks().stream().mapToInt(c -> c.tokenCount() != null ? c.tokenCount() : 0).sum();
+                long curRet = kb.getRetrievalTokens() != null ? kb.getRetrievalTokens() : 0L;
+                kb.setRetrievalTokens(curRet + retTokens);
+                if (rerankEnabled) {
+                    long curRk = kb.getRerankCalls() != null ? kb.getRerankCalls() : 0L;
+                    kb.setRerankCalls(curRk + 1);
+                }
+                double embedCost = (kb.getEmbeddingTokens() != null ? kb.getEmbeddingTokens() : 0L) * 0.0000005;
+                double rkCost = (kb.getRerankCalls() != null ? kb.getRerankCalls() : 0L) * 0.003;
+                kb.setEstimatedCost(Math.round((embedCost + rkCost) * 10000.0) / 10000.0);
+                knowledgeBaseRepository.save(kb);
+            }
+        } catch (Exception e) {
+            log.warn("自研引擎更新检索 Token 统计失败: {}", e.getMessage());
+        }
+
         return pruneResult.prunedChunks();
     }
 

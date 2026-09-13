@@ -8,11 +8,13 @@ import com.example.agentplatform.model.KnowledgeIndexVersion;
 import com.example.agentplatform.model.PageResult;
 import com.example.agentplatform.rag.dto.CreateFaqRequest;
 import com.example.agentplatform.rag.dto.CreateKnowledgeBaseRequest;
+import com.example.agentplatform.rag.dto.KnowledgeCostStatsDto;
 import com.example.agentplatform.rag.dto.KnowledgeEngineInfo;
 import com.example.agentplatform.rag.dto.RetrievalTestRequest;
 import com.example.agentplatform.rag.dto.UpdateFaqRequest;
 import com.example.agentplatform.rag.dto.UpdateKnowledgeBaseRequest;
 import com.example.agentplatform.rag.engine.RetrievalResult;
+import com.example.agentplatform.rag.engine.ShadowEvaluationResult;
 import com.example.agentplatform.service.KnowledgeBaseService;
 import com.example.agentplatform.security.CurrentActor;
 import org.springframework.http.HttpStatus;
@@ -301,6 +303,38 @@ public class KnowledgeBaseController {
             return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("获取索引版本失败: " + e.getMessage()));
+        }
+    }
+
+    // ==================== 影子流量评测与成本治理 (Phase P3) ====================
+
+    @PostMapping("/{id}/shadow-test")
+    public ResponseEntity<ApiResponse<ShadowEvaluationResult>> testShadowRetrieval(
+            @PathVariable String id,
+            @RequestBody RetrievalTestRequest req) {
+        try {
+            ShadowEvaluationResult result = knowledgeBaseService.evaluateShadowRetrieval(id, req);
+            return ResponseEntity.ok(ApiResponse.ok("影子双引擎对比评测完成", result));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("影子对比评测失败: " + e.getMessage()));
+        }
+    }
+
+    @GetMapping("/{id}/cost-stats")
+    public ResponseEntity<ApiResponse<KnowledgeCostStatsDto>> getCostStats(@PathVariable String id) {
+        try {
+            KnowledgeCostStatsDto stats = knowledgeBaseService.getCostStats(id);
+            return ResponseEntity.ok(ApiResponse.ok("获取知识库成本与治理指标成功", stats));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("获取成本指标失败: " + e.getMessage()));
         }
     }
 }

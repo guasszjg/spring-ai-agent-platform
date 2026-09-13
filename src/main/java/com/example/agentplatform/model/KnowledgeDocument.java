@@ -60,6 +60,15 @@ public class KnowledgeDocument {
     @Column(name = "object_key", length = 512)
     private String objectKey;
 
+    @Column(name = "file_format", length = 32)
+    private String fileFormat;
+
+    @Column(name = "parser_type", length = 32)
+    private String parserType = "DIRECT";
+
+    @Column(name = "is_scanned")
+    private Boolean isScanned = false;
+
     private Boolean enabled = true;
 
     private LocalDateTime createdAt;
@@ -233,5 +242,29 @@ public class KnowledgeDocument {
 
     public void setObjectKey(String objectKey) {
         this.objectKey = objectKey;
+    }
+
+    public String getFileFormat() {
+        return fileFormat;
+    }
+
+    public void setFileFormat(String fileFormat) {
+        this.fileFormat = fileFormat;
+    }
+
+    public String getParserType() {
+        return parserType != null ? parserType : "DIRECT";
+    }
+
+    public void setParserType(String parserType) {
+        this.parserType = parserType;
+    }
+
+    public Boolean getIsScanned() {
+        return Boolean.TRUE.equals(isScanned);
+    }
+
+    public void setIsScanned(Boolean isScanned) {
+        this.isScanned = isScanned;
     }
 }

@@ -18,12 +18,15 @@ import com.example.agentplatform.repository.KnowledgeDocumentRepository;
 import com.example.agentplatform.repository.KnowledgeFaqRepository;
 import com.example.agentplatform.model.KnowledgeIndexVersion;
 import com.example.agentplatform.model.KnowledgeSourceRevision;
+import com.example.agentplatform.rag.dto.KnowledgeCostStatsDto;
 import com.example.agentplatform.rag.dto.RetrievalTestRequest;
 import com.example.agentplatform.rag.engine.DifyRagEngineAdapter;
 import com.example.agentplatform.rag.engine.EngineResolution;
 import com.example.agentplatform.rag.engine.EngineType;
 import com.example.agentplatform.rag.engine.RetrievalRequest;
 import com.example.agentplatform.rag.engine.RetrievalResult;
+import com.example.agentplatform.rag.engine.ShadowEvaluationResult;
+import com.example.agentplatform.rag.parser.OcrService;
 import com.example.agentplatform.repository.KnowledgeIndexVersionRepository;
 import com.example.agentplatform.repository.KnowledgeSourceRevisionRepository;
 import com.example.agentplatform.storage.ObjectStorageService;
@@ -90,6 +93,7 @@ public class KnowledgeBaseService {
     private final KnowledgeIndexVersionRepository indexVersionRepository;
     private final DifyRagEngineAdapter difyRagEngineAdapter;
     private final ContextBudgetPruner budgetPruner;
+    private final OcrService ocrService;
 
     @Autowired
     public KnowledgeBaseService(KnowledgeBaseRepository knowledgeBaseRepository,
@@ -104,7 +108,8 @@ public class KnowledgeBaseService {
                                 @Autowired(required = false) KnowledgeSourceRevisionRepository sourceRevisionRepository,
                                 @Autowired(required = false) KnowledgeIndexVersionRepository indexVersionRepository,
                                 @Autowired(required = false) DifyRagEngineAdapter difyRagEngineAdapter,
-                                @Autowired(required = false) ContextBudgetPruner budgetPruner) {
+                                @Autowired(required = false) ContextBudgetPruner budgetPruner,
+                                @Autowired(required = false) OcrService ocrService) {
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.documentRepository = documentRepository;
         this.faqRepository = faqRepository;
@@ -117,6 +122,7 @@ public class KnowledgeBaseService {
         this.indexVersionRepository = indexVersionRepository;
         this.difyRagEngineAdapter = difyRagEngineAdapter;
         this.budgetPruner = budgetPruner != null ? budgetPruner : new ContextBudgetPruner();
+        this.ocrService = ocrService;
         for (KnowledgeBaseProvider p : providers) {
             this.providerMap.put(p.getProviderType().toUpperCase(), p);
         }
@@ -130,7 +136,7 @@ public class KnowledgeBaseService {
                                 List<KnowledgeBaseProvider> providers,
                                 ObjectMapper objectMapper,
                                 OwnerNameResolver ownerNameResolver) {
-        this(knowledgeBaseRepository, documentRepository, faqRepository, resourceAuthorizationService, resourceGrantRepository, providers, objectMapper, ownerNameResolver, null, null, null, null, null);
+        this(knowledgeBaseRepository, documentRepository, faqRepository, resourceAuthorizationService, resourceGrantRepository, providers, objectMapper, ownerNameResolver, null, null, null, null, null, null);
     }
 
     public KnowledgeBaseService(KnowledgeBaseRepository knowledgeBaseRepository,
@@ -145,7 +151,23 @@ public class KnowledgeBaseService {
                                 KnowledgeSourceRevisionRepository sourceRevisionRepository,
                                 KnowledgeIndexVersionRepository indexVersionRepository,
                                 DifyRagEngineAdapter difyRagEngineAdapter) {
-        this(knowledgeBaseRepository, documentRepository, faqRepository, resourceAuthorizationService, resourceGrantRepository, providers, objectMapper, ownerNameResolver, objectStorageService, sourceRevisionRepository, indexVersionRepository, difyRagEngineAdapter, null);
+        this(knowledgeBaseRepository, documentRepository, faqRepository, resourceAuthorizationService, resourceGrantRepository, providers, objectMapper, ownerNameResolver, objectStorageService, sourceRevisionRepository, indexVersionRepository, difyRagEngineAdapter, null, null);
+    }
+
+    public KnowledgeBaseService(KnowledgeBaseRepository knowledgeBaseRepository,
+                                KnowledgeDocumentRepository documentRepository,
+                                KnowledgeFaqRepository faqRepository,
+                                ResourceAuthorizationService resourceAuthorizationService,
+                                ResourceGrantRepository resourceGrantRepository,
+                                List<KnowledgeBaseProvider> providers,
+                                ObjectMapper objectMapper,
+                                OwnerNameResolver ownerNameResolver,
+                                ObjectStorageService objectStorageService,
+                                KnowledgeSourceRevisionRepository sourceRevisionRepository,
+                                KnowledgeIndexVersionRepository indexVersionRepository,
+                                DifyRagEngineAdapter difyRagEngineAdapter,
+                                ContextBudgetPruner budgetPruner) {
+        this(knowledgeBaseRepository, documentRepository, faqRepository, resourceAuthorizationService, resourceGrantRepository, providers, objectMapper, ownerNameResolver, objectStorageService, sourceRevisionRepository, indexVersionRepository, difyRagEngineAdapter, budgetPruner, null);
     }
 
     private KnowledgeBaseProvider resolveProvider(String providerType) {
@@ -473,7 +495,177 @@ public class KnowledgeBaseService {
             }
         }
 
+        // P3: 累加检索 Token 与重排调用统计 (治理可观测性)
+        try {
+            long currentRet = kb.getRetrievalTokens() != null ? kb.getRetrievalTokens() : 0L;
+            kb.setRetrievalTokens(currentRet + totalTokens);
+            if (Boolean.TRUE.equals(effectiveRerankEnabled)) {
+                long currentRk = kb.getRerankCalls() != null ? kb.getRerankCalls() : 0L;
+                kb.setRerankCalls(currentRk + 1);
+            }
+            double embedCost = (kb.getEmbeddingTokens() != null ? kb.getEmbeddingTokens() : 0L) * 0.0000005;
+            double rkCost = (kb.getRerankCalls() != null ? kb.getRerankCalls() : 0L) * 0.003;
+            kb.setEstimatedCost(Math.round((embedCost + rkCost) * 10000.0) / 10000.0);
+            knowledgeBaseRepository.save(kb);
+        } catch (Exception e) {
+            log.warn("更新知识库检索 token 统计失败: {}", e.getMessage());
+        }
+
         return RetrievalResult.of(query, chunks, resolution, latencyMs, metrics);
+    }
+
+    // ==================== 影子流量与双引擎对比评测 (Phase P3) ====================
+
+    @Transactional
+    public ShadowEvaluationResult evaluateShadowRetrieval(String kbId, RetrievalTestRequest req) {
+        return evaluateShadowRetrieval(kbId, req, CurrentActor.get());
+    }
+
+    @Transactional
+    public ShadowEvaluationResult evaluateShadowRetrieval(String kbId, RetrievalTestRequest req, CurrentActor actor) {
+        KnowledgeBase kb = getKnowledgeBaseById(kbId, actor);
+        if (req == null || req.getQuery() == null || req.getQuery().trim().isBlank()) {
+            throw new IllegalArgumentException("影子测试 Query 不能为空");
+        }
+        String query = req.getQuery().trim();
+
+        // 确定 Primary（主测）和 Secondary（对照）引擎
+        String primaryEngine = "SPRING_AI";
+        String secondaryEngine = "DIFY";
+        if (req.getEngineOverride() != null && !req.getEngineOverride().isBlank()) {
+            if ("DIFY".equalsIgnoreCase(req.getEngineOverride().trim())) {
+                primaryEngine = "DIFY";
+                secondaryEngine = "SPRING_AI";
+            }
+        } else if ("DIFY".equalsIgnoreCase(kb.getProvider())) {
+            primaryEngine = "DIFY";
+            secondaryEngine = "SPRING_AI";
+        }
+
+        int effectiveTopK = req.getTopK() != null && req.getTopK() > 0 ? req.getTopK()
+                : (kb.getTopK() != null && kb.getTopK() > 0 ? kb.getTopK() : 5);
+        Double effectiveScoreThreshold = req.getScoreThreshold() != null ? req.getScoreThreshold() : kb.getScoreThreshold();
+        String effectiveSearchMethod = req.getSearchMethod() != null && !req.getSearchMethod().isBlank()
+                ? req.getSearchMethod() : (kb.getSearchMethod() != null ? kb.getSearchMethod() : "hybrid_search");
+        Boolean effectiveRerankEnabled = req.getRerankEnabled() != null ? req.getRerankEnabled()
+                : Boolean.TRUE.equals(kb.getRerankEnabled());
+        Double effectiveVectorWeight = req.getVectorWeight() != null ? req.getVectorWeight()
+                : (kb.getVectorWeight() != null ? kb.getVectorWeight() : 0.7);
+        Double effectiveKeywordWeight = req.getKeywordWeight() != null ? req.getKeywordWeight()
+                : (kb.getKeywordWeight() != null ? kb.getKeywordWeight() : 0.3);
+
+        RetrievalRequest primaryReq = RetrievalRequest.builder()
+                .knowledgeBaseId(kb.getId())
+                .query(query)
+                .topK(effectiveTopK)
+                .scoreThreshold(effectiveScoreThreshold)
+                .searchMethod(effectiveSearchMethod)
+                .rerankEnabled(effectiveRerankEnabled)
+                .rerankModel(req.getRerankModel() != null ? req.getRerankModel() : kb.getRerankModel())
+                .vectorWeight(effectiveVectorWeight)
+                .keywordWeight(effectiveKeywordWeight)
+                .rewriteEnabled(req.getRewriteEnabled() != null ? req.getRewriteEnabled() : false)
+                .expandParent(req.getExpandParent() != null ? req.getExpandParent() : true)
+                .maxContextTokens(req.getMaxContextTokens() != null ? req.getMaxContextTokens() : 3000)
+                .build();
+
+        RetrievalRequest secondaryReq = RetrievalRequest.builder()
+                .knowledgeBaseId(kb.getId())
+                .query(query)
+                .topK(effectiveTopK)
+                .scoreThreshold(effectiveScoreThreshold)
+                .searchMethod(effectiveSearchMethod)
+                .rerankEnabled(effectiveRerankEnabled)
+                .rerankModel(req.getRerankModel() != null ? req.getRerankModel() : kb.getRerankModel())
+                .vectorWeight(effectiveVectorWeight)
+                .keywordWeight(effectiveKeywordWeight)
+                .rewriteEnabled(false)
+                .expandParent(false)
+                .maxContextTokens(req.getMaxContextTokens() != null ? req.getMaxContextTokens() : 3000)
+                .build();
+
+        // 1. Primary 引擎召回
+        List<RetrievedChunk> primaryChunks = Collections.emptyList();
+        long primaryLatency = 0;
+        try {
+            KnowledgeBaseProvider pProvider = resolveProvider(primaryEngine);
+            long pStart = System.currentTimeMillis();
+            primaryChunks = pProvider.retrieve(kb.getExternalDatasetId(), primaryReq);
+            primaryLatency = System.currentTimeMillis() - pStart;
+        } catch (Exception e) {
+            log.warn("影子测试 Primary 引擎 [{}] 召回异常: {}", primaryEngine, e.getMessage());
+        }
+
+        // 2. Secondary 引擎召回
+        List<RetrievedChunk> secondaryChunks = Collections.emptyList();
+        long secondaryLatency = 0;
+        try {
+            KnowledgeBaseProvider sProvider = resolveProvider(secondaryEngine);
+            long sStart = System.currentTimeMillis();
+            secondaryChunks = sProvider.retrieve(kb.getExternalDatasetId(), secondaryReq);
+            secondaryLatency = System.currentTimeMillis() - sStart;
+        } catch (Exception e) {
+            log.warn("影子测试 Secondary 引擎 [{}] 召回异常: {}", secondaryEngine, e.getMessage());
+        }
+
+        Map<String, Object> metrics = new LinkedHashMap<>();
+        metrics.put("topK", effectiveTopK);
+        metrics.put("searchMethod", effectiveSearchMethod);
+        metrics.put("rerankEnabled", effectiveRerankEnabled);
+        metrics.put("rewriteEnabled", req.getRewriteEnabled() != null ? req.getRewriteEnabled() : false);
+        metrics.put("expandParent", req.getExpandParent() != null ? req.getExpandParent() : true);
+        metrics.put("shadowMode", "DUAL_ENGINE_AB_TEST");
+
+        ShadowEvaluationResult result = ShadowEvaluationResult.of(
+                query,
+                primaryEngine,
+                secondaryEngine,
+                primaryChunks,
+                secondaryChunks,
+                primaryLatency,
+                secondaryLatency,
+                metrics
+        );
+
+        // 累加影子测试耗费的检索 Token 统计
+        try {
+            int retTokens = result.primaryTokens() + result.secondaryTokens();
+            long curRet = kb.getRetrievalTokens() != null ? kb.getRetrievalTokens() : 0L;
+            kb.setRetrievalTokens(curRet + retTokens);
+            double embedCost = (kb.getEmbeddingTokens() != null ? kb.getEmbeddingTokens() : 0L) * 0.0000005;
+            double rkCost = (kb.getRerankCalls() != null ? kb.getRerankCalls() : 0L) * 0.003;
+            kb.setEstimatedCost(Math.round((embedCost + rkCost) * 10000.0) / 10000.0);
+            knowledgeBaseRepository.save(kb);
+        } catch (Exception e) {
+            log.warn("更新影子测试 token 成本统计失败: {}", e.getMessage());
+        }
+
+        return result;
+    }
+
+    // ==================== 成本看板与可观测性 (Phase P3) ====================
+
+    @Transactional(readOnly = true)
+    public KnowledgeCostStatsDto getCostStats(String kbId) {
+        return getCostStats(kbId, CurrentActor.get());
+    }
+
+    @Transactional(readOnly = true)
+    public KnowledgeCostStatsDto getCostStats(String kbId, CurrentActor actor) {
+        KnowledgeBase kb = getKnowledgeBaseById(kbId, actor);
+        boolean ocrAvail = (ocrService != null && ocrService.isAvailable());
+        String ocrName = (ocrService != null) ? ocrService.getProviderName() : "NONE";
+
+        return KnowledgeCostStatsDto.of(
+                kb.getId(),
+                kb.getName(),
+                kb.getProvider(),
+                kb.getEmbeddingTokens() != null ? kb.getEmbeddingTokens() : 0L,
+                kb.getRetrievalTokens() != null ? kb.getRetrievalTokens() : 0L,
+                kb.getRerankCalls() != null ? kb.getRerankCalls() : 0L,
+                ocrAvail,
+                ocrName
+        );
     }
 
     @Transactional
@@ -864,22 +1056,44 @@ public class KnowledgeBaseService {
         KnowledgeBaseProvider provider = resolveProvider(kb.getProvider());
         List<KnowledgeDocument> results = new ArrayList<>();
 
+        long totalBatchTokens = 0L;
         for (MultipartFile file : files) {
             try {
-                // 1. 调用底层 Dify API 上传并创建文档
+                // 1. 调用底层 Dify API / Spring AI API 上传并创建文档
                 DifyDocumentDto difyDoc = provider.uploadDocument(kb.getExternalDatasetId(), file);
+                long docTokens = difyDoc != null && difyDoc.getTokens() != null ? difyDoc.getTokens() : 0L;
+                totalBatchTokens += docTokens;
 
                 // 2. 存入本地数据库
                 KnowledgeDocument doc = new KnowledgeDocument();
                 doc.setKnowledgeBaseId(kb.getId());
                 doc.setExternalDocId(difyDoc != null ? difyDoc.getId() : null);
                 doc.setName(file.getOriginalFilename() != null ? file.getOriginalFilename() : "file");
-                doc.setExtension(getFileExtension(doc.getName()));
+                String extStr = getFileExtension(doc.getName()).toLowerCase();
+                doc.setExtension(extStr);
                 doc.setFileSize(file.getSize());
                 doc.setIndexingStatus(difyDoc != null && difyDoc.getIndexingStatus() != null ? difyDoc.getIndexingStatus() : "waiting");
                 doc.setWordCount(difyDoc != null && difyDoc.getWordCount() != null ? difyDoc.getWordCount() : 0L);
-                doc.setTokenCount(difyDoc != null && difyDoc.getTokens() != null ? difyDoc.getTokens() : 0L);
+                doc.setTokenCount(docTokens);
                 doc.setEnabled(true);
+
+                // P3: 多格式解析器与扫描件标记
+                doc.setFileFormat(extStr.isBlank() ? "TXT" : extStr.toUpperCase());
+                if ("SPRING_AI".equalsIgnoreCase(kb.getProvider())) {
+                    doc.setParserType(switch (extStr) {
+                        case "csv", "tsv" -> "CSV_HEADER_ATTACH";
+                        case "docx" -> "DOCX_OOXML";
+                        case "pdf" -> "PDF_STREAM";
+                        case "png", "jpg", "jpeg", "bmp", "webp" -> "IMAGE_OCR";
+                        case "json" -> "JSON_PARSER";
+                        default -> "DIRECT_TEXT";
+                    });
+                    boolean isImg = Set.of("png", "jpg", "jpeg", "bmp", "webp").contains(extStr);
+                    doc.setIsScanned(isImg);
+                } else {
+                    doc.setParserType("DIFY_REMOTE");
+                    doc.setIsScanned(false);
+                }
 
                 doc = documentRepository.save(doc);
 
@@ -923,8 +1137,13 @@ public class KnowledgeBaseService {
             }
         }
 
-        // 更新知识库文档统计
+        // 更新知识库文档统计与治理成本
         kb.setDocumentCount((int) documentRepository.countByKnowledgeBaseId(kb.getId()));
+        long currentEmbedTokens = kb.getEmbeddingTokens() != null ? kb.getEmbeddingTokens() : 0L;
+        kb.setEmbeddingTokens(currentEmbedTokens + totalBatchTokens);
+        double embedCost = kb.getEmbeddingTokens() * 0.0000005;
+        double rkCost = (kb.getRerankCalls() != null ? kb.getRerankCalls() : 0L) * 0.003;
+        kb.setEstimatedCost(Math.round((embedCost + rkCost) * 10000.0) / 10000.0);
         knowledgeBaseRepository.save(kb);
 
         return results;

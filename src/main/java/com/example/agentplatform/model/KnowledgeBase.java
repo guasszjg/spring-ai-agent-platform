@@ -99,6 +99,18 @@ public class KnowledgeBase {
     @Column(name = "is_system")
     private Boolean isSystem = false;
 
+    @Column(name = "embedding_tokens")
+    private Long embeddingTokens = 0L;
+
+    @Column(name = "retrieval_tokens")
+    private Long retrievalTokens = 0L;
+
+    @Column(name = "rerank_calls")
+    private Long rerankCalls = 0L;
+
+    @Column(name = "estimated_cost")
+    private Double estimatedCost = 0.0;
+
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;
@@ -427,5 +439,37 @@ public class KnowledgeBase {
 
     public void setSourceSnapshotNo(Integer sourceSnapshotNo) {
         this.sourceSnapshotNo = sourceSnapshotNo;
+    }
+
+    public Long getEmbeddingTokens() {
+        return embeddingTokens != null ? embeddingTokens : 0L;
+    }
+
+    public void setEmbeddingTokens(Long embeddingTokens) {
+        this.embeddingTokens = embeddingTokens;
+    }
+
+    public Long getRetrievalTokens() {
+        return retrievalTokens != null ? retrievalTokens : 0L;
+    }
+
+    public void setRetrievalTokens(Long retrievalTokens) {
+        this.retrievalTokens = retrievalTokens;
+    }
+
+    public Long getRerankCalls() {
+        return rerankCalls != null ? rerankCalls : 0L;
+    }
+
+    public void setRerankCalls(Long rerankCalls) {
+        this.rerankCalls = rerankCalls;
+    }
+
+    public Double getEstimatedCost() {
+        return estimatedCost != null ? estimatedCost : 0.0;
+    }
+
+    public void setEstimatedCost(Double estimatedCost) {
+        this.estimatedCost = estimatedCost;
     }
 }
