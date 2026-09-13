@@ -84,19 +84,12 @@ public class KnowledgeBaseService {
     private final Map<String, KnowledgeBaseProvider> providerMap = new HashMap<>();
     private final ObjectMapper objectMapper;
     private final OwnerNameResolver ownerNameResolver;
+    private final ObjectStorageService objectStorageService;
+    private final KnowledgeSourceRevisionRepository sourceRevisionRepository;
+    private final KnowledgeIndexVersionRepository indexVersionRepository;
+    private final DifyRagEngineAdapter difyRagEngineAdapter;
 
-    @Autowired(required = false)
-    private ObjectStorageService objectStorageService;
-
-    @Autowired(required = false)
-    private KnowledgeSourceRevisionRepository sourceRevisionRepository;
-
-    @Autowired(required = false)
-    private KnowledgeIndexVersionRepository indexVersionRepository;
-
-    @Autowired(required = false)
-    private DifyRagEngineAdapter difyRagEngineAdapter;
-
+    @Autowired
     public KnowledgeBaseService(KnowledgeBaseRepository knowledgeBaseRepository,
                                 KnowledgeDocumentRepository documentRepository,
                                 KnowledgeFaqRepository faqRepository,
@@ -104,7 +97,11 @@ public class KnowledgeBaseService {
                                 ResourceGrantRepository resourceGrantRepository,
                                 List<KnowledgeBaseProvider> providers,
                                 @Autowired(required = false) ObjectMapper objectMapper,
-                                OwnerNameResolver ownerNameResolver) {
+                                OwnerNameResolver ownerNameResolver,
+                                @Autowired(required = false) ObjectStorageService objectStorageService,
+                                @Autowired(required = false) KnowledgeSourceRevisionRepository sourceRevisionRepository,
+                                @Autowired(required = false) KnowledgeIndexVersionRepository indexVersionRepository,
+                                @Autowired(required = false) DifyRagEngineAdapter difyRagEngineAdapter) {
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.documentRepository = documentRepository;
         this.faqRepository = faqRepository;
@@ -112,6 +109,10 @@ public class KnowledgeBaseService {
         this.resourceGrantRepository = resourceGrantRepository;
         this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
         this.ownerNameResolver = ownerNameResolver;
+        this.objectStorageService = objectStorageService;
+        this.sourceRevisionRepository = sourceRevisionRepository;
+        this.indexVersionRepository = indexVersionRepository;
+        this.difyRagEngineAdapter = difyRagEngineAdapter;
         for (KnowledgeBaseProvider p : providers) {
             this.providerMap.put(p.getProviderType().toUpperCase(), p);
         }
@@ -124,16 +125,8 @@ public class KnowledgeBaseService {
                                 ResourceGrantRepository resourceGrantRepository,
                                 List<KnowledgeBaseProvider> providers,
                                 ObjectMapper objectMapper,
-                                OwnerNameResolver ownerNameResolver,
-                                ObjectStorageService objectStorageService,
-                                KnowledgeSourceRevisionRepository sourceRevisionRepository,
-                                KnowledgeIndexVersionRepository indexVersionRepository,
-                                DifyRagEngineAdapter difyRagEngineAdapter) {
-        this(knowledgeBaseRepository, documentRepository, faqRepository, resourceAuthorizationService, resourceGrantRepository, providers, objectMapper, ownerNameResolver);
-        this.objectStorageService = objectStorageService;
-        this.sourceRevisionRepository = sourceRevisionRepository;
-        this.indexVersionRepository = indexVersionRepository;
-        this.difyRagEngineAdapter = difyRagEngineAdapter;
+                                OwnerNameResolver ownerNameResolver) {
+        this(knowledgeBaseRepository, documentRepository, faqRepository, resourceAuthorizationService, resourceGrantRepository, providers, objectMapper, ownerNameResolver, null, null, null, null);
     }
 
     private KnowledgeBaseProvider resolveProvider(String providerType) {
