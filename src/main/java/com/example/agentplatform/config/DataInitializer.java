@@ -239,6 +239,15 @@ public class DataInitializer implements ApplicationRunner {
                 u.setAvatar("admin".equalsIgnoreCase(u.getUsername()) ? "/avatar-admin.jpg" : "/avatar-dev.jpg");
                 changed = true;
             }
+            if (seedDemoUsers) {
+                if ("admin".equalsIgnoreCase(u.getUsername()) && !passwordEncoder.matches(DEMO_ADMIN_PASSWORD, u.getPassword())) {
+                    u.setPassword(passwordEncoder.encode(DEMO_ADMIN_PASSWORD));
+                    changed = true;
+                } else if ("developer".equalsIgnoreCase(u.getUsername()) && !passwordEncoder.matches(DEMO_DEV_PASSWORD, u.getPassword())) {
+                    u.setPassword(passwordEncoder.encode(DEMO_DEV_PASSWORD));
+                    changed = true;
+                }
+            }
             if (changed) {
                 userRepository.save(u);
             }
