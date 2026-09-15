@@ -35,14 +35,31 @@ public class OpenAiCompatibleClient {
     }
 
     public ProbeResult probe(String baseUrl, String apiKey, int timeoutMs) {
+        return probe(baseUrl, apiKey, null, null, timeoutMs);
+    }
+
+    public ProbeResult probe(String baseUrl, String apiKey, Map<String, String> customHeaders, String defaultModel, int timeoutMs) {
         outboundUrlValidator.validateProviderBaseUrl(baseUrl);
+        boolean isSpecificEndpoint = isSpecificEndpoint(baseUrl);
+        if (isSpecificEndpoint) {
+            return chatPing(baseUrl, apiKey, customHeaders, defaultModel, timeoutMs);
+        }
+
         String url = normalizeBase(baseUrl) + "/models";
         try {
-            HttpRequest request = HttpRequest.newBuilder(URI.create(url))
-                    .timeout(Duration.ofMillis(Math.max(3000, timeoutMs)))
-                    .header("Authorization", "Bearer " + apiKey)
-                    .GET()
-                    .build();
+            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
+                    .timeout(Duration.ofMillis(Math.max(3000, timeoutMs)));
+            if (apiKey != null && !apiKey.isBlank()) {
+                builder.header("Authorization", "Bearer " + apiKey.trim());
+            }
+            if (customHeaders != null) {
+                customHeaders.forEach((k, v) -> {
+                    if (k != null && !k.isBlank() && v != null && !"content-type".equalsIgnoreCase(k)) {
+                        builder.header(k.trim(), v.trim());
+                    }
+                });
+            }
+            HttpRequest request = builder.GET().build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode() >= 200 && response.statusCode() < 300) {
                 List<String> models = parseModelIds(response.body());
@@ -51,14 +68,64 @@ public class OpenAiCompatibleClient {
                         : "连通正常，已拉取 " + models.size() + " 个模型";
                 return ProbeResult.ok(message, models);
             }
-            if (response.statusCode() == 401 || response.statusCode() == 403) {
-                return ProbeResult.fail("鉴权失败，请检查 API Key 是否有效");
-            }
-            return ProbeResult.fail("探测失败，HTTP " + response.statusCode() + " " + truncate(response.body()));
+            // If /models returned 404, 405, 400 etc., fall back to chat ping
+            log.info("GET /models returned HTTP {}, falling back to chat ping probe", response.statusCode());
+            return chatPing(baseUrl, apiKey, customHeaders, defaultModel, timeoutMs);
         } catch (IllegalArgumentException e) {
             return ProbeResult.fail("Base URL 无效");
         } catch (Exception e) {
-            log.warn("LLM provider probe failed: {}", e.getMessage());
+            log.warn("LLM provider /models probe failed: {}, falling back to chat ping", e.getMessage());
+            return chatPing(baseUrl, apiKey, customHeaders, defaultModel, timeoutMs);
+        }
+    }
+
+    private ProbeResult chatPing(String baseUrl, String apiKey, Map<String, String> customHeaders, String defaultModel, int timeoutMs) {
+        String chatUrl = resolveChatUrl(baseUrl);
+        String model = (defaultModel != null && !defaultModel.isBlank()) ? defaultModel.trim() : "deepseek-v4-flash";
+        try {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("model", model);
+            payload.put("messages", List.of(Map.of("role", "user", "content", "ping")));
+            payload.put("max_tokens", 5);
+
+            String body = objectMapper.writeValueAsString(payload);
+            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(chatUrl))
+                    .timeout(Duration.ofMillis(Math.max(4000, timeoutMs)))
+                    .header("Content-Type", "application/json");
+
+            if (apiKey != null && !apiKey.isBlank()) {
+                builder.header("Authorization", "Bearer " + apiKey.trim());
+            }
+            if (customHeaders != null) {
+                customHeaders.forEach((k, v) -> {
+                    if (k != null && !k.isBlank() && v != null && !"content-type".equalsIgnoreCase(k)) {
+                        builder.header(k.trim(), v.trim());
+                    }
+                });
+            }
+
+            HttpRequest request = builder
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                String respBody = response.body();
+                String detectedModel = model;
+                try {
+                    JsonNode node = objectMapper.readTree(respBody);
+                    if (node.has("model") && !node.get("model").asText().isBlank()) {
+                        detectedModel = node.get("model").asText();
+                    }
+                } catch (Exception ignored) {
+                }
+                return ProbeResult.ok("连通测试通过！模型响应正常", List.of(detectedModel));
+            }
+            if (response.statusCode() == 401 || response.statusCode() == 403) {
+                return ProbeResult.fail("鉴权失败 (HTTP " + response.statusCode() + ")，请检查 API Key 或请求头配置");
+            }
+            return ProbeResult.fail("探测失败，HTTP " + response.statusCode() + " " + truncate(response.body()));
+        } catch (Exception e) {
+            log.warn("LLM chat ping probe failed: {}", e.getMessage());
             return ProbeResult.fail("无法连接供应商: " + e.getMessage());
         }
     }
@@ -78,14 +145,23 @@ public class OpenAiCompatibleClient {
                 objectMessages.add(new LinkedHashMap<>(m));
             }
         }
-        return chatWithTools(baseUrl, apiKey, model, objectMessages, null, null, generation, timeoutMs);
+        return chatWithTools(baseUrl, apiKey, model, null, objectMessages, null, null, generation, timeoutMs);
     }
 
     public ChatResult chatWithTools(String baseUrl, String apiKey, String model, List<Map<String, Object>> messages,
                                     List<Map<String, Object>> tools, com.example.agentplatform.tool.AgentToolRegistry toolRegistry,
                                     ChatGeneration generation, int timeoutMs) {
+        return chatWithTools(baseUrl, apiKey, model, null, messages, tools, toolRegistry, generation, timeoutMs);
+    }
+
+    public ChatResult chatWithTools(String baseUrl, String apiKey, String model,
+                                    Map<String, String> customHeaders,
+                                    List<Map<String, Object>> messages,
+                                    List<Map<String, Object>> tools,
+                                    com.example.agentplatform.tool.AgentToolRegistry toolRegistry,
+                                    ChatGeneration generation, int timeoutMs) {
         outboundUrlValidator.validateProviderBaseUrl(baseUrl);
-        String url = normalizeBase(baseUrl) + "/chat/completions";
+        String url = resolveChatUrl(baseUrl);
         try {
             List<Map<String, Object>> currentMessages = new ArrayList<>(messages);
             int promptTokens = 0;
@@ -105,8 +181,17 @@ public class OpenAiCompatibleClient {
                 String body = objectMapper.writeValueAsString(payload);
                 HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                         .timeout(Duration.ofMillis(Math.max(5000, timeoutMs)))
-                        .header("Authorization", "Bearer " + apiKey)
                         .header("Content-Type", "application/json");
+                if (apiKey != null && !apiKey.isBlank()) {
+                    builder.header("Authorization", "Bearer " + apiKey.trim());
+                }
+                if (customHeaders != null) {
+                    customHeaders.forEach((k, v) -> {
+                        if (k != null && !k.isBlank() && v != null && !"content-type".equalsIgnoreCase(k)) {
+                            builder.header(k.trim(), v.trim());
+                        }
+                    });
+                }
                 applyExtraHeaders(builder, generation);
                 HttpRequest request = builder
                         .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
@@ -235,6 +320,39 @@ public class OpenAiCompatibleClient {
             trimmed = trimmed.substring(0, trimmed.length() - 1);
         }
         return trimmed;
+    }
+
+    public static boolean isSpecificEndpoint(String baseUrl) {
+        if (baseUrl == null || baseUrl.isBlank()) {
+            return false;
+        }
+        String base = normalizeBase(baseUrl);
+        if (base.endsWith("/chat/completions")) {
+            return true;
+        }
+        try {
+            URI uri = URI.create(base);
+            String path = uri.getPath();
+            if (path != null && !path.isBlank() && !path.equals("/")) {
+                String cleanPath = path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
+                if (!cleanPath.matches(".*/v\\d+(?:beta\\d*)?$")) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    public static String resolveChatUrl(String baseUrl) {
+        String base = normalizeBase(baseUrl);
+        if (base.endsWith("/chat/completions")) {
+            return base;
+        }
+        if (isSpecificEndpoint(base)) {
+            return base;
+        }
+        return base + "/chat/completions";
     }
 
     private List<String> parseModelIds(String body) {

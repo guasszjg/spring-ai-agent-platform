@@ -153,7 +153,7 @@ public class LlmGatewayService {
         if (enabled && !hasKey(provider)) {
             String msg = provider.getProtocol() == LlmProtocolType.CUSTOM_HTTP
                     ? "请先配置接口地址与请求模板后再启用通道"
-                    : "请先配置 API Key 后再启用通道";
+                    : "请先配置 API Key 或自定义请求头后再启用通道";
             throw new IllegalArgumentException(msg);
         }
         provider.setEnabled(enabled);
@@ -231,11 +231,16 @@ public class LlmGatewayService {
             if (baseUrl == null || baseUrl.isBlank()) {
                 throw new IllegalArgumentException("请填写 Base URL");
             }
-            if (apiKey == null || apiKey.isBlank()) {
-                throw new IllegalArgumentException("请填写 API Key 后再测试");
+            Map<String, String> customHeaders = parseCustomHeaders(customConfig);
+            if ((apiKey == null || apiKey.isBlank()) && customHeaders.isEmpty()) {
+                throw new IllegalArgumentException("请填写 API Key 或配置自定义请求头后再测试");
             }
             outboundUrlValidator.validateProviderBaseUrl(baseUrl);
-            result = openAiClient.probe(baseUrl, apiKey, timeoutMs);
+            String probeModel = request.getDefaultModel();
+            if ((probeModel == null || probeModel.isBlank()) && providerId != null) {
+                probeModel = providerRepository.findById(providerId).map(LlmProvider::getDefaultModel).orElse(null);
+            }
+            result = openAiClient.probe(baseUrl, apiKey, customHeaders, probeModel, timeoutMs);
         }
 
         if (providerId != null && result.success() && !result.models().isEmpty()) {
@@ -270,6 +275,7 @@ public class LlmGatewayService {
             request.setCustomConfig(provider.getCustomConfig());
             request.setBaseUrl(provider.getBaseUrl());
             request.setTimeoutMs(provider.getTimeoutMs());
+            request.setDefaultModel(provider.getDefaultModel());
         });
         return request;
     }
@@ -378,7 +384,7 @@ public class LlmGatewayService {
             if (Boolean.TRUE.equals(request.getEnabled()) && !hasKey(provider)) {
                 String msg = provider.getProtocol() == LlmProtocolType.CUSTOM_HTTP
                         ? "请先配置接口地址与请求模板后再启用通道"
-                        : "请先配置 API Key 后再启用通道";
+                        : "请先配置 API Key 或自定义请求头后再启用通道";
                 throw new IllegalArgumentException(msg);
             }
             provider.setEnabled(request.getEnabled());
@@ -407,8 +413,16 @@ public class LlmGatewayService {
         view.setCustomConfig(provider.getCustomConfig());
         view.setName(provider.getName());
         view.setBaseUrl(provider.getBaseUrl());
-        view.setConfigured(hasKey(provider));
-        view.setApiKeyMasked(maskKey(decryptQuietly(provider)));
+        boolean configured = hasKey(provider);
+        view.setConfigured(configured);
+        String decryptedKey = decryptQuietly(provider);
+        if (decryptedKey != null && !decryptedKey.isBlank()) {
+            view.setApiKeyMasked(maskKey(decryptedKey));
+        } else if (hasCustomHeaders(provider.getCustomConfig())) {
+            view.setApiKeyMasked("[自定义Header鉴权]");
+        } else {
+            view.setApiKeyMasked("");
+        }
         view.setDefaultModel(provider.getDefaultModel());
         view.setModels(provider.getModels());
         view.setModelList(parseModels(provider));
@@ -432,12 +446,51 @@ public class LlmGatewayService {
         }
     }
 
-    private boolean hasKey(LlmProvider provider) {
+    public boolean hasKey(LlmProvider provider) {
+        if (provider == null) {
+            return false;
+        }
         if (provider.getProtocol() == LlmProtocolType.CUSTOM_HTTP) {
             return (provider.getCustomConfig() != null && !provider.getCustomConfig().isBlank())
                     || (provider.getBaseUrl() != null && !provider.getBaseUrl().isBlank());
         }
-        return provider.getApiKeyEncrypted() != null && !provider.getApiKeyEncrypted().isBlank();
+        if (provider.getApiKeyEncrypted() != null && !provider.getApiKeyEncrypted().isBlank()) {
+            return true;
+        }
+        return hasCustomHeaders(provider.getCustomConfig());
+    }
+
+    public static boolean hasCustomHeaders(String customConfigJson) {
+        if (customConfigJson == null || customConfigJson.isBlank()) {
+            return false;
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode node = new com.fasterxml.jackson.databind.ObjectMapper().readTree(customConfigJson);
+            com.fasterxml.jackson.databind.JsonNode headers = node.has("headers") ? node.path("headers") : node;
+            return headers.isObject() && headers.size() > 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public static Map<String, String> parseCustomHeaders(String customConfigJson) {
+        Map<String, String> map = new LinkedHashMap<>();
+        if (customConfigJson == null || customConfigJson.isBlank()) {
+            return map;
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode node = new com.fasterxml.jackson.databind.ObjectMapper().readTree(customConfigJson);
+            com.fasterxml.jackson.databind.JsonNode headers = node.has("headers") ? node.path("headers") : node;
+            if (headers.isObject()) {
+                headers.fields().forEachRemaining(entry -> {
+                    if (entry.getValue().isTextual() || entry.getValue().isNumber() || entry.getValue().isBoolean()) {
+                        map.put(entry.getKey(), entry.getValue().asText());
+                    }
+                });
+            }
+        } catch (Exception ignored) {
+        }
+        return map;
     }
 
     private boolean isReady(LlmProvider provider) {

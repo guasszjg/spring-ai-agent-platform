@@ -7,6 +7,15 @@ public class GatewayProbeRequest {
     private String baseUrl;
     private String apiKey;
     private Integer timeoutMs;
+    private String defaultModel;
+
+    public String getDefaultModel() {
+        return defaultModel;
+    }
+
+    public void setDefaultModel(String defaultModel) {
+        this.defaultModel = defaultModel;
+    }
 
     public String getProviderId() {
         return providerId;

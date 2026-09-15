@@ -200,7 +200,7 @@ public class AiChatService {
             if (result != null) {
                 return result;
             }
-            if (route.fallback() != null && route.fallbackKey() != null) {
+            if (route.fallback() != null && gatewayService.hasKey(route.fallback())) {
                 log.warn("Primary LLM channel [{}] failed, switching to fallback [{}]",
                         route.primary().getName(), route.fallback().getName());
                 return callProvider(route.fallback(), route.fallbackKey(),
@@ -245,7 +245,8 @@ public class AiChatService {
                     return customHttpClient.chat(provider, messages, generation, timeoutMs);
                 }
                 log.info("Gateway routing agent chat via [{}] model [{}] with {} tools", provider.getName(), model, tools != null ? tools.size() : 0);
-                return openAiClient.chatWithTools(provider.getBaseUrl(), apiKey, model, messages, tools, toolRegistry, generation, timeoutMs);
+                var customHeaders = LlmGatewayService.parseCustomHeaders(provider.getCustomConfig());
+                return openAiClient.chatWithTools(provider.getBaseUrl(), apiKey, model, customHeaders, messages, tools, toolRegistry, generation, timeoutMs);
             } catch (Exception ex) {
                 log.warn("Gateway channel [{}] attempt {} failed: {}", provider.getName(), i + 1, ex.getMessage());
             }
