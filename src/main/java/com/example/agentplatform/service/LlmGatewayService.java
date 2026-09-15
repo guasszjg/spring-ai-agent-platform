@@ -473,6 +473,23 @@ public class LlmGatewayService {
         }
     }
 
+    public static boolean isWebSearchEnabled(String customConfigJson) {
+        if (customConfigJson == null || customConfigJson.isBlank()) {
+            return false;
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode node = new com.fasterxml.jackson.databind.ObjectMapper().readTree(customConfigJson);
+            if (node.has("webSearch") && node.get("webSearch").asBoolean()) {
+                return true;
+            }
+            if (node.has("enable_search") && node.get("enable_search").asBoolean()) {
+                return true;
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
     public static Map<String, String> parseCustomHeaders(String customConfigJson) {
         Map<String, String> map = new LinkedHashMap<>();
         if (customConfigJson == null || customConfigJson.isBlank()) {

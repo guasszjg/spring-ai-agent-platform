@@ -160,6 +160,16 @@ public class OpenAiCompatibleClient {
                                     List<Map<String, Object>> tools,
                                     com.example.agentplatform.tool.AgentToolRegistry toolRegistry,
                                     ChatGeneration generation, int timeoutMs) {
+        return chatWithTools(baseUrl, apiKey, model, customHeaders, false, messages, tools, toolRegistry, generation, timeoutMs);
+    }
+
+    public ChatResult chatWithTools(String baseUrl, String apiKey, String model,
+                                    Map<String, String> customHeaders,
+                                    boolean defaultWebSearch,
+                                    List<Map<String, Object>> messages,
+                                    List<Map<String, Object>> tools,
+                                    com.example.agentplatform.tool.AgentToolRegistry toolRegistry,
+                                    ChatGeneration generation, int timeoutMs) {
         outboundUrlValidator.validateProviderBaseUrl(baseUrl);
         String url = resolveChatUrl(baseUrl);
         try {
@@ -177,7 +187,7 @@ public class OpenAiCompatibleClient {
                 if (tools != null && !tools.isEmpty()) {
                     payload.put("tools", tools);
                 }
-                applyGeneration(payload, generation);
+                applyGeneration(payload, generation, defaultWebSearch);
                 String body = objectMapper.writeValueAsString(payload);
                 HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                         .timeout(Duration.ofMillis(Math.max(5000, timeoutMs)))
@@ -252,35 +262,58 @@ public class OpenAiCompatibleClient {
     }
 
     private void applyGeneration(Map<String, Object> payload, ChatGeneration generation) {
-        if (generation == null) {
-            return;
+        applyGeneration(payload, generation, false);
+    }
+
+    private void applyGeneration(Map<String, Object> payload, ChatGeneration generation, boolean defaultWebSearch) {
+        if (generation != null) {
+            if (generation.getTemperature() != null) {
+                payload.put("temperature", generation.getTemperature());
+            }
+            if (generation.getMaxTokens() != null) {
+                payload.put("max_tokens", generation.getMaxTokens());
+            }
+            if (generation.getTopP() != null) {
+                payload.put("top_p", generation.getTopP());
+            }
+            if (generation.getN() != null && generation.getN() > 0) {
+                payload.put("n", generation.getN());
+            }
+            if (generation.getFrequencyPenalty() != null) {
+                payload.put("frequency_penalty", generation.getFrequencyPenalty());
+            }
+            if (generation.getResponseFormat() != null && !generation.getResponseFormat().isBlank()
+                    && !"text".equalsIgnoreCase(generation.getResponseFormat())) {
+                payload.put("response_format", Map.of("type", generation.getResponseFormat()));
+            }
+            if (generation.getThinking() != null) {
+                boolean thinkingOn = Boolean.TRUE.equals(generation.getThinking());
+                payload.put("enable_thinking", thinkingOn);
+                payload.put("thinking", Map.of("type", thinkingOn ? "enabled" : "disabled"));
+            }
         }
-        if (generation.getTemperature() != null) {
-            payload.put("temperature", generation.getTemperature());
-        }
-        if (generation.getMaxTokens() != null) {
-            payload.put("max_tokens", generation.getMaxTokens());
-        }
-        if (generation.getTopP() != null) {
-            payload.put("top_p", generation.getTopP());
-        }
-        if (generation.getN() != null && generation.getN() > 0) {
-            payload.put("n", generation.getN());
-        }
-        if (generation.getFrequencyPenalty() != null) {
-            payload.put("frequency_penalty", generation.getFrequencyPenalty());
-        }
-        if (generation.getResponseFormat() != null && !generation.getResponseFormat().isBlank()
-                && !"text".equalsIgnoreCase(generation.getResponseFormat())) {
-            payload.put("response_format", Map.of("type", generation.getResponseFormat()));
-        }
-        if (generation.getWebSearch() != null) {
-            payload.put("enable_search", generation.getWebSearch());
-        }
-        if (generation.getThinking() != null) {
-            boolean thinkingOn = Boolean.TRUE.equals(generation.getThinking());
-            payload.put("enable_thinking", thinkingOn);
-            payload.put("thinking", Map.of("type", thinkingOn ? "enabled" : "disabled"));
+
+        // 联网搜索生效判定：若 generation 明确指定则以 generation 为准，否则以通道默认配置为准
+        boolean searchOn = (generation != null && generation.getWebSearch() != null)
+                ? Boolean.TRUE.equals(generation.getWebSearch())
+                : defaultWebSearch;
+
+        if (searchOn) {
+            payload.put("enable_search", true);
+            payload.put("web_search", true);
+
+            Map<String, Object> location = new LinkedHashMap<>();
+            location.put("type", "approximate");
+            location.put("country", "CN");
+            location.put("region", "Guangdong");
+            location.put("city", "Shenzhen");
+            location.put("timezone", "Asia/Shanghai");
+
+            Map<String, Object> searchOptions = new LinkedHashMap<>();
+            searchOptions.put("enable", true);
+            searchOptions.put("search_source", "lite");
+            searchOptions.put("user_location", location);
+            payload.put("web_search_options", searchOptions);
         }
     }
 
