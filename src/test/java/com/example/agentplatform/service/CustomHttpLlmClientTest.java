@@ -57,4 +57,22 @@ class CustomHttpLlmClientTest {
             assertThat(chatResult.completionTokens()).isGreaterThan(0);
         }
     }
+
+    @Test
+    void testCleanAnswerCitations() {
+        String raw1 = "明天北京晴，最高31℃[1][2]。";
+        String cleaned1 = AiChatService.cleanAnswer(raw1);
+        assertThat(cleaned1).isEqualTo("明天北京晴，最高31℃。");
+
+        String raw2 = "深圳气温适宜【1】【23】，湿度75%¹²。";
+        String cleaned2 = AiChatService.cleanAnswer(raw2);
+        assertThat(cleaned2).isEqualTo("深圳气温适宜，湿度75%。");
+
+        String raw3 = "  [1] 全文开始  ";
+        String cleaned3 = AiChatService.cleanAnswer(raw3);
+        assertThat(cleaned3).isEqualTo("全文开始");
+
+        assertThat(AiChatService.cleanAnswer(null)).isNull();
+        assertThat(AiChatService.cleanAnswer("   ")).isEqualTo("   ");
+    }
 }

@@ -250,7 +250,7 @@ public class OpenAiCompatibleClient {
                     continue;
                 }
 
-                String content = messageNode.path("content").asText("");
+                String content = cleanAnswer(messageNode.path("content").asText(""));
                 return new ChatResult(content, promptTokens, completionTokens, totalTokens, toolCalled);
             }
             return new ChatResult("工具调用轮次达到上限", promptTokens, completionTokens, totalTokens, toolCalled);
@@ -467,5 +467,16 @@ public class OpenAiCompatibleClient {
         }
         messages.add(Map.of("role", "user", "content", userMessage));
         return messages;
+    }
+
+    public static String cleanAnswer(String answer) {
+        if (answer == null || answer.isBlank()) {
+            return answer;
+        }
+        return answer
+                .replaceAll("\\[\\d+\\]", "")
+                .replaceAll("【\\d+】", "")
+                .replaceAll("[¹²³⁴⁵⁶⁷⁸⁹⁰]+", "")
+                .trim();
     }
 }

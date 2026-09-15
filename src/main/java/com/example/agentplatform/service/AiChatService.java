@@ -150,6 +150,8 @@ public class AiChatService {
             toolRegistry.clearCurrentContext();
         }
 
+        reply = cleanAnswer(reply);
+
         long latencyMs = System.currentTimeMillis() - startTime;
         int tokens = promptTokens + completionTokens;
         agentService.recordInvocation(agent.getId(), latencyMs, promptTokens, completionTokens, realModelReply);
@@ -279,6 +281,17 @@ public class AiChatService {
             }
         }
         return null;
+    }
+
+    public static String cleanAnswer(String answer) {
+        if (answer == null || answer.isBlank()) {
+            return answer;
+        }
+        return answer
+                .replaceAll("\\[\\d+\\]", "")
+                .replaceAll("【\\d+】", "")
+                .replaceAll("[¹²³⁴⁵⁶⁷⁸⁹⁰]+", "")
+                .trim();
     }
 
     private String generateSmartSimulationReply(Agent agent, String userMessage, List<ChatMessage> history, String[] toolCalledHolder) {
