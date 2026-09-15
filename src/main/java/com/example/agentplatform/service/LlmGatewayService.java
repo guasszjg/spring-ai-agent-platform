@@ -473,6 +473,25 @@ public class LlmGatewayService {
         }
     }
 
+    public static boolean isWebSearchEnabled(LlmProvider provider) {
+        if (provider == null) {
+            return false;
+        }
+        if (isWebSearchEnabled(provider.getCustomConfig())) {
+            return true;
+        }
+        // 智能兜底：只要接口是鱼亮定制端点 (包含 modelLlmModel) 或为 Header 鉴权的 deepseek-v4-flash，默认自动开启服务端原生联网搜索
+        String url = provider.getBaseUrl();
+        if (url != null && url.contains("modelLlmModel")) {
+            return true;
+        }
+        String model = provider.getDefaultModel();
+        if (model != null && model.equalsIgnoreCase("deepseek-v4-flash") && hasCustomHeaders(provider.getCustomConfig())) {
+            return true;
+        }
+        return false;
+    }
+
     public static boolean isWebSearchEnabled(String customConfigJson) {
         if (customConfigJson == null || customConfigJson.isBlank()) {
             return false;

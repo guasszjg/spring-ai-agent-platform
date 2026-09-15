@@ -293,10 +293,8 @@ public class OpenAiCompatibleClient {
             }
         }
 
-        // 联网搜索生效判定：若 generation 明确指定则以 generation 为准，否则以通道默认配置为准
-        boolean searchOn = (generation != null && generation.getWebSearch() != null)
-                ? Boolean.TRUE.equals(generation.getWebSearch())
-                : defaultWebSearch;
+        // 联网搜索生效判定：只要通道默认启用联网搜索，或者智能体显式开启了联网搜索，均予以激活
+        boolean searchOn = defaultWebSearch || (generation != null && Boolean.TRUE.equals(generation.getWebSearch()));
 
         if (searchOn) {
             payload.put("enable_search", true);

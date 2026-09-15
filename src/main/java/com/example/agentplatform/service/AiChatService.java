@@ -246,7 +246,7 @@ public class AiChatService {
                 }
                 log.info("Gateway routing agent chat via [{}] model [{}] with {} tools", provider.getName(), model, tools != null ? tools.size() : 0);
                 var customHeaders = LlmGatewayService.parseCustomHeaders(provider.getCustomConfig());
-                boolean defaultWebSearch = LlmGatewayService.isWebSearchEnabled(provider.getCustomConfig());
+                boolean defaultWebSearch = LlmGatewayService.isWebSearchEnabled(provider);
                 return openAiClient.chatWithTools(provider.getBaseUrl(), apiKey, model, customHeaders, defaultWebSearch, messages, tools, toolRegistry, generation, timeoutMs);
             } catch (Exception ex) {
                 log.warn("Gateway channel [{}] attempt {} failed: {}", provider.getName(), i + 1, ex.getMessage());
