@@ -1,21 +1,28 @@
 package com.example.agentplatform.model;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 public class OpenApiChatRequest {
 
+    @JsonProperty("message")
+    @JsonAlias({"query", "prompt", "input", "content", "question"})
     private String message;
 
     @JsonProperty("response_mode")
+    @JsonAlias({"responseMode", "mode"})
     private String responseMode = "streaming";
 
     @JsonProperty("conversation_id")
+    @JsonAlias({"conversationId"})
     private String conversationId;
 
     @JsonProperty("agent_id")
+    @JsonAlias({"agentId"})
     private String agentId;
 
     @JsonProperty("end_user")
+    @JsonAlias({"endUser"})
     private String endUser;
 
     private String user;
@@ -34,6 +41,15 @@ public class OpenApiChatRequest {
 
     public void setResponseMode(String responseMode) {
         this.responseMode = responseMode;
+    }
+
+    @JsonProperty("stream")
+    public void setStream(Boolean stream) {
+        if (Boolean.TRUE.equals(stream)) {
+            this.responseMode = "streaming";
+        } else if (Boolean.FALSE.equals(stream)) {
+            this.responseMode = "blocking";
+        }
     }
 
     public String getConversationId() {

@@ -13,7 +13,7 @@
 
     <groupId>com.example</groupId>
     <artifactId>spring-ai-agent-platform</artifactId>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
     <name>spring-ai-agent-platform</name>
     <description>Agent Management Platform based on Spring Boot 4.x and Spring AI 2.0.1</description>
 
