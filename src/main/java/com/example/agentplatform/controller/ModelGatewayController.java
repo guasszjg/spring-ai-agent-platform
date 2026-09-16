@@ -9,6 +9,12 @@ import com.example.agentplatform.model.GatewayProbeRequest;
 import com.example.agentplatform.model.GatewayProbeResult;
 import com.example.agentplatform.model.LlmProviderRequest;
 import com.example.agentplatform.model.LlmProviderView;
+import com.example.agentplatform.model.DifyConfigRequest;
+import com.example.agentplatform.model.DifyConfigView;
+import com.example.agentplatform.model.EmbeddingConfigRequest;
+import com.example.agentplatform.model.EmbeddingConfigView;
+import com.example.agentplatform.service.DifyConfigService;
+import com.example.agentplatform.service.EmbeddingConfigService;
 import com.example.agentplatform.service.LlmGatewayService;
 import com.example.agentplatform.service.LlmVendorCatalog;
 import org.springframework.http.HttpStatus;
@@ -34,9 +40,15 @@ import java.util.Map;
 public class ModelGatewayController {
 
     private final LlmGatewayService gatewayService;
+    private final EmbeddingConfigService embeddingConfigService;
+    private final DifyConfigService difyConfigService;
 
-    public ModelGatewayController(LlmGatewayService gatewayService) {
+    public ModelGatewayController(LlmGatewayService gatewayService,
+                                  EmbeddingConfigService embeddingConfigService,
+                                  DifyConfigService difyConfigService) {
         this.gatewayService = gatewayService;
+        this.embeddingConfigService = embeddingConfigService;
+        this.difyConfigService = difyConfigService;
     }
 
     private boolean checkAdmin() {
@@ -179,6 +191,172 @@ public class ModelGatewayController {
         }
         try {
             return ResponseEntity.ok(ApiResponse.ok("路由策略已保存", gatewayService.savePolicy(policy)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    // ==========================================
+    // Embedding 向量模型管理接口
+    // ==========================================
+    @GetMapping("/embeddings")
+    public ResponseEntity<ApiResponse<List<EmbeddingConfigView>>> listEmbeddings() {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可查看向量模型配置"));
+        }
+        return ResponseEntity.ok(ApiResponse.ok(embeddingConfigService.listViews()));
+    }
+
+    @PostMapping("/embeddings")
+    public ResponseEntity<ApiResponse<EmbeddingConfigView>> createEmbedding(@RequestBody EmbeddingConfigRequest request) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可配置向量模型"));
+        }
+        try {
+            return ResponseEntity.ok(ApiResponse.ok("向量模型配置已创建", embeddingConfigService.create(request)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PutMapping("/embeddings/{id}")
+    public ResponseEntity<ApiResponse<EmbeddingConfigView>> updateEmbedding(@PathVariable String id,
+                                                                           @RequestBody EmbeddingConfigRequest request) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可更新向量模型"));
+        }
+        try {
+            return ResponseEntity.ok(ApiResponse.ok("向量模型配置已更新", embeddingConfigService.update(id, request)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/embeddings/{id}/activate")
+    public ResponseEntity<ApiResponse<Void>> activateEmbedding(@PathVariable String id) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可切换激活向量模型"));
+        }
+        try {
+            embeddingConfigService.activate(id);
+            return ResponseEntity.ok(ApiResponse.ok("向量模型已设为当前激活生效", null));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/embeddings/{id}")
+    public ResponseEntity<ApiResponse<Void>> deleteEmbedding(@PathVariable String id) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可删除向量模型"));
+        }
+        try {
+            embeddingConfigService.delete(id);
+            return ResponseEntity.ok(ApiResponse.ok("向量模型配置已删除", null));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/embeddings/{id}/probe")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> probeEmbedding(@PathVariable String id) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可测试向量模型连通性"));
+        }
+        try {
+            Map<String, Object> result = embeddingConfigService.probe(id);
+            boolean success = Boolean.TRUE.equals(result.get("success"));
+            String msg = (String) result.get("message");
+            return ResponseEntity.ok(success ? ApiResponse.ok(msg, result) : ApiResponse.error(msg, result));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    // ==========================================
+    // Dify 知识库引擎接入管理接口
+    // ==========================================
+    @GetMapping("/dify")
+    public ResponseEntity<ApiResponse<List<DifyConfigView>>> listDify() {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可查看 Dify 接入配置"));
+        }
+        return ResponseEntity.ok(ApiResponse.ok(difyConfigService.listViews()));
+    }
+
+    @PostMapping("/dify")
+    public ResponseEntity<ApiResponse<DifyConfigView>> createDify(@RequestBody DifyConfigRequest request) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可添加 Dify 实例"));
+        }
+        try {
+            return ResponseEntity.ok(ApiResponse.ok("Dify 实例已接入", difyConfigService.create(request)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PutMapping("/dify/{id}")
+    public ResponseEntity<ApiResponse<DifyConfigView>> updateDify(@PathVariable String id,
+                                                                 @RequestBody DifyConfigRequest request) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可修改 Dify 配置"));
+        }
+        try {
+            return ResponseEntity.ok(ApiResponse.ok("Dify 配置已更新", difyConfigService.update(id, request)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/dify/{id}/activate")
+    public ResponseEntity<ApiResponse<Void>> activateDify(@PathVariable String id) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可切换激活 Dify 实例"));
+        }
+        try {
+            difyConfigService.activate(id);
+            return ResponseEntity.ok(ApiResponse.ok("Dify 实例已设为当前激活生效", null));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/dify/{id}")
+    public ResponseEntity<ApiResponse<Void>> deleteDify(@PathVariable String id) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可删除 Dify 配置"));
+        }
+        try {
+            difyConfigService.delete(id);
+            return ResponseEntity.ok(ApiResponse.ok("Dify 配置已删除", null));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/dify/{id}/probe")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> probeDify(@PathVariable String id) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可测试 Dify 连通性"));
+        }
+        try {
+            Map<String, Object> result = difyConfigService.probe(id);
+            boolean success = Boolean.TRUE.equals(result.get("success"));
+            String msg = (String) result.get("message");
+            return ResponseEntity.ok(success ? ApiResponse.ok(msg, result) : ApiResponse.error(msg, result));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
         }

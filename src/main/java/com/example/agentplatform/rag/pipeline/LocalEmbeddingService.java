@@ -1,21 +1,30 @@
 package com.example.agentplatform.rag.pipeline;
 
+import com.example.agentplatform.model.EmbeddingConfig;
+import com.example.agentplatform.service.EmbeddingConfigService;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClient;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 本地 Embedding 向量化与相似度计算服务
- * 优先调用 Spring AI 注册的 EmbeddingModel；若未配置或异常时平滑降级至确定性高维语义投影器
+ * 优先调用在「AI 引擎与模型网关」中激活的 EmbeddingModel；若未配置平滑降级至 Spring AI 注册的 EmbeddingModel 或确定性高维语义投影器
  */
 @Service
 public class LocalEmbeddingService {
@@ -24,10 +33,18 @@ public class LocalEmbeddingService {
     public static final int DEFAULT_DIMENSION = 1024;
 
     private final EmbeddingModel embeddingModel;
+    private final EmbeddingConfigService embeddingConfigService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public LocalEmbeddingService(@Autowired(required = false) EmbeddingModel embeddingModel) {
+        this(embeddingModel, null);
+    }
+
+    @Autowired
+    public LocalEmbeddingService(@Autowired(required = false) EmbeddingModel embeddingModel,
+                                 @Autowired(required = false) EmbeddingConfigService embeddingConfigService) {
         this.embeddingModel = embeddingModel;
+        this.embeddingConfigService = embeddingConfigService;
     }
 
     /**
@@ -39,6 +56,22 @@ public class LocalEmbeddingService {
         }
         int targetDim = dimension > 0 ? dimension : DEFAULT_DIMENSION;
 
+        // 1. 优先调用数据库中当前激活的向量模型配置
+        if (embeddingConfigService != null) {
+            try {
+                var activeOpt = embeddingConfigService.getActiveConfig();
+                if (activeOpt.isPresent()) {
+                    float[] dynamicVec = callDynamicEmbedding(activeOpt.get(), text);
+                    if (dynamicVec != null && dynamicVec.length > 0) {
+                        return normalizeAndProject(dynamicVec, targetDim);
+                    }
+                }
+            } catch (Exception e) {
+                log.debug("调用数据库激活的动态 Embedding 异常，自动降级: {}", e.getMessage());
+            }
+        }
+
+        // 2. 其次调用 Spring AI 注册的全局默认 EmbeddingModel
         if (embeddingModel != null) {
             try {
                 float[] vector = embeddingModel.embed(text);
@@ -50,7 +83,60 @@ public class LocalEmbeddingService {
             }
         }
 
+        // 3. 兜底平滑降级至高维确定性语义特征投影
         return fallbackSemanticProjection(text, targetDim);
+    }
+
+    private float[] callDynamicEmbedding(EmbeddingConfig cfg, String text) {
+        try {
+            String baseUrl = cfg.getBaseUrl();
+            String endpoint = baseUrl != null && !baseUrl.isBlank() ? baseUrl : "https://api.openai.com/v1";
+            if (!endpoint.endsWith("/embeddings")) {
+                while (endpoint.endsWith("/")) {
+                    endpoint = endpoint.substring(0, endpoint.length() - 1);
+                }
+                endpoint = endpoint + "/embeddings";
+            }
+
+            String plainKey = embeddingConfigService.decryptKey(cfg.getApiKeyEncrypted());
+
+            SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+            factory.setConnectTimeout(Duration.ofSeconds(8));
+            factory.setReadTimeout(Duration.ofSeconds(20));
+            RestClient client = RestClient.builder().requestFactory(factory).build();
+
+            var reqSpec = client.post()
+                    .uri(endpoint)
+                    .contentType(MediaType.APPLICATION_JSON);
+
+            if (plainKey != null && !plainKey.isBlank()) {
+                reqSpec.header(HttpHeaders.AUTHORIZATION, "Bearer " + plainKey);
+            }
+
+            var bodyMap = Map.of(
+                    "model", cfg.getModelName(),
+                    "input", text
+            );
+
+            String respBody = reqSpec.body(bodyMap).retrieve().body(String.class);
+            if (respBody == null || respBody.isBlank()) return null;
+
+            JsonNode root = objectMapper.readTree(respBody);
+            if (root.has("data") && root.get("data").isArray() && !root.get("data").isEmpty()) {
+                JsonNode first = root.get("data").get(0);
+                if (first.has("embedding") && first.get("embedding").isArray()) {
+                    JsonNode arr = first.get("embedding");
+                    float[] vec = new float[arr.size()];
+                    for (int i = 0; i < arr.size(); i++) {
+                        vec[i] = (float) arr.get(i).asDouble();
+                    }
+                    return vec;
+                }
+            }
+        } catch (Exception e) {
+            log.debug("调用动态 Embedding 接口失败: {}", e.getMessage());
+        }
+        return null;
     }
 
     public float[] embed(String text) {

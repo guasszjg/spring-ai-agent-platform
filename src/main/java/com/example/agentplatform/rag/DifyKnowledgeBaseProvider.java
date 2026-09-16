@@ -2,6 +2,7 @@ package com.example.agentplatform.rag;
 
 import com.example.agentplatform.rag.dto.DifyDatasetDto;
 import com.example.agentplatform.rag.dto.DifyDocumentDto;
+import com.example.agentplatform.service.DifyConfigService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -35,34 +36,60 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
     private final String apiKey;
     private final RestClient restClient;
     private final ObjectMapper objectMapper;
+    private final DifyConfigService difyConfigService;
 
     public DifyKnowledgeBaseProvider(
             @Value("${app.dify.base-url:}") String baseUrl,
             @Value("${app.dify.api-key:}") String apiKey,
             @Autowired(required = false) ObjectMapper objectMapper) {
+        this(baseUrl, apiKey, objectMapper, null);
+    }
+
+    @Autowired
+    public DifyKnowledgeBaseProvider(
+            @Value("${app.dify.base-url:}") String baseUrl,
+            @Value("${app.dify.api-key:}") String apiKey,
+            @Autowired(required = false) ObjectMapper objectMapper,
+            @Autowired(required = false) DifyConfigService difyConfigService) {
         this.baseUrl = normalizeDifyBaseUrl(baseUrl);
         this.apiKey = apiKey != null ? apiKey.trim() : "";
         this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
+        this.difyConfigService = difyConfigService;
+        this.restClient = buildRestClient(this.baseUrl, this.apiKey);
 
+        if (this.baseUrl.isBlank() || this.apiKey.isBlank()) {
+            log.info("Dify RAG 本地静态未配置，将优先从数据库「AI 引擎与模型网关」中读取活跃配置");
+        } else {
+            log.info("Dify RAG 静态已配置: {}", this.baseUrl);
+        }
+    }
+
+    private RestClient buildRestClient(String targetUrl, String targetKey) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofSeconds(15));
         factory.setReadTimeout(Duration.ofSeconds(60));
 
         RestClient.Builder builder = RestClient.builder().requestFactory(factory);
-        if (!this.baseUrl.isBlank()) {
-            builder.baseUrl(this.baseUrl);
+        if (targetUrl != null && !targetUrl.isBlank()) {
+            builder.baseUrl(targetUrl);
         }
-        if (!this.apiKey.isBlank()) {
-            builder.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + this.apiKey);
+        if (targetKey != null && !targetKey.isBlank()) {
+            builder.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + targetKey);
         }
-        this.restClient = builder.build();
+        return builder.build();
+    }
 
-        if (this.baseUrl.isBlank() || this.apiKey.isBlank()) {
-            log.warn("Dify RAG 未完成配置: baseUrl={}, apiKeyConfigured={}",
-                    this.baseUrl.isBlank() ? "(空)" : this.baseUrl, !this.apiKey.isBlank());
-        } else {
-            log.info("Dify RAG 已配置: {}", this.baseUrl);
+    private RestClient getEffectiveRestClient() {
+        if (difyConfigService != null) {
+            var active = difyConfigService.getActiveConfig();
+            if (active.isPresent()) {
+                var cfg = active.get();
+                String plainKey = difyConfigService.decryptKey(cfg.getApiKeyEncrypted());
+                return buildRestClient(cfg.getBaseUrl(), plainKey);
+            }
         }
+        ensureConfigured();
+        return this.restClient;
     }
 
     static String normalizeDifyBaseUrl(String raw) {
@@ -83,13 +110,16 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
     }
 
     private void ensureConfigured() {
+        if (difyConfigService != null && difyConfigService.getActiveConfig().isPresent()) {
+            return;
+        }
         if (baseUrl.isBlank()) {
             throw new IllegalStateException(
-                    "未配置 Dify Base URL，无法从 Dify 导入。请设置 app.dify.base-url 或环境变量 DIFY_BASE_URL，例如 http://120.79.38.143/v1");
+                    "未配置 Dify Base URL，无法从 Dify 导入。请在「AI 引擎与模型网关」中接入 Dify 实例，或设置环境变量 DIFY_BASE_URL");
         }
         if (apiKey.isBlank()) {
             throw new IllegalStateException(
-                    "未配置 Dify Dataset API Key。请在 Dify 控制台创建知识库 API Key，并设置 app.dify.api-key 或环境变量 DIFY_API_KEY");
+                    "未配置 Dify Dataset API Key。请在「AI 引擎与模型网关」中填写 API Key，或设置环境变量 DIFY_API_KEY");
         }
     }
 
@@ -100,6 +130,12 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
 
     @Override
     public String getBaseUrl() {
+        if (difyConfigService != null) {
+            var active = difyConfigService.getActiveConfig();
+            if (active.isPresent()) {
+                return active.get().getBaseUrl();
+            }
+        }
         return baseUrl;
     }
 
@@ -132,7 +168,7 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
             );
             req.put("retrieval_model", retrievalModel);
 
-            String response = restClient.post()
+            String response = getEffectiveRestClient().post()
                     .uri("/datasets")
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(req)
@@ -168,7 +204,7 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 req.put("retrieval_model", retrievalModel);
             }
 
-            restClient.patch()
+            getEffectiveRestClient().patch()
                     .uri("/datasets/{datasetId}", externalDatasetId)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(req)
@@ -231,7 +267,7 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
         if (externalDatasetId == null || externalDatasetId.isBlank()) return;
         ensureConfigured();
         try {
-            restClient.delete()
+            getEffectiveRestClient().delete()
                     .uri("/datasets/{datasetId}", externalDatasetId)
                     .retrieve()
                     .toBodilessEntity();
@@ -248,7 +284,7 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
             List<DifyDatasetDto> all = new ArrayList<>();
             for (int page = 1; page <= 5; page++) {
                 int currentPage = page;
-                String response = restClient.get()
+                String response = getEffectiveRestClient().get()
                         .uri(uriBuilder -> uriBuilder.path("/datasets")
                                 .queryParam("page", currentPage)
                                 .queryParam("limit", 100)
@@ -295,7 +331,7 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
             };
             body.add("file", resource);
 
-            String response = restClient.post()
+            String response = getEffectiveRestClient().post()
                     .uri("/datasets/{datasetId}/document/create-by-file", externalDatasetId)
                     .contentType(MediaType.MULTIPART_FORM_DATA)
                     .body(body)
@@ -316,7 +352,7 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
         if (externalDatasetId == null || externalDocId == null) return;
         ensureConfigured();
         try {
-            restClient.delete()
+            getEffectiveRestClient().delete()
                     .uri("/datasets/{datasetId}/documents/{docId}", externalDatasetId, externalDocId)
                     .retrieve()
                     .toBodilessEntity();
@@ -331,7 +367,7 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
         if (externalDatasetId == null || externalDatasetId.isBlank()) return new ArrayList<>();
         ensureConfigured();
         try {
-            String response = restClient.get()
+            String response = getEffectiveRestClient().get()
                     .uri(uriBuilder -> uriBuilder
                             .path("/datasets/{datasetId}/documents")
                             .queryParam("page", Math.max(1, page))
@@ -376,7 +412,7 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
                     "process_rule", Map.of("mode", "automatic")
             );
 
-            String response = restClient.post()
+            String response = getEffectiveRestClient().post()
                     .uri("/datasets/{datasetId}/document/create-by-text", externalDatasetId)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(req)
@@ -425,7 +461,7 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
                     req.put("retrieval_model", retrievalModel);
                 }
             }
-            String response = restClient.post()
+            String response = getEffectiveRestClient().post()
                     .uri("/datasets/{datasetId}/retrieve", externalDatasetId)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(req)
@@ -478,7 +514,7 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
             if (!retrievalModel.isEmpty()) {
                 req.put("retrieval_model", retrievalModel);
             }
-            String response = restClient.post()
+            String response = getEffectiveRestClient().post()
                     .uri("/datasets/{datasetId}/retrieve", externalDatasetId)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(req)
