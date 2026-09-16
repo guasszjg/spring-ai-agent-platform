@@ -279,10 +279,19 @@ public class OpenChatService {
         if (agentId == null || agentId.isBlank()) {
             return null;
         }
-        if (scope != null && !scope.isEmpty() && !scope.contains(agentId)) {
+        final String finalAgentId = agentId;
+        Agent agent = agentRepository.findById(finalAgentId)
+                .or(() -> agentRepository.findByCode(finalAgentId))
+                .orElse(null);
+        if (agent == null) {
             return null;
         }
-        return agentRepository.findById(agentId).orElse(null);
+        if (scope != null && !scope.isEmpty()
+                && !scope.contains(agent.getId())
+                && (agent.getCode() == null || !scope.contains(agent.getCode()))) {
+            return null;
+        }
+        return agent;
     }
 
     private List<String> extractEnabledTools(String toolsConfig) {
