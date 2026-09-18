@@ -59,12 +59,13 @@ public class AgentToolRegistry {
         List<Map<String, Object>> list = new ArrayList<>();
 
         addIfEnabled(list, enabledToolNames, "获取当前时间", "time_get_current_time",
-                "获取指定时区的当前精确日期和时间（包含年月日、时分秒以及星期几）。当用户询问当前时间、现在几点、今天几号等问题时必须调用本工具。",
+                "获取当前系统的精确日期和时间（包含年月日、当前多少号、时分秒以及星期几）。当用户询问“今天多少号”、“今天几号”、“现在几点”、“当前时间”、“今天日期”等任何当前时钟与日期问题时必须调用本工具。",
                 Map.of("type", "object",
                         "properties", Map.of(
                                 "timezone", Map.of(
                                         "type", "string",
-                                        "description", "目标时区ID，如 Asia/Shanghai (北京时间), America/New_York (纽约), Europe/London (伦敦), Asia/Tokyo (东京), UTC。默认 Asia/Shanghai"
+                                        "description", "目标时区ID，默认 Asia/Shanghai (北京时间)。若用户未特别指定其他城市时区，请直接填 Asia/Shanghai",
+                                        "default", "Asia/Shanghai"
                                 )
                         )
                 ));
@@ -136,7 +137,7 @@ public class AgentToolRegistry {
                 ));
 
         addIfEnabled(list, enabledToolNames, "联网检索", "bocha_web_search",
-                "博查 AI 联网搜索引擎。当用户询问最新时事、实时天气、新闻事件、实时数据或任何需要获取最新互联网真实信息的场景时，必须调用本工具检索权威事实。",
+                "博查 AI 联网搜索引擎。当用户询问最新时事、实时天气、新闻事件、实时数据或任何需要获取最新互联网真实信息的场景时，必须调用本工具检索权威事实。注意：严禁用本工具查询“今天几号”、“现在几点”等系统时钟问题（当前日期时间请直接使用系统基准时间或获取当前时间工具）。",
                 Map.of("type", "object",
                         "properties", Map.of(
                                 "query", Map.of(
@@ -338,7 +339,9 @@ public class AgentToolRegistry {
             JsonNode values = root.path("data").path("webPages").path("value");
             if (values.isArray() && !values.isEmpty()) {
                 StringBuilder sb = new StringBuilder();
-                sb.append(String.format("【联网检索结果】针对关键词 [%s]，Bocha 检索到以下最新互联网权威资讯：\n\n", query));
+                ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Asia/Shanghai"));
+                String todayStr = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
+                sb.append(String.format("【联网检索结果】（当前物理世界基准日期：%s）针对关键词 [%s]，Bocha 检索到以下最新互联网资讯（提示：列表中发布时间为各网页的历史发布时刻，切勿误当做今天的真实日期）：\n\n", todayStr, query));
                 int idx = 1;
                 for (JsonNode item : values) {
                     String title = item.path("name").asText("");

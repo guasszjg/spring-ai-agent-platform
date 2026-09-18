@@ -14,7 +14,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.TextStyle;
 import java.util.List;
+import java.util.Locale;
 
 @Service
 public class AiChatService {
@@ -96,7 +101,7 @@ public class AiChatService {
 
         try {
             OpenAiCompatibleClient.ChatResult routed = invokeViaGateway(agent, userMessage, request.getHistory(),
-                    request.getGeneration(), request.getPrompt(), tools, routedModel);
+                    request.getGeneration(), request.getPrompt(), tools, request.getEnabledTools(), routedModel);
             if (routed != null && routed.content() != null && !routed.content().isBlank()) {
                 reply = routed.content();
                 executionModel = routedModel[0];
@@ -112,8 +117,7 @@ public class AiChatService {
             } else if (chatClient != null) {
                 log.info("Invoking Spring AI ChatClient for Agent: [{}] with model: [{}]", agent.getName(), executionModel);
                 
-                String instruction = firstNonBlank(request.getPrompt(), agent.getSystemPrompt(), "你是一个通用智能助手。");
-                instruction = appendKnowledgeContext(instruction, agent, userMessage);
+                String instruction = buildEffectiveInstruction(request.getPrompt(), agent, userMessage, request.getEnabledTools());
                 var clientRequest = chatClient.prompt()
                         .system(instruction);
 
@@ -187,10 +191,10 @@ public class AiChatService {
     private OpenAiCompatibleClient.ChatResult invokeViaGateway(Agent agent, String userMessage,
                                                                List<ChatMessage> history, ChatGeneration generation,
                                                                String livePrompt, List<java.util.Map<String, Object>> tools,
+                                                               List<String> enabledTools,
                                                                String[] routedModel) {
         ChatGeneration effective = generation != null ? generation : fromAgent(agent);
-        final String instruction = appendKnowledgeContext(
-                firstNonBlank(livePrompt, agent.getSystemPrompt(), null), agent, userMessage);
+        final String instruction = buildEffectiveInstruction(livePrompt, agent, userMessage, enabledTools);
         return gatewayService.resolveRoute(agent.getModelName()).map(route -> {
             var messages = OpenAiCompatibleClient.toMessages(
                     instruction,
@@ -210,6 +214,62 @@ public class AiChatService {
             }
             return null;
         }).orElse(null);
+    }
+
+    public String buildEffectiveInstruction(String rawPrompt, Agent agent, String userMessage) {
+        return buildEffectiveInstruction(rawPrompt, agent, userMessage, null);
+    }
+
+    public String buildEffectiveInstruction(String rawPrompt, Agent agent, String userMessage, List<String> enabledTools) {
+        String base = firstNonBlank(rawPrompt, agent.getSystemPrompt(), "你是一个通用智能助手。");
+
+        // 1. 获取当前系统真实时间与星期 (标准北京时间 Asia/Shanghai)
+        ZoneId zoneId = ZoneId.of("Asia/Shanghai");
+        ZonedDateTime now = ZonedDateTime.now(zoneId);
+        String dateStr = now.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日"));
+        String timeStr = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        String weekday = now.getDayOfWeek().getDisplayName(TextStyle.FULL, Locale.CHINESE);
+
+        // 2. 替换提示词中可能包含的变量占位符 (支持 Dify 及通用模版变量规范)
+        String processed = base
+                .replace("{{system_time}}", timeStr + " (" + weekday + ")")
+                .replace("{{sys.time}}", timeStr)
+                .replace("{{time}}", timeStr)
+                .replace("{{sys.date}}", dateStr)
+                .replace("{{date}}", dateStr)
+                .replace("{{today}}", dateStr + " " + weekday)
+                .replace("{{input}}", userMessage != null ? userMessage : "");
+
+        // 3. 构建高优先级系统基准时间环境约束（Grounding Time Context）
+        StringBuilder timeContext = new StringBuilder(String.format(
+                "【系统基准环境】\n" +
+                "- 当前日期：%s（%s）\n" +
+                "- 当前时间：%s\n" +
+                "- 所在时区：Asia/Shanghai (GMT+8 / 北京时间)\n" +
+                "【时效性准则】以上为您所在物理世界的绝对真实系统时间。在处理涉及“今天”、“现在”、“当前”、“今年”、“本月”或日期相对计算时，必须严格以此时间为准。若调用了联网检索工具（如博查搜索），检索到的互联网文章可能包含历史发布的旧快照，切勿将历史网页的发布时间误认为当前的真实日期！",
+                dateStr, weekday, timeStr
+        ));
+
+        // 若挂载了扩展工具，注入工具调用路由规范，消除模型对时间工具与联网搜索的二义性竞争
+        if (enabledTools != null && !enabledTools.isEmpty()) {
+            boolean hasTime = enabledTools.stream().anyMatch(t -> t.contains("时间") || t.contains("time") || t.contains("时区") || t.contains("星期"));
+            boolean hasBocha = enabledTools.stream().anyMatch(t -> t.contains("联网") || t.contains("bocha") || t.contains("检索"));
+
+            StringBuilder toolGuide = new StringBuilder("\n\n【工具调用指引规范】\n");
+            if (hasTime) {
+                toolGuide.append("- 当前智能体已装配时间工具集（包含获取当前时间、星期几计算器等）。当用户询问“今天多少号”、“今天几号”、“现在几点”、“当前日期”等本地时序问题时，可直接参考系统基准时间或优先调用 `time_get_current_time` 工具，严禁使用联网搜索查询当前本地系统时间！\n");
+            }
+            if (hasBocha) {
+                toolGuide.append("- 联网检索工具（`bocha_web_search`）仅用于查询外部最新新闻、实时天气或全网事实，切勿使用联网检索来查问当前的本地系统时间！\n");
+            }
+            timeContext.append(toolGuide.toString().trim());
+        }
+
+        // 注入到系统指令头部，赋予模型确定性的时序与工具调度认知
+        String combined = timeContext + "\n\n" + processed;
+
+        // 4. 追加知识库检索片段（RAG 上下文）
+        return appendKnowledgeContext(combined, agent, userMessage);
     }
 
     private String appendKnowledgeContext(String instruction, Agent agent, String userMessage) {
@@ -311,7 +371,8 @@ public class AiChatService {
                     "已识别时间计算意图，调用工具 `time.calculate_weekday` 完成运算：\n\n" +
                     "> " + toolResult + "\n\n" +
                     "*(注：当前运行在智能模拟回退模式。在网关配置真实模型后，将由 LLM 自主执行 Function Calling 解析复杂日期语义)*";
-        } else if (userMessage.contains("时间") || userMessage.contains("几点") || userMessage.contains("时区")) {
+        } else if (userMessage.contains("几号") || userMessage.contains("多少号") || userMessage.contains("日期")
+                || userMessage.contains("今天") || userMessage.contains("时间") || userMessage.contains("几点") || userMessage.contains("时区")) {
             String tz = "Asia/Shanghai";
             if (userMessage.contains("纽约")) tz = "America/New_York";
             else if (userMessage.contains("伦敦")) tz = "Europe/London";

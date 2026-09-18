@@ -434,7 +434,7 @@ public class AgentService {
 
         List<Agent> all = agentRepository.findAll();
         List<Agent> accessible = all.stream()
-                .filter(a -> resourceAuthService.canViewAgent(actor, a))
+                .filter(a -> actor == null || resourceAuthService.canViewAgent(actor, a))
                 .collect(Collectors.toList());
         Set<String> accessibleIds = accessible.stream().map(Agent::getId).collect(Collectors.toSet());
 
