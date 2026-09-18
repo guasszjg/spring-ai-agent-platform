@@ -165,11 +165,36 @@ public class EmbeddingConfigService {
     public Map<String, Object> probe(String id) {
         EmbeddingConfig entity = repository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("未找到对应的 Embedding 配置: " + id));
+        Map<String, Object> result = ping(entity.getBaseUrl(), decryptKey(entity.getApiKeyEncrypted()), entity.getModelName());
+        boolean ok = Boolean.TRUE.equals(result.get("success"));
+        entity.setLastProbeStatus(ok ? "SUCCESS" : "FAILED");
+        entity.setLastProbeMessage(String.valueOf(result.get("message")));
+        entity.setLastProbeAt(LocalDateTime.now());
+        Object dim = result.get("dimension");
+        if (ok && dim instanceof Integer detected && detected > 0) {
+            entity.setDimension(detected);
+        }
+        repository.save(entity);
+        return result;
+    }
 
-        String plainKey = decryptKey(entity.getApiKeyEncrypted());
-        String baseUrl = entity.getBaseUrl();
-        String model = entity.getModelName();
+    public Map<String, Object> probeDraft(EmbeddingConfigRequest req) {
+        if (req == null || req.getModelName() == null || req.getModelName().isBlank()) {
+            throw new IllegalArgumentException("请先填写向量模型名称");
+        }
+        String apiKey = req.getApiKey() != null ? req.getApiKey().trim() : "";
+        if (apiKey.isBlank() && req.getId() != null && !req.getId().isBlank()) {
+            apiKey = repository.findById(req.getId())
+                    .map(cfg -> decryptKey(cfg.getApiKeyEncrypted()))
+                    .orElse("");
+        }
+        return ping(req.getBaseUrl(), apiKey, req.getModelName().trim());
+    }
 
+    private Map<String, Object> ping(String baseUrl, String plainKey, String model) {
+        if (model == null || model.isBlank()) {
+            throw new IllegalArgumentException("向量模型名称不能为空");
+        }
         long start = System.currentTimeMillis();
         try {
             String endpoint = baseUrl != null && !baseUrl.isBlank() ? baseUrl : "https://api.openai.com/v1";
@@ -183,27 +208,21 @@ public class EmbeddingConfigService {
             SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
             factory.setConnectTimeout(Duration.ofSeconds(10));
             factory.setReadTimeout(Duration.ofSeconds(20));
-
-            RestClient.Builder builder = RestClient.builder().requestFactory(factory);
-            RestClient client = builder.build();
+            RestClient client = RestClient.builder().requestFactory(factory).build();
 
             var reqBody = Map.of(
                     "model", model,
                     "input", "Ping test embedding connection"
             );
-
             var reqSpec = client.post()
                     .uri(endpoint)
                     .contentType(MediaType.APPLICATION_JSON);
-
             if (plainKey != null && !plainKey.isBlank()) {
                 reqSpec.header(HttpHeaders.AUTHORIZATION, "Bearer " + plainKey);
             }
-
             String respBody = reqSpec.retrieve().body(String.class);
             long cost = System.currentTimeMillis() - start;
 
-            // 解析维度
             JsonNode root = objectMapper.readTree(respBody);
             int detectedDim = 0;
             if (root.has("data") && root.get("data").isArray() && !root.get("data").isEmpty()) {
@@ -212,16 +231,7 @@ public class EmbeddingConfigService {
                     detectedDim = firstItem.get("embedding").size();
                 }
             }
-
             String msg = "连通正常！成功生成 " + (detectedDim > 0 ? detectedDim + " 维" : "") + "向量 (耗时 " + cost + "ms)";
-            entity.setLastProbeStatus("SUCCESS");
-            entity.setLastProbeMessage(msg);
-            entity.setLastProbeAt(LocalDateTime.now());
-            if (detectedDim > 0) {
-                entity.setDimension(detectedDim);
-            }
-            repository.save(entity);
-
             return Map.of("success", true, "message", msg, "dimension", detectedDim, "costMs", cost);
         } catch (Exception e) {
             long cost = System.currentTimeMillis() - start;
@@ -231,13 +241,7 @@ public class EmbeddingConfigService {
             } else if (err.contains("404")) {
                 err = "404 Not Found (接口地址不正确，未找到 /embeddings 端点)";
             }
-            String msg = "连通失败: " + err + " (耗时 " + cost + "ms)";
-            entity.setLastProbeStatus("FAILED");
-            entity.setLastProbeMessage(msg);
-            entity.setLastProbeAt(LocalDateTime.now());
-            repository.save(entity);
-
-            return Map.of("success", false, "message", msg, "costMs", cost);
+            return Map.of("success", false, "message", "连通失败: " + err + " (耗时 " + cost + "ms)", "costMs", cost);
         }
     }
 

@@ -12,7 +12,9 @@ import com.example.agentplatform.rag.pipeline.ContextBudgetPruner;
 import com.example.agentplatform.rag.pipeline.DocumentChunker;
 import com.example.agentplatform.rag.pipeline.KeywordRetriever;
 import com.example.agentplatform.rag.pipeline.LocalEmbeddingService;
+import com.example.agentplatform.rag.pipeline.PgChunkSearch;
 import com.example.agentplatform.rag.pipeline.QueryTransformer;
+import com.example.agentplatform.rag.pipeline.RrfFusion;
 import com.example.agentplatform.rag.parser.DocumentParsingService;
 import com.example.agentplatform.repository.KnowledgeBaseRepository;
 import com.example.agentplatform.repository.KnowledgeDocumentChunkRepository;
@@ -29,6 +31,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -59,6 +62,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
     private final DocumentParsingService documentParsingService;
     private final SemanticCacheService semanticCacheService;
     private final GraphRagService graphRagService;
+    private final PgChunkSearch pgChunkSearch;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Autowired
@@ -71,7 +75,8 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                                          ContextBudgetPruner budgetPruner,
                                          @Autowired(required = false) DocumentParsingService documentParsingService,
                                          @Autowired(required = false) SemanticCacheService semanticCacheService,
-                                         @Autowired(required = false) GraphRagService graphRagService) {
+                                         @Autowired(required = false) GraphRagService graphRagService,
+                                         @Autowired(required = false) PgChunkSearch pgChunkSearch) {
         this.chunkRepository = chunkRepository;
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.documentChunker = documentChunker;
@@ -82,6 +87,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         this.documentParsingService = documentParsingService != null ? documentParsingService : new DocumentParsingService(null);
         this.semanticCacheService = semanticCacheService;
         this.graphRagService = graphRagService;
+        this.pgChunkSearch = pgChunkSearch;
     }
 
     public SpringAiKnowledgeBaseProvider(KnowledgeDocumentChunkRepository chunkRepository,
@@ -92,7 +98,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                                          QueryTransformer queryTransformer,
                                          ContextBudgetPruner budgetPruner,
                                          DocumentParsingService documentParsingService) {
-        this(chunkRepository, knowledgeBaseRepository, documentChunker, embeddingService, keywordRetriever, queryTransformer, budgetPruner, documentParsingService, null, null);
+        this(chunkRepository, knowledgeBaseRepository, documentChunker, embeddingService, keywordRetriever, queryTransformer, budgetPruner, documentParsingService, null, null, null);
     }
 
     public SpringAiKnowledgeBaseProvider(KnowledgeDocumentChunkRepository chunkRepository,
@@ -102,7 +108,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                                          KeywordRetriever keywordRetriever,
                                          QueryTransformer queryTransformer,
                                          ContextBudgetPruner budgetPruner) {
-        this(chunkRepository, knowledgeBaseRepository, documentChunker, embeddingService, keywordRetriever, queryTransformer, budgetPruner, null, null, null);
+        this(chunkRepository, knowledgeBaseRepository, documentChunker, embeddingService, keywordRetriever, queryTransformer, budgetPruner, null, null, null, null);
     }
 
     @Override
@@ -228,11 +234,11 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 chunk.setImageUrl(docImageUrl);
                 chunk.setImageCaption(docImageCaption != null ? docImageCaption : piece.childContent());
                 chunk.setMatchedBy("TEXT_ONLY");
-                float[] vector = embeddingService.embedImage(docImageUrl, chunk.getImageCaption(), 1024);
-                chunk.setEmbedding(embeddingService.serializeVector(vector));
+                float[] vector = embeddingService.embedImage(docImageUrl, chunk.getImageCaption());
+                applyEmbedding(chunk, vector);
             } else {
-                float[] vector = embeddingService.embed(piece.childContent(), 1024);
-                chunk.setEmbedding(embeddingService.serializeVector(vector));
+                float[] vector = embeddingService.embed(piece.childContent());
+                applyEmbedding(chunk, vector);
             }
 
             Map<String, Object> meta = new LinkedHashMap<>();
@@ -353,8 +359,8 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         chunk.setTokenCount(tokens);
         chunk.setEnabled(true);
 
-        float[] vector = embeddingService.embed(combinedText, 1024);
-        chunk.setEmbedding(embeddingService.serializeVector(vector));
+        float[] vector = embeddingService.embed(combinedText);
+        applyEmbedding(chunk, vector);
 
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("sourceName", "FAQ: " + question);
@@ -411,7 +417,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 .topK(topK != null ? topK : 3)
                 .scoreThreshold(scoreThreshold != null ? scoreThreshold : 0.3)
                 .searchMethod("hybrid_search")
-                .rerankEnabled(true)
+                .rerankEnabled(false)
                 .vectorWeight(0.7)
                 .keywordWeight(0.3)
                 .rewriteEnabled(false)
@@ -446,11 +452,6 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
             }
         }
 
-        List<KnowledgeDocumentChunk> chunks = chunkRepository.findByKnowledgeBaseIdAndEnabledTrueOrderByChunkIndexAsc(kbId);
-        if (chunks.isEmpty()) {
-            return Collections.emptyList();
-        }
-
         // 2. Query 智能理解与改写 (P2 阶段)
         boolean rewriteEnabled = Boolean.TRUE.equals(request.rewriteEnabled());
         QueryTransformer.TransformResult transformResult = queryTransformer.transform(request.query(), rewriteEnabled, false);
@@ -460,60 +461,114 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         double threshold = request.scoreThreshold() != null ? request.scoreThreshold() : 0.3;
         String searchMethod = request.searchMethod() != null ? request.searchMethod().toLowerCase() : "hybrid_search";
         boolean rerankEnabled = Boolean.TRUE.equals(request.rerankEnabled());
-        double vectorWeight = request.vectorWeight() != null ? request.vectorWeight() : 0.7;
-        double keywordWeight = request.keywordWeight() != null ? request.keywordWeight() : 0.3;
 
         // P4: 多模态查询支持 (以文搜图、以图搜图)
         boolean isImageQuery = "IMAGE".equalsIgnoreCase(request.queryType())
                 || (request.queryImageUrl() != null && !request.queryImageUrl().isBlank());
+        int embedDim = embeddingService.resolveDimension();
         float[] queryVec = isImageQuery
-                ? embeddingService.embedImage(request.queryImageUrl(), effectiveQuery, 1024)
-                : embeddingService.embed(effectiveQuery, 1024);
+                ? embeddingService.embedImage(request.queryImageUrl(), effectiveQuery, embedDim)
+                : embeddingService.embed(effectiveQuery, embedDim);
+
+        int recallK = Math.max(50, topK * 8);
+        List<String> vectorIds = new ArrayList<>();
+        List<String> keywordIds = new ArrayList<>();
+        Map<String, Double> vectorScoreById = new HashMap<>();
+        Map<String, Double> keywordScoreById = new HashMap<>();
+
+        boolean usedPg = false;
+        if (pgChunkSearch != null && !isImageQuery) {
+            if (!"keyword_search".equals(searchMethod)) {
+                List<PgChunkSearch.Hit> vHits = pgChunkSearch.vectorSearch(kbId, queryVec, recallK);
+                for (int i = 0; i < vHits.size(); i++) {
+                    PgChunkSearch.Hit hit = vHits.get(i);
+                    vectorIds.add(hit.id());
+                    vectorScoreById.put(hit.id(), 1.0 - hit.distanceOrRank());
+                }
+            }
+            if (!"semantic_search".equals(searchMethod)) {
+                List<PgChunkSearch.Hit> kHits = pgChunkSearch.keywordSearch(kbId, effectiveQuery, recallK);
+                for (PgChunkSearch.Hit hit : kHits) {
+                    keywordIds.add(hit.id());
+                    keywordScoreById.put(hit.id(), hit.distanceOrRank());
+                }
+            }
+            usedPg = !vectorIds.isEmpty() || !keywordIds.isEmpty();
+        }
+
+        List<KnowledgeDocumentChunk> rankedChunks;
+        if (usedPg) {
+            List<String> fused = fuseIds(searchMethod, vectorIds, keywordIds);
+            rankedChunks = loadInOrder(fused);
+        } else {
+            List<KnowledgeDocumentChunk> allChunks = chunkRepository.findByKnowledgeBaseIdAndEnabledTrueOrderByChunkIndexAsc(kbId);
+            if (allChunks.isEmpty()) {
+                return Collections.emptyList();
+            }
+            List<ScoredChunk> vectorRanked = new ArrayList<>();
+            List<ScoredChunk> keywordRanked = new ArrayList<>();
+            for (KnowledgeDocumentChunk chunk : allChunks) {
+                float[] chunkVec = embeddingService.deserializeVector(chunk.getEmbedding());
+                double vectorScore = (chunkVec.length > 0) ? embeddingService.cosineSimilarity(queryVec, chunkVec) : 0.0;
+                double keywordScore = keywordRetriever.computeScore(effectiveQuery, chunk.getContent());
+                vectorScoreById.put(chunk.getId(), vectorScore);
+                keywordScoreById.put(chunk.getId(), keywordScore);
+                vectorRanked.add(new ScoredChunk(chunk, vectorScore, vectorScore, keywordScore, vectorScore, "TEXT_ONLY"));
+                keywordRanked.add(new ScoredChunk(chunk, keywordScore, vectorScore, keywordScore, keywordScore, "TEXT_ONLY"));
+            }
+            vectorRanked.sort(Comparator.comparingDouble(ScoredChunk::finalScore).reversed());
+            keywordRanked.sort(Comparator.comparingDouble(ScoredChunk::finalScore).reversed());
+            int cap = Math.min(recallK, allChunks.size());
+            for (int i = 0; i < cap; i++) {
+                vectorIds.add(vectorRanked.get(i).chunk().getId());
+                keywordIds.add(keywordRanked.get(i).chunk().getId());
+            }
+            List<String> fused = fuseIds(searchMethod, vectorIds, keywordIds);
+            Map<String, KnowledgeDocumentChunk> byId = new LinkedHashMap<>();
+            for (KnowledgeDocumentChunk chunk : allChunks) {
+                byId.put(chunk.getId(), chunk);
+            }
+            rankedChunks = new ArrayList<>();
+            for (String id : fused) {
+                KnowledgeDocumentChunk chunk = byId.get(id);
+                if (chunk != null) {
+                    rankedChunks.add(chunk);
+                }
+            }
+        }
+        if (rankedChunks.isEmpty()) {
+            return Collections.emptyList();
+        }
 
         List<ScoredChunk> candidates = new ArrayList<>();
-        for (KnowledgeDocumentChunk chunk : chunks) {
-            float[] chunkVec = embeddingService.deserializeVector(chunk.getEmbedding());
-            double vectorScore = (chunkVec.length > 0) ? embeddingService.cosineSimilarity(queryVec, chunkVec) : 0.0;
-            double keywordScore = keywordRetriever.computeScore(effectiveQuery, chunk.getContent());
-
+        for (KnowledgeDocumentChunk chunk : rankedChunks) {
+            double vectorScore = vectorScoreById.getOrDefault(chunk.getId(), 0.0);
+            double keywordScore = keywordScoreById.getOrDefault(chunk.getId(),
+                    keywordRetriever.computeScore(effectiveQuery, chunk.getContent()));
+            double rrf = RrfFusion.scoreOf(chunk.getId(), vectorIds, keywordIds, RrfFusion.DEFAULT_K);
             boolean isChunkImage = "IMAGE".equalsIgnoreCase(chunk.getChunkType())
                     || (chunk.getImageUrl() != null && !chunk.getImageUrl().isBlank());
             String matchedBy = "TEXT_ONLY";
             if (isChunkImage) {
-                if (isImageQuery || vectorScore > 0.65) {
-                    matchedBy = "IMAGE_VECTOR";
-                } else if (keywordScore > 0.25) {
-                    matchedBy = "CAPTION";
-                } else {
-                    matchedBy = "IMAGE_VECTOR";
-                }
+                matchedBy = (isImageQuery || vectorScore > 0.65) ? "IMAGE_VECTOR" : "CAPTION";
+            } else if (keywordScore >= vectorScore) {
+                matchedBy = "KEYWORD";
             }
 
-            double fusedScore;
+            boolean keep;
             if ("semantic_search".equals(searchMethod)) {
-                fusedScore = vectorScore;
+                keep = vectorScore >= threshold;
             } else if ("keyword_search".equals(searchMethod)) {
-                fusedScore = keywordScore;
+                keep = keywordScore >= Math.min(threshold, 0.2);
             } else {
-                fusedScore = (vectorWeight * vectorScore) + (keywordWeight * keywordScore);
+                keep = vectorScore >= threshold || keywordScore >= 0.2 || rrf > 0;
             }
-
-            double rerankScore = fusedScore;
-            if (rerankEnabled) {
-                if (chunk.getContent() != null && chunk.getContent().toLowerCase().contains(effectiveQuery.toLowerCase().trim())) {
-                    rerankScore = Math.min(1.0, fusedScore * 1.25);
-                } else if (keywordScore > 0.6) {
-                    rerankScore = Math.min(1.0, fusedScore * 1.12);
-                }
+            if (!keep) {
+                continue;
             }
-
-            double finalScore = rerankEnabled ? rerankScore : fusedScore;
-            if (finalScore >= threshold) {
-                candidates.add(new ScoredChunk(chunk, finalScore, vectorScore, keywordScore, rerankScore, matchedBy));
-            }
+            candidates.add(new ScoredChunk(chunk, rrf > 0 ? rrf : Math.max(vectorScore, keywordScore),
+                    vectorScore, keywordScore, rrf, matchedBy));
         }
-
-        candidates.sort(Comparator.comparingDouble(ScoredChunk::finalScore).reversed());
 
         // 3. 父子切片回溯展开与跨段去重 (P2 阶段)
         boolean expandParent = request.expandParent() == null || Boolean.TRUE.equals(request.expandParent());
@@ -583,7 +638,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                     .vectorScore(round4(sc.vectorScore()))
                     .keywordScore(round4(sc.keywordScore()))
                     .rerankScore(round4(sc.rerankScore()))
-                    .matchType(rerankEnabled ? "RERANK" : ("semantic_search".equals(searchMethod) ? "VECTOR" : "HYBRID"))
+                    .matchType("hybrid_search".equals(searchMethod) ? "HYBRID" : ("keyword_search".equals(searchMethod) ? "KEYWORD" : "VECTOR"))
                     .tokenCount((int) finalTokens)
                     .imageUrl(ch.getImageUrl())
                     .imageCaption(ch.getImageCaption())
@@ -661,8 +716,8 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         int count = 0;
         for (KnowledgeDocumentChunk ch : chunks) {
             if ("IMAGE".equalsIgnoreCase(ch.getChunkType()) || (ch.getImageUrl() != null && !ch.getImageUrl().isBlank())) {
-                float[] vec = embeddingService.embedImage(ch.getImageUrl(), ch.getImageCaption(), 1024);
-                ch.setEmbedding(embeddingService.serializeVector(vec));
+                float[] vec = embeddingService.embedImage(ch.getImageUrl(), ch.getImageCaption());
+                applyEmbedding(ch, vec);
                 ch.setMatchedBy("IMAGE_VECTOR");
                 chunkRepository.save(ch);
                 count++;
@@ -673,6 +728,39 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         }
         log.info("图片向量回填重计算完成: kbId={}, count={}", kbId, count);
         return count;
+    }
+
+    private void applyEmbedding(KnowledgeDocumentChunk chunk, float[] vector) {
+        chunk.setEmbedding(embeddingService.serializeVector(vector));
+        chunk.setEmbeddingDim(vector != null ? vector.length : null);
+    }
+
+    private List<String> fuseIds(String searchMethod, List<String> vectorIds, List<String> keywordIds) {
+        if ("semantic_search".equals(searchMethod)) {
+            return vectorIds;
+        }
+        if ("keyword_search".equals(searchMethod)) {
+            return keywordIds;
+        }
+        return RrfFusion.fuse(vectorIds, keywordIds, RrfFusion.DEFAULT_K);
+    }
+
+    private List<KnowledgeDocumentChunk> loadInOrder(List<String> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return new ArrayList<>();
+        }
+        Map<String, KnowledgeDocumentChunk> byId = new LinkedHashMap<>();
+        for (KnowledgeDocumentChunk chunk : chunkRepository.findAllById(ids)) {
+            byId.put(chunk.getId(), chunk);
+        }
+        List<KnowledgeDocumentChunk> ordered = new ArrayList<>();
+        for (String id : ids) {
+            KnowledgeDocumentChunk chunk = byId.get(id);
+            if (chunk != null) {
+                ordered.add(chunk);
+            }
+        }
+        return ordered;
     }
 
     private String resolveKnowledgeBaseId(String externalDatasetId) {

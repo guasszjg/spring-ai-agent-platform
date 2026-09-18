@@ -133,7 +133,7 @@ public class SemanticCacheService {
 
         // 3. 向量语义相似度匹配 (余弦相似度 >= similarityThreshold)
         if (queryVector == null || queryVector.length == 0) {
-            queryVector = embeddingService.embed(query, 1024);
+            queryVector = embeddingService.embed(query);
         }
 
         List<KnowledgeRetrievalCache> allCached = cacheRepository.findByKnowledgeBaseId(kbId);
@@ -199,7 +199,7 @@ public class SemanticCacheService {
 
             String serializedVector = (queryVector != null && queryVector.length > 0)
                     ? embeddingService.serializeVector(queryVector)
-                    : embeddingService.serializeVector(embeddingService.embed(query, 1024));
+                    : embeddingService.serializeVector(embeddingService.embed(query));
 
             String resultJson = objectMapper.writeValueAsString(chunks);
 
@@ -221,7 +221,7 @@ public class SemanticCacheService {
             String cacheId = (saved != null && saved.getId() != null) ? saved.getId() : entity.getId();
 
             // 保存到一级内存
-            float[] finalVec = (queryVector != null && queryVector.length > 0) ? queryVector : embeddingService.embed(query, 1024);
+            float[] finalVec = (queryVector != null && queryVector.length > 0) ? queryVector : embeddingService.embed(query);
             putMemory(kbId, normalizedQuery, cacheId, finalVec, chunks, 1L, 0L, expiresAt);
 
             log.debug("语义缓存写入完成: kbId={}, query='{}', chunkCount={}", kbId, query, chunks.size());

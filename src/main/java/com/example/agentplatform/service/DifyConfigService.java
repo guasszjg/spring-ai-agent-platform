@@ -157,24 +157,45 @@ public class DifyConfigService {
     public Map<String, Object> probe(String id) {
         DifyConfig entity = repository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("未找到对应的 Dify 配置: " + id));
+        Map<String, Object> result = ping(entity.getBaseUrl(), decryptKey(entity.getApiKeyEncrypted()));
+        boolean ok = Boolean.TRUE.equals(result.get("success"));
+        entity.setLastProbeStatus(ok ? "SUCCESS" : "FAILED");
+        entity.setLastProbeMessage(String.valueOf(result.get("message")));
+        entity.setLastProbeAt(LocalDateTime.now());
+        repository.save(entity);
+        return result;
+    }
 
-        String plainKey = decryptKey(entity.getApiKeyEncrypted());
-        String baseUrl = entity.getBaseUrl();
+    public Map<String, Object> probeDraft(DifyConfigRequest req) {
+        if (req == null || req.getBaseUrl() == null || req.getBaseUrl().isBlank()) {
+            throw new IllegalArgumentException("请先填写 Dify 服务器 API 地址");
+        }
+        String apiKey = req.getApiKey() != null ? req.getApiKey().trim() : "";
+        if (apiKey.isBlank() && req.getId() != null && !req.getId().isBlank()) {
+            apiKey = repository.findById(req.getId())
+                    .map(cfg -> decryptKey(cfg.getApiKeyEncrypted()))
+                    .orElse("");
+        }
+        if (apiKey.isBlank()) {
+            throw new IllegalArgumentException("请填写 Dify Dataset API Key");
+        }
+        return ping(req.getBaseUrl(), apiKey);
+    }
 
+    private Map<String, Object> ping(String baseUrl, String plainKey) {
+        if (baseUrl == null || baseUrl.isBlank()) {
+            throw new IllegalArgumentException("Dify 接口地址不能为空");
+        }
         long start = System.currentTimeMillis();
         try {
-            String endpoint = baseUrl;
-            if (!endpoint.endsWith("/datasets")) {
-                while (endpoint.endsWith("/")) {
-                    endpoint = endpoint.substring(0, endpoint.length() - 1);
-                }
+            String endpoint = normalizeDifyBaseUrl(baseUrl);
+            if (!endpoint.contains("/datasets")) {
                 endpoint = endpoint + "/datasets?page=1&limit=1";
             }
 
             SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
             factory.setConnectTimeout(Duration.ofSeconds(10));
             factory.setReadTimeout(Duration.ofSeconds(20));
-
             RestClient client = RestClient.builder().requestFactory(factory).build();
 
             String respBody = client.get()
@@ -184,7 +205,6 @@ public class DifyConfigService {
                     .body(String.class);
 
             long cost = System.currentTimeMillis() - start;
-
             int datasetCount = 0;
             JsonNode root = objectMapper.readTree(respBody);
             if (root.has("total")) {
@@ -192,14 +212,10 @@ public class DifyConfigService {
             } else if (root.has("data") && root.get("data").isArray()) {
                 datasetCount = root.get("data").size();
             }
-
             String msg = "连通正常！Dify 服务响应成功 (检测到 " + datasetCount + " 个远程知识库，耗时 " + cost + "ms)";
-            entity.setLastProbeStatus("SUCCESS");
-            entity.setLastProbeMessage(msg);
-            entity.setLastProbeAt(LocalDateTime.now());
-            repository.save(entity);
-
             return Map.of("success", true, "message", msg, "datasetCount", datasetCount, "costMs", cost);
+        } catch (IllegalArgumentException e) {
+            throw e;
         } catch (Exception e) {
             long cost = System.currentTimeMillis() - start;
             String err = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
@@ -208,13 +224,7 @@ public class DifyConfigService {
             } else if (err.contains("404")) {
                 err = "404 Not Found (接口路径错误，请确认是否为 Dify /v1 接口地址)";
             }
-            String msg = "连通失败: " + err + " (耗时 " + cost + "ms)";
-            entity.setLastProbeStatus("FAILED");
-            entity.setLastProbeMessage(msg);
-            entity.setLastProbeAt(LocalDateTime.now());
-            repository.save(entity);
-
-            return Map.of("success", false, "message", msg, "costMs", cost);
+            return Map.of("success", false, "message", "连通失败: " + err + " (耗时 " + cost + "ms)", "costMs", cost);
         }
     }
 

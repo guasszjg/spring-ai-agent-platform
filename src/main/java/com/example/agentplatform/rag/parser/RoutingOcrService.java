@@ -1,17 +1,12 @@
 package com.example.agentplatform.rag.parser;
 
+import com.example.agentplatform.service.OcrConfigService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
-/**
- * 路由 OCR 门面服务 (Routing OCR Facade)
- * 同时支持两种可选模式：
- * 1. LOCAL_PADDLE_OCR: 本地部署 (PaddleOCR / PP-Structure，100% 数据不出内网，私有化闭环)
- * 2. ONLINE_API: 在线云端 API (通义千问-VL / OpenAI / 云厂商标准 Vision OCR API，开箱即用零本地运维)
- */
 @Primary
 @Service
 public class RoutingOcrService implements OcrService {
@@ -20,21 +15,36 @@ public class RoutingOcrService implements OcrService {
 
     private final LocalPaddleOcrService localPaddleOcrService;
     private final OnlineCloudOcrService onlineCloudOcrService;
+    private final OcrConfigService ocrConfigService;
 
-    @Value("${app.rag.ocr.provider:LOCAL_PADDLE_OCR}")
-    private String providerMode; // "LOCAL_PADDLE_OCR" 或 "ONLINE_API"
+    private String providerMode = "LOCAL_PADDLE_OCR";
 
     public RoutingOcrService(LocalPaddleOcrService localPaddleOcrService,
                              OnlineCloudOcrService onlineCloudOcrService) {
+        this(localPaddleOcrService, onlineCloudOcrService, null);
+    }
+
+    @Autowired
+    public RoutingOcrService(LocalPaddleOcrService localPaddleOcrService,
+                             OnlineCloudOcrService onlineCloudOcrService,
+                             @Autowired(required = false) OcrConfigService ocrConfigService) {
         this.localPaddleOcrService = localPaddleOcrService;
         this.onlineCloudOcrService = onlineCloudOcrService;
+        this.ocrConfigService = ocrConfigService;
     }
 
     private OcrService getActiveService() {
-        if ("ONLINE_API".equalsIgnoreCase(providerMode) || "CLOUD_API".equalsIgnoreCase(providerMode)) {
+        if (resolved().online()) {
             return onlineCloudOcrService;
         }
         return localPaddleOcrService;
+    }
+
+    private ResolvedOcrSettings resolved() {
+        if (ocrConfigService != null) {
+            return ocrConfigService.resolve();
+        }
+        return new ResolvedOcrSettings(providerMode, false, null, null, null, 30);
     }
 
     @Override

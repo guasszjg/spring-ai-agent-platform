@@ -73,6 +73,9 @@ public class KnowledgeDocumentChunk {
     @Column(columnDefinition = "TEXT")
     private String embedding;
 
+    @Column(name = "embedding_dim")
+    private Integer embeddingDim;
+
     /**
      * 扩展元数据 (JSON)，包含 sourceName, pageNumber 等
      */
@@ -165,6 +168,9 @@ public class KnowledgeDocumentChunk {
 
     public String getEmbedding() { return embedding; }
     public void setEmbedding(String embedding) { this.embedding = embedding; }
+
+    public Integer getEmbeddingDim() { return embeddingDim; }
+    public void setEmbeddingDim(Integer embeddingDim) { this.embeddingDim = embeddingDim; }
 
     public String getMetadataJson() { return metadataJson; }
     public void setMetadataJson(String metadataJson) { this.metadataJson = metadataJson; }

@@ -47,43 +47,55 @@ public class LocalEmbeddingService {
         this.embeddingConfigService = embeddingConfigService;
     }
 
+    public int resolveDimension() {
+        if (embeddingConfigService != null) {
+            var active = embeddingConfigService.getActiveConfig();
+            if (active.isPresent() && active.get().getDimension() != null && active.get().getDimension() > 0) {
+                return active.get().getDimension();
+            }
+        }
+        return DEFAULT_DIMENSION;
+    }
+
     /**
-     * 生成文本的 1024 维 Embedding 稠密向量 (已完成 L2 归一化)
+     * 生成 Embedding（L2 归一化）。维度取自激活配置；仅在未配置任何模型时允许哈希投影（测试/离线骨架）。
      */
     public float[] embed(String text, int dimension) {
         if (text == null || text.isBlank()) {
-            return new float[dimension > 0 ? dimension : DEFAULT_DIMENSION];
+            return new float[dimension > 0 ? dimension : resolveDimension()];
         }
-        int targetDim = dimension > 0 ? dimension : DEFAULT_DIMENSION;
+        int targetDim = dimension > 0 ? dimension : resolveDimension();
+        boolean hasConfiguredModel = false;
 
-        // 1. 优先调用数据库中当前激活的向量模型配置
         if (embeddingConfigService != null) {
-            try {
-                var activeOpt = embeddingConfigService.getActiveConfig();
-                if (activeOpt.isPresent()) {
-                    float[] dynamicVec = callDynamicEmbedding(activeOpt.get(), text);
-                    if (dynamicVec != null && dynamicVec.length > 0) {
-                        return normalizeAndProject(dynamicVec, targetDim);
-                    }
+            var activeOpt = embeddingConfigService.getActiveConfig();
+            if (activeOpt.isPresent()) {
+                hasConfiguredModel = true;
+                float[] dynamicVec = callDynamicEmbedding(activeOpt.get(), text);
+                if (dynamicVec == null || dynamicVec.length == 0) {
+                    throw new IllegalStateException("激活的 Embedding 模型未返回向量，已拒绝哈希投影兜底");
                 }
-            } catch (Exception e) {
-                log.debug("调用数据库激活的动态 Embedding 异常，自动降级: {}", e.getMessage());
+                return normalizeExact(dynamicVec, targetDim, true);
             }
         }
 
-        // 2. 其次调用 Spring AI 注册的全局默认 EmbeddingModel
         if (embeddingModel != null) {
             try {
                 float[] vector = embeddingModel.embed(text);
                 if (vector != null && vector.length > 0) {
-                    return normalizeAndProject(vector, targetDim);
+                    return normalizeExact(vector, targetDim, hasConfiguredModel);
                 }
-            } catch (Exception e) {
-                log.debug("调用外部 EmbeddingModel 失败，平滑降级至平台内置语义特征投影: {}", e.getMessage());
+            } catch (RuntimeException e) {
+                if (hasConfiguredModel) {
+                    throw e;
+                }
+                log.debug("调用外部 EmbeddingModel 失败，使用特征投影: {}", e.getMessage());
             }
         }
 
-        // 3. 兜底平滑降级至高维确定性语义特征投影
+        if (hasConfiguredModel) {
+            throw new IllegalStateException("Embedding 模型调用失败，已拒绝静默降级");
+        }
         return fallbackSemanticProjection(text, targetDim);
     }
 
@@ -134,13 +146,13 @@ public class LocalEmbeddingService {
                 }
             }
         } catch (Exception e) {
-            log.debug("调用动态 Embedding 接口失败: {}", e.getMessage());
+            throw new IllegalStateException("调用动态 Embedding 接口失败: " + e.getMessage(), e);
         }
         return null;
     }
 
     public float[] embed(String text) {
-        return embed(text, DEFAULT_DIMENSION);
+        return embed(text, resolveDimension());
     }
 
     /**
@@ -153,7 +165,7 @@ public class LocalEmbeddingService {
     }
 
     public float[] embedImage(String imageRef, String caption) {
-        return embedImage(imageRef, caption, DEFAULT_DIMENSION);
+        return embedImage(imageRef, caption, resolveDimension());
     }
 
     /**
@@ -169,8 +181,7 @@ public class LocalEmbeddingService {
         for (int i = 0; i < len; i++) {
             dot += v1[i] * v2[i];
         }
-        // 约束到 0.0 ~ 1.0 区间
-        return Math.max(0.0, Math.min(1.0, (dot + 1.0) / 2.0));
+        return Math.max(-1.0, Math.min(1.0, dot));
     }
 
     /**
@@ -224,22 +235,29 @@ public class LocalEmbeddingService {
         }
     }
 
-    private float[] normalizeAndProject(float[] original, int targetDim) {
-        float[] res = new float[targetDim];
-        int copyLen = Math.min(original.length, targetDim);
-        System.arraycopy(original, 0, res, 0, copyLen);
-
+    private float[] normalizeExact(float[] original, int targetDim, boolean strictDimension) {
+        if (original.length != targetDim) {
+            if (strictDimension) {
+                throw new IllegalStateException(
+                        "Embedding 维度不一致：模型返回 " + original.length + "，索引期望 " + targetDim
+                                + "。请在网关探测维度后重建索引，禁止截断。");
+            }
+            log.warn("Embedding 维度 {} 与目标 {} 不一致，仅在无配置模型时按较短长度对齐", original.length, targetDim);
+            float[] aligned = new float[targetDim];
+            System.arraycopy(original, 0, aligned, 0, Math.min(original.length, targetDim));
+            original = aligned;
+        }
         double sumSq = 0.0;
-        for (float v : res) {
+        for (float v : original) {
             sumSq += v * v;
         }
         if (sumSq > 0.0) {
             float norm = (float) Math.sqrt(sumSq);
-            for (int i = 0; i < res.length; i++) {
-                res[i] /= norm;
+            for (int i = 0; i < original.length; i++) {
+                original[i] /= norm;
             }
         }
-        return res;
+        return original;
     }
 
     /**

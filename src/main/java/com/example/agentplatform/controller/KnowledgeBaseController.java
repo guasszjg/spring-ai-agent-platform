@@ -18,7 +18,11 @@ import com.example.agentplatform.rag.engine.ShadowEvaluationResult;
 import com.example.agentplatform.rag.cache.SemanticCacheService;
 import com.example.agentplatform.rag.graph.GraphRagService;
 import com.example.agentplatform.rag.offline.OfflineRagGovernanceService;
+import com.example.agentplatform.model.RagEvalCase;
+import com.example.agentplatform.model.RagEvalRun;
+import com.example.agentplatform.model.RagEvalSet;
 import com.example.agentplatform.service.KnowledgeBaseService;
+import com.example.agentplatform.service.RagEvaluationService;
 import com.example.agentplatform.security.CurrentActor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -41,9 +45,12 @@ import java.util.Map;
 public class KnowledgeBaseController {
 
     private final KnowledgeBaseService knowledgeBaseService;
+    private final RagEvaluationService ragEvaluationService;
 
-    public KnowledgeBaseController(KnowledgeBaseService knowledgeBaseService) {
+    public KnowledgeBaseController(KnowledgeBaseService knowledgeBaseService,
+                                   RagEvaluationService ragEvaluationService) {
         this.knowledgeBaseService = knowledgeBaseService;
+        this.ragEvaluationService = ragEvaluationService;
     }
 
     private boolean checkAdmin() {
@@ -381,6 +388,73 @@ public class KnowledgeBaseController {
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("获取知识图谱失败: " + e.getMessage()));
         }
+    }
+
+    @PostMapping("/{id}/eval-cases")
+    public ResponseEntity<ApiResponse<RagEvalCase>> saveEvalCase(
+            @PathVariable String id,
+            @RequestBody Map<String, Object> body) {
+        try {
+            String query = body.get("query") != null ? String.valueOf(body.get("query")) : null;
+            List<String> chunkIds = toStringList(body.get("expectedChunkIds"));
+            List<String> docIds = toStringList(body.get("expectedDocumentIds"));
+            RagEvalCase saved = ragEvaluationService.saveCase(id, query, chunkIds, docIds, CurrentActor.get());
+            return ResponseEntity.ok(ApiResponse.ok("评测用例已保存", saved));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @GetMapping("/{id}/eval-cases")
+    public ResponseEntity<ApiResponse<List<RagEvalCase>>> listEvalCases(@PathVariable String id) {
+        return ResponseEntity.ok(ApiResponse.ok(ragEvaluationService.listCases(id, CurrentActor.get())));
+    }
+
+    @PostMapping("/{id}/eval-sets/freeze")
+    public ResponseEntity<ApiResponse<RagEvalSet>> freezeEvalSet(@PathVariable String id) {
+        try {
+            return ResponseEntity.ok(ApiResponse.ok("评测集已冻结", ragEvaluationService.freeze(id, CurrentActor.get())));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{id}/eval-runs")
+    public ResponseEntity<ApiResponse<RagEvalRun>> runEval(
+            @PathVariable String id,
+            @RequestParam(defaultValue = "SPRING_AI") String engine) {
+        try {
+            RagEvalRun run = ragEvaluationService.run(id, engine, CurrentActor.get());
+            return ResponseEntity.ok(ApiResponse.ok("评测跑分完成", run));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(ApiResponse.error("评测失败: " + e.getMessage()));
+        }
+    }
+
+    @GetMapping("/{id}/eval-runs")
+    public ResponseEntity<ApiResponse<List<RagEvalRun>>> listEvalRuns(@PathVariable String id) {
+        return ResponseEntity.ok(ApiResponse.ok(ragEvaluationService.listRuns(id, CurrentActor.get())));
+    }
+
+    private static List<String> toStringList(Object raw) {
+        if (raw == null) {
+            return List.of();
+        }
+        if (raw instanceof List<?> list) {
+            List<String> out = new java.util.ArrayList<>();
+            for (Object item : list) {
+                if (item != null && !String.valueOf(item).isBlank()) {
+                    out.add(String.valueOf(item));
+                }
+            }
+            return out;
+        }
+        return List.of(String.valueOf(raw));
     }
 
     @GetMapping("/{id}/offline-status")

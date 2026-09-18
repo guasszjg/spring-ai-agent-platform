@@ -13,8 +13,11 @@ import com.example.agentplatform.model.DifyConfigRequest;
 import com.example.agentplatform.model.DifyConfigView;
 import com.example.agentplatform.model.EmbeddingConfigRequest;
 import com.example.agentplatform.model.EmbeddingConfigView;
+import com.example.agentplatform.model.OcrConfigRequest;
+import com.example.agentplatform.model.OcrConfigView;
 import com.example.agentplatform.service.DifyConfigService;
 import com.example.agentplatform.service.EmbeddingConfigService;
+import com.example.agentplatform.service.OcrConfigService;
 import com.example.agentplatform.service.LlmGatewayService;
 import com.example.agentplatform.service.LlmVendorCatalog;
 import org.springframework.http.HttpStatus;
@@ -42,13 +45,16 @@ public class ModelGatewayController {
     private final LlmGatewayService gatewayService;
     private final EmbeddingConfigService embeddingConfigService;
     private final DifyConfigService difyConfigService;
+    private final OcrConfigService ocrConfigService;
 
     public ModelGatewayController(LlmGatewayService gatewayService,
                                   EmbeddingConfigService embeddingConfigService,
-                                  DifyConfigService difyConfigService) {
+                                  DifyConfigService difyConfigService,
+                                  OcrConfigService ocrConfigService) {
         this.gatewayService = gatewayService;
         this.embeddingConfigService = embeddingConfigService;
         this.difyConfigService = difyConfigService;
+        this.ocrConfigService = ocrConfigService;
     }
 
     private boolean checkAdmin() {
@@ -263,6 +269,22 @@ public class ModelGatewayController {
         }
     }
 
+    @PostMapping("/embeddings/test-connection")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> testEmbeddingConnection(@RequestBody EmbeddingConfigRequest request) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可测试向量模型连通性"));
+        }
+        try {
+            Map<String, Object> result = embeddingConfigService.probeDraft(request);
+            boolean success = Boolean.TRUE.equals(result.get("success"));
+            String msg = (String) result.get("message");
+            return ResponseEntity.ok(success ? ApiResponse.ok(msg, result) : ApiResponse.error(msg, result));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
     @PostMapping("/embeddings/{id}/probe")
     public ResponseEntity<ApiResponse<Map<String, Object>>> probeEmbedding(@PathVariable String id) {
         if (!checkAdmin()) {
@@ -341,6 +363,118 @@ public class ModelGatewayController {
         try {
             difyConfigService.delete(id);
             return ResponseEntity.ok(ApiResponse.ok("Dify 配置已删除", null));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @GetMapping("/ocr")
+    public ResponseEntity<ApiResponse<List<OcrConfigView>>> listOcr() {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可查看 OCR 配置"));
+        }
+        return ResponseEntity.ok(ApiResponse.ok(ocrConfigService.listViews()));
+    }
+
+    @PostMapping("/ocr")
+    public ResponseEntity<ApiResponse<OcrConfigView>> createOcr(@RequestBody OcrConfigRequest request) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可配置 OCR"));
+        }
+        try {
+            return ResponseEntity.ok(ApiResponse.ok("OCR 配置已创建", ocrConfigService.create(request)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PutMapping("/ocr/{id}")
+    public ResponseEntity<ApiResponse<OcrConfigView>> updateOcr(@PathVariable String id,
+                                                               @RequestBody OcrConfigRequest request) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可更新 OCR"));
+        }
+        try {
+            return ResponseEntity.ok(ApiResponse.ok("OCR 配置已更新", ocrConfigService.update(id, request)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/ocr/{id}/activate")
+    public ResponseEntity<ApiResponse<Void>> activateOcr(@PathVariable String id) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可切换激活 OCR"));
+        }
+        try {
+            ocrConfigService.activate(id);
+            return ResponseEntity.ok(ApiResponse.ok("OCR 已设为当前激活生效", null));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/ocr/{id}")
+    public ResponseEntity<ApiResponse<Void>> deleteOcr(@PathVariable String id) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可删除 OCR 配置"));
+        }
+        try {
+            ocrConfigService.delete(id);
+            return ResponseEntity.ok(ApiResponse.ok("OCR 配置已删除", null));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/ocr/test-connection")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> testOcrConnection(@RequestBody OcrConfigRequest request) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可测试 OCR 连通性"));
+        }
+        try {
+            Map<String, Object> result = ocrConfigService.probeDraft(request);
+            boolean success = Boolean.TRUE.equals(result.get("success"));
+            String msg = (String) result.get("message");
+            return ResponseEntity.ok(success ? ApiResponse.ok(msg, result) : ApiResponse.error(msg, result));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/ocr/{id}/probe")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> probeOcr(@PathVariable String id) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可测试 OCR 连通性"));
+        }
+        try {
+            Map<String, Object> result = ocrConfigService.probe(id);
+            boolean success = Boolean.TRUE.equals(result.get("success"));
+            String msg = (String) result.get("message");
+            return ResponseEntity.ok(success ? ApiResponse.ok(msg, result) : ApiResponse.error(msg, result));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/dify/test-connection")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> testDifyConnection(@RequestBody DifyConfigRequest request) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可测试 Dify 连通性"));
+        }
+        try {
+            Map<String, Object> result = difyConfigService.probeDraft(request);
+            boolean success = Boolean.TRUE.equals(result.get("success"));
+            String msg = (String) result.get("message");
+            return ResponseEntity.ok(success ? ApiResponse.ok(msg, result) : ApiResponse.error(msg, result));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
         }
