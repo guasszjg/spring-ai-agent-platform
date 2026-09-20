@@ -85,7 +85,8 @@ class MultiTenantSecurityRegressionTest {
                 toolSecretRepository,
                 agentRepository,
                 secretCrypto,
-                resourceAuthService
+                resourceAuthService,
+                mock(PlatformToolService.class)
         );
 
         agentService = new AgentService(
@@ -127,6 +128,7 @@ class MultiTenantSecurityRegressionTest {
                 null,
                 null,
                 toolSecretService,
+                null,
                 knowledgeBaseService,
                 resourceAuthService,
                 null,

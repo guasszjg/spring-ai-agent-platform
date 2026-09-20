@@ -9,6 +9,8 @@ import com.example.agentplatform.security.CurrentActor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Comparator;
+
 @Service
 @Transactional
 public class AgentToolSecretService {
@@ -17,15 +19,18 @@ public class AgentToolSecretService {
     private final AgentRepository agentRepository;
     private final SecretCrypto secretCrypto;
     private final ResourceAuthorizationService authService;
+    private final PlatformToolService platformToolService;
 
     public AgentToolSecretService(AgentToolSecretRepository secretRepository,
                                   AgentRepository agentRepository,
                                   SecretCrypto secretCrypto,
-                                  ResourceAuthorizationService authService) {
+                                  ResourceAuthorizationService authService,
+                                  PlatformToolService platformToolService) {
         this.secretRepository = secretRepository;
         this.agentRepository = agentRepository;
         this.secretCrypto = secretCrypto;
         this.authService = authService;
+        this.platformToolService = platformToolService;
     }
 
     public void saveBochaApiKey(String agentId, String apiKey) {
@@ -51,14 +56,11 @@ public class AgentToolSecretService {
 
     @Transactional(readOnly = true)
     public String getBochaApiKey(String agentId) {
-        if (agentId == null || agentId.isBlank()) {
-            return null;
+        String specific = decryptBochaApiKey(agentId);
+        if (specific != null) {
+            return specific;
         }
-        return secretRepository.findById(agentId)
-                .map(AgentToolSecret::getBochaApiKeyEncrypted)
-                .filter(value -> value != null && !value.isBlank())
-                .map(secretCrypto::decrypt)
-                .orElse(null);
+        return getInheritedPlatformBochaApiKey(agentId);
     }
 
     @Transactional(readOnly = true)
@@ -83,10 +85,38 @@ public class AgentToolSecretService {
         if (actor != null && !authService.canViewAgent(actor, agent)) {
             return false;
         }
+        return decryptBochaApiKey(agentId) != null;
+    }
+
+    private String decryptBochaApiKey(String agentId) {
+        if (agentId == null || agentId.isBlank()) {
+            return null;
+        }
         return secretRepository.findById(agentId)
                 .map(AgentToolSecret::getBochaApiKeyEncrypted)
                 .filter(value -> value != null && !value.isBlank())
-                .isPresent();
+                .map(secretCrypto::decrypt)
+                .orElse(null);
+    }
+
+    /**
+     * 个人智能体未单独配置 Bocha Key 时，优先使用工具管理页的平台密钥，
+     * 再回退系统公共智能体上已保存的密钥。不读取其他开发者私有智能体的密钥。
+     */
+    private String getInheritedPlatformBochaApiKey(String excludeAgentId) {
+        if (platformToolService != null) {
+            String catalogKey = platformToolService.getBochaApiKey();
+            if (catalogKey != null && !catalogKey.isBlank()) {
+                return catalogKey;
+            }
+        }
+        return agentRepository.findByIsSystemTrue().stream()
+                .filter(agent -> agent.getId() != null && !agent.getId().equals(excludeAgentId))
+                .sorted(Comparator.comparing(Agent::getId))
+                .map(agent -> decryptBochaApiKey(agent.getId()))
+                .filter(value -> value != null && !value.isBlank())
+                .findFirst()
+                .orElse(null);
     }
 
     public void clearBochaApiKey(String agentId) {

@@ -30,6 +30,9 @@ public class ToolController {
         if ((apiKey == null || apiKey.isBlank()) && agentId != null && !agentId.isBlank()) {
             apiKey = secretService.getBochaApiKey(agentId);
         }
+        if (apiKey == null || apiKey.isBlank()) {
+            apiKey = secretService.getBochaApiKey(null);
+        }
         Map<String, Object> result = toolRegistry.testBochaConnection(apiKey);
         boolean success = Boolean.TRUE.equals(result.get("success"));
         String msg = (String) result.getOrDefault("message", success ? "测试成功" : "测试失败");

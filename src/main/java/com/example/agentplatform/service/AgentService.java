@@ -433,9 +433,7 @@ public class AgentService {
         LocalDate prevStart = prevEnd.minusDays(days - 1L);
 
         List<Agent> all = agentRepository.findAll();
-        List<Agent> accessible = all.stream()
-                .filter(a -> actor == null || resourceAuthService.canViewAgent(actor, a))
-                .collect(Collectors.toList());
+        List<Agent> accessible = agentsForDashboard(actor, all);
         Set<String> accessibleIds = accessible.stream().map(Agent::getId).collect(Collectors.toSet());
 
         Map<String, Agent> agentById = accessible.stream()
@@ -633,6 +631,28 @@ public class AgentService {
                 trend.add(new DashboardStats.TrendPoint(date.format(TREND_LABEL), values[0], values[1])));
         stats.setTokenTrend(trend);
         return stats;
+    }
+
+    /**
+     * 主页用量看板：超管看全站；开发者/观察员只看自己名下智能体，不含平台公共资产。
+     */
+    private static List<Agent> agentsForDashboard(CurrentActor actor, List<Agent> all) {
+        if (all == null || all.isEmpty()) {
+            return List.of();
+        }
+        if (actor == null) {
+            return List.of();
+        }
+        if (actor.isSuperAdmin()) {
+            return all;
+        }
+        String userId = actor.getUserId();
+        if (userId == null || userId.isBlank()) {
+            return List.of();
+        }
+        return all.stream()
+                .filter(a -> userId.equals(a.getOwnerId()))
+                .collect(Collectors.toList());
     }
 
     private static String resolveRankingModel(String agentId, Agent agent, Map<String, String> latestModels) {

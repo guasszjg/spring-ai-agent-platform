@@ -34,6 +34,7 @@ public class AiChatService {
     private final ChatClient chatClient;
     private final com.example.agentplatform.tool.AgentToolRegistry toolRegistry;
     private final AgentToolSecretService toolSecretService;
+    private final PlatformToolService platformToolService;
     private final KnowledgeBaseService knowledgeBaseService;
     private final ResourceAuthorizationService resourceAuthorizationService;
     private final boolean simulationFallbackEnabled;
@@ -45,6 +46,7 @@ public class AiChatService {
                          CustomHttpLlmClient customHttpClient,
                          com.example.agentplatform.tool.AgentToolRegistry toolRegistry,
                          AgentToolSecretService toolSecretService,
+                         PlatformToolService platformToolService,
                          KnowledgeBaseService knowledgeBaseService,
                          ResourceAuthorizationService resourceAuthorizationService,
                          @Autowired(required = false) ChatModel chatModel,
@@ -56,6 +58,7 @@ public class AiChatService {
         this.customHttpClient = customHttpClient;
         this.toolRegistry = toolRegistry;
         this.toolSecretService = toolSecretService;
+        this.platformToolService = platformToolService;
         this.knowledgeBaseService = knowledgeBaseService;
         this.resourceAuthorizationService = resourceAuthorizationService;
         this.simulationFallbackEnabled = simulationFallbackEnabled;
@@ -88,6 +91,10 @@ public class AiChatService {
         boolean realModelReply = false;
         String[] routedModel = { executionModel };
         String[] toolCalledHolder = { null };
+        if (platformToolService != null) {
+            toolRegistry.setPlatformConfigs(platformToolService.runtimeConfigs());
+            toolRegistry.setHttpTools(platformToolService.httpRuntimeSpecs());
+        }
         List<java.util.Map<String, Object>> tools = toolRegistry.getToolDefinitions(request.getEnabledTools());
 
         // 当前请求 Key 优先，否则使用该智能体在数据库中加密保存的 Key。

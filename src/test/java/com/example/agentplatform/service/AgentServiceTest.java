@@ -15,6 +15,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -169,5 +170,40 @@ class AgentServiceTest {
         assertThat(copy.getIsSystem()).isFalse();
         assertThat(copy.getOwnerId()).isEqualTo("user-dev");
         assertThat(copy.getOwnerUsername()).isEqualTo("guass");
+    }
+
+    @Test
+    void dashboardStats_developerOnlyIncludesOwnedAgents() {
+        Agent mine = new Agent();
+        mine.setId("mine-1");
+        mine.setName("我的客服");
+        mine.setOwnerId("user-dev");
+        mine.setCallCount(10L);
+        mine.setStatus(AgentStatus.RUNNING);
+
+        Agent system = new Agent();
+        system.setId("sys-1");
+        system.setName("平台公共助手");
+        system.setIsSystem(true);
+        system.setOwnerId("admin");
+        system.setCallCount(999L);
+        system.setStatus(AgentStatus.RUNNING);
+
+        when(agentRepository.findAll()).thenReturn(List.of(mine, system));
+        when(dailyStatRepository.findByStatDateBetween(any(), any())).thenReturn(List.of());
+        when(conversationService.tokenUsageByModel(any(), any(), any(), any())).thenReturn(Map.of());
+        when(conversationService.latestModelByAgent(any())).thenReturn(Map.of());
+
+        com.example.agentplatform.security.CurrentActor devActor =
+                new com.example.agentplatform.security.CurrentActor("user-dev", "guass", com.example.agentplatform.model.UserRole.DEVELOPER);
+        com.example.agentplatform.model.DashboardStats asDev = agentService.getDashboardStats("7days", devActor);
+        assertThat(asDev.getTotalAgents()).isEqualTo(1);
+        assertThat(asDev.getTotalCalls()).isEqualTo(10L);
+
+        com.example.agentplatform.security.CurrentActor adminActor =
+                new com.example.agentplatform.security.CurrentActor("admin-1", "admin", com.example.agentplatform.model.UserRole.SUPER_ADMIN);
+        com.example.agentplatform.model.DashboardStats asAdmin = agentService.getDashboardStats("7days", adminActor);
+        assertThat(asAdmin.getTotalAgents()).isEqualTo(2);
+        assertThat(asAdmin.getTotalCalls()).isEqualTo(1009L);
     }
 }

@@ -1,5 +1,6 @@
 package com.example.agentplatform.tool;
 
+import com.example.agentplatform.config.OutboundUrlValidator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -37,10 +38,15 @@ public class AgentToolRegistry {
             .build();
 
     private final ThreadLocal<String> currentContextBochaApiKey = new ThreadLocal<>();
+    private final ThreadLocal<Map<String, Map<String, Object>>> currentPlatformConfigs = new ThreadLocal<>();
+    private final ThreadLocal<List<HttpToolSpec>> currentHttpTools = new ThreadLocal<>();
     private final String configuredBochaApiKey;
+    private final OutboundUrlValidator urlValidator;
 
-    public AgentToolRegistry(@Value("${app.bocha.api-key:}") String configuredBochaApiKey) {
+    public AgentToolRegistry(@Value("${app.bocha.api-key:}") String configuredBochaApiKey,
+                             OutboundUrlValidator urlValidator) {
         this.configuredBochaApiKey = configuredBochaApiKey == null ? "" : configuredBochaApiKey.trim();
+        this.urlValidator = urlValidator;
     }
 
     public void setCurrentContextBochaApiKey(String apiKey) {
@@ -51,8 +57,26 @@ public class AgentToolRegistry {
         }
     }
 
+    public void setPlatformConfigs(Map<String, Map<String, Object>> configs) {
+        if (configs == null || configs.isEmpty()) {
+            currentPlatformConfigs.remove();
+        } else {
+            currentPlatformConfigs.set(configs);
+        }
+    }
+
+    public void setHttpTools(List<HttpToolSpec> specs) {
+        if (specs == null || specs.isEmpty()) {
+            currentHttpTools.remove();
+        } else {
+            currentHttpTools.set(specs);
+        }
+    }
+
     public void clearCurrentContext() {
         currentContextBochaApiKey.remove();
+        currentPlatformConfigs.remove();
+        currentHttpTools.remove();
     }
 
     public List<Map<String, Object>> getToolDefinitions(List<String> enabledToolNames) {
@@ -148,6 +172,26 @@ public class AgentToolRegistry {
                         "required", List.of("query")
                 ));
 
+        List<HttpToolSpec> httpTools = currentHttpTools.get();
+        if (httpTools != null) {
+            for (HttpToolSpec spec : httpTools) {
+                if (spec.getCode() == null || spec.getName() == null) {
+                    continue;
+                }
+                addIfEnabled(list, enabledToolNames, spec.getName(), spec.getCode(),
+                        spec.getDescription() != null ? spec.getDescription() : spec.getName(),
+                        Map.of("type", "object",
+                                "properties", Map.of(
+                                        "query", Map.of(
+                                                "type", "string",
+                                                "description", "调用该自定义工具时需要传入的查询内容或业务参数"
+                                        )
+                                ),
+                                "required", List.of("query")
+                        ));
+            }
+        }
+
         return list;
     }
 
@@ -187,7 +231,7 @@ public class AgentToolRegistry {
                 case "time_timestamp_converter", "timestamp_converter" -> handleTimestampConverter(root);
                 case "time_date_calculator", "date_calculator" -> handleDateCalculator(root);
                 case "bocha_web_search", "web_search" -> handleBochaWebSearch(root);
-                default -> "未知工具: " + toolName;
+                default -> handleCustomOrUnknown(toolName, root);
             };
         } catch (Exception e) {
             log.error("工具执行异常 [{}]: {}", toolName, e.getMessage(), e);
@@ -210,19 +254,11 @@ public class AgentToolRegistry {
     }
 
     private String handleGetCurrentTime(JsonNode root) {
-        String tz = root.path("timezone").asText("Asia/Shanghai");
-        if (tz == null || tz.isBlank()) {
-            tz = "Asia/Shanghai";
-        }
-        ZoneId zone;
-        try {
-            zone = ZoneId.of(tz);
-        } catch (Exception e) {
-            zone = ZoneId.of("Asia/Shanghai");
-            tz = "Asia/Shanghai";
-        }
+        String tz = firstText(root, "timezone", platformText("time_get_current_time", "timezone", "Asia/Shanghai"));
+        ZoneId zone = safeZone(tz);
+        tz = zone.getId();
         ZonedDateTime now = ZonedDateTime.now(zone);
-        String formatted = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        String formatted = now.format(dateTimeFormatter(platformText("time_get_current_time", "format", "yyyy-MM-dd HH:mm:ss")));
         String weekday = now.getDayOfWeek().getDisplayName(TextStyle.FULL, Locale.CHINESE);
         return String.format("当前系统时间查询成功：【%s】时间为 %s (%s, 时区偏移: %s)",
                 tz, formatted, weekday, now.getOffset().getId());
@@ -240,10 +276,10 @@ public class AgentToolRegistry {
 
     private String handleConvertTimezone(JsonNode root) {
         String dtStr = root.path("datetime").asText();
-        String fromTz = root.path("from_timezone").asText("Asia/Shanghai");
+        String fromTz = firstText(root, "from_timezone", platformText("time_convert_timezone", "timezone", "Asia/Shanghai"));
         String toTz = root.path("to_timezone").asText("America/New_York");
-        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-        LocalDateTime ldt = LocalDateTime.parse(dtStr.replace("T", " "), fmt);
+        DateTimeFormatter fmt = dateTimeFormatter(platformText("time_convert_timezone", "format", "yyyy-MM-dd HH:mm:ss"));
+        LocalDateTime ldt = LocalDateTime.parse(dtStr.replace("T", " ").trim(), DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
         ZonedDateTime srcZdt = ldt.atZone(ZoneId.of(fromTz));
         ZonedDateTime dstZdt = srcZdt.withZoneSameInstant(ZoneId.of(toTz));
         return String.format("时区换算成功：原时间 %s (%s) 对应 %s 的时间为：%s (%s)",
@@ -254,14 +290,15 @@ public class AgentToolRegistry {
         if (root.has("timestamp") && !root.path("timestamp").isNull()) {
             long ts = root.path("timestamp").asLong();
             Instant instant = ts > 9999999999L ? Instant.ofEpochMilli(ts) : Instant.ofEpochSecond(ts);
-            ZonedDateTime zdt = instant.atZone(ZoneId.of("Asia/Shanghai"));
-            return String.format("时间戳转换成功：Unix时间戳 %d 对应的北京时间为：%s",
-                    ts, zdt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+            ZoneId zone = safeZone(platformText("time_timestamp_converter", "timezone", "Asia/Shanghai"));
+            ZonedDateTime zdt = instant.atZone(zone);
+            return String.format("时间戳转换成功：Unix时间戳 %d 对应的 %s 时间为：%s",
+                    ts, zone.getId(), zdt.format(dateTimeFormatter(platformText("time_timestamp_converter", "format", "yyyy-MM-dd HH:mm:ss"))));
         } else if (root.has("datetime")) {
             String dt = root.path("datetime").asText();
             DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
             LocalDateTime ldt = LocalDateTime.parse(dt.replace("T", " "), fmt);
-            long epochSec = ldt.atZone(ZoneId.of("Asia/Shanghai")).toEpochSecond();
+            long epochSec = ldt.atZone(safeZone(platformText("time_timestamp_converter", "timezone", "Asia/Shanghai"))).toEpochSecond();
             return String.format("时间转换成功：%s 对应的Unix时间戳为：%d (秒级) / %d (毫秒级)",
                     dt, epochSec, epochSec * 1000L);
         }
@@ -297,7 +334,7 @@ public class AgentToolRegistry {
             apiKey = configuredBochaApiKey;
         }
         if (apiKey == null || apiKey.isBlank()) {
-            return String.format("【联网检索插件】已触发 Bocha Web Search，检索关键词: [%s]。提示：尚未检测到有效的 Bocha API Key，请在左侧插件列表点击「联网检索」齿轮配置 API Key 并保存。", query);
+            return String.format("【联网检索插件】已触发 Bocha Web Search，检索关键词: [%s]。提示：尚未检测到有效的 Bocha API Key，请到左侧「工具管理」配置联网检索的平台密钥。", query);
         }
         if (apiKey.equalsIgnoreCase("mock") || apiKey.startsWith("test-mock") || apiKey.startsWith("demo-")) {
             return String.format("【联网检索结果 (模拟通道)】针对关键词 [%s] 获取到最新权威信息：\n" +
@@ -311,9 +348,9 @@ public class AgentToolRegistry {
         try {
             String requestBody = objectMapper.writeValueAsString(Map.of(
                     "query", query,
-                    "count", 5,
-                    "freshness", "noLimit",
-                    "summary", true
+                    "count", platformInt("bocha_web_search", "count", 5),
+                    "freshness", platformText("bocha_web_search", "freshness", "noLimit"),
+                    "summary", platformBoolean("bocha_web_search", "summary", true)
             ));
             HttpRequest request = HttpRequest.newBuilder(URI.create("https://api.bochaai.com/v1/web-search"))
                     .timeout(Duration.ofSeconds(12))
@@ -446,8 +483,136 @@ public class AgentToolRegistry {
         return result;
     }
 
+    private String handleCustomOrUnknown(String toolName, JsonNode root) {
+        HttpToolSpec spec = findHttpTool(toolName);
+        if (spec != null) {
+            return handleHttpTool(spec, root.path("query").asText(""));
+        }
+        return "未知工具: " + toolName;
+    }
+
+    private HttpToolSpec findHttpTool(String toolName) {
+        List<HttpToolSpec> specs = currentHttpTools.get();
+        if (specs == null || toolName == null) {
+            return null;
+        }
+        return specs.stream()
+                .filter(spec -> toolName.equalsIgnoreCase(spec.getCode()) || toolName.equalsIgnoreCase(spec.getName()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    public Map<String, Object> testHttpTool(HttpToolSpec spec) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        long start = System.currentTimeMillis();
+        try {
+            String body = handleHttpTool(spec, "ping");
+            result.put("success", body != null && !body.startsWith("【自定义工具失败】"));
+            result.put("message", result.get("success").equals(true) ? "自定义工具接口可访问" : body);
+            result.put("latencyMs", System.currentTimeMillis() - start);
+        } catch (Exception e) {
+            result.put("success", false);
+            result.put("message", e.getMessage());
+            result.put("latencyMs", System.currentTimeMillis() - start);
+        }
+        return result;
+    }
+
+    private String handleHttpTool(HttpToolSpec spec, String query) {
+        if (spec.getUrl() == null || spec.getUrl().isBlank()) {
+            return "【自定义工具失败】未配置 HTTP 接口地址";
+        }
+        if (urlValidator != null) {
+            urlValidator.validateProviderBaseUrl(spec.getUrl());
+        }
+        String method = spec.getMethod() == null || spec.getMethod().isBlank() ? "POST" : spec.getMethod().trim().toUpperCase(Locale.ROOT);
+        String url = spec.getUrl().replace("{{query}}", query == null ? "" : query);
+        int timeout = spec.getTimeoutSeconds() > 0 ? spec.getTimeoutSeconds() : 8;
+        try {
+            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
+                    .timeout(Duration.ofSeconds(timeout));
+            if (spec.getApiKey() != null && !spec.getApiKey().isBlank()) {
+                builder.header("Authorization", "Bearer " + spec.getApiKey());
+            }
+            if ("GET".equals(method)) {
+                if (!url.contains("{{query}}") && query != null && !query.isBlank() && !url.contains("query=")) {
+                    String sep = url.contains("?") ? "&" : "?";
+                    builder.uri(URI.create(url + sep + "query=" + java.net.URLEncoder.encode(query, StandardCharsets.UTF_8)));
+                }
+                builder.GET();
+            } else {
+                String payload = objectMapper.writeValueAsString(Map.of("query", query == null ? "" : query));
+                builder.header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8));
+            }
+            HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                return String.format("【自定义工具 %s】调用成功：\n%s", spec.getName(), truncate(response.body(), 1200));
+            }
+            return String.format("【自定义工具失败】HTTP %d：%s", response.statusCode(), truncate(response.body(), 240));
+        } catch (IllegalArgumentException e) {
+            return "【自定义工具失败】" + e.getMessage();
+        } catch (Exception e) {
+            log.error("自定义 HTTP 工具异常 [{}]: {}", spec.getCode(), e.getMessage(), e);
+            return "【自定义工具失败】" + e.getMessage();
+        }
+    }
+
     private String truncate(String s, int maxLen) {
         if (s == null) return "";
         return s.length() <= maxLen ? s : s.substring(0, maxLen) + "...";
+    }
+
+    private String firstText(JsonNode root, String field, String fallback) {
+        String value = root.path(field).asText("");
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        return value;
+    }
+
+    private String platformText(String toolCode, String key, String fallback) {
+        Map<String, Map<String, Object>> configs = currentPlatformConfigs.get();
+        if (configs == null) {
+            return fallback;
+        }
+        Map<String, Object> config = configs.get(toolCode);
+        if (config == null || config.get(key) == null) {
+            return fallback;
+        }
+        String value = String.valueOf(config.get(key)).trim();
+        return value.isBlank() ? fallback : value;
+    }
+
+    private int platformInt(String toolCode, String key, int fallback) {
+        try {
+            return Integer.parseInt(platformText(toolCode, key, String.valueOf(fallback)));
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
+    private boolean platformBoolean(String toolCode, String key, boolean fallback) {
+        String value = platformText(toolCode, key, String.valueOf(fallback));
+        return "true".equalsIgnoreCase(value) || "1".equals(value);
+    }
+
+    private ZoneId safeZone(String tz) {
+        try {
+            return ZoneId.of(tz);
+        } catch (Exception e) {
+            return ZoneId.of("Asia/Shanghai");
+        }
+    }
+
+    private DateTimeFormatter dateTimeFormatter(String pattern) {
+        if (pattern == null || pattern.isBlank() || "ISO-8601".equalsIgnoreCase(pattern)) {
+            return DateTimeFormatter.ISO_OFFSET_DATE_TIME;
+        }
+        try {
+            return DateTimeFormatter.ofPattern(pattern);
+        } catch (Exception e) {
+            return DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+        }
     }
 }
