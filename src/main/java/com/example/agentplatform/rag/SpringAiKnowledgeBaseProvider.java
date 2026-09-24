@@ -42,7 +42,7 @@ import java.util.UUID;
 
 /**
  * Spring AI 原生自研 RAG 引擎 Provider 实现
- * P1 基线：全自主可控的本地切片、1024 维向量化与双路混合检索
+ * P1 基线：全自主可控的本地切片、向量化（维度跟随激活的 Embedding 模型）与双路混合检索
  * P2 增强：高级父子分块 (Parent-Child Chunking)、Query 智能改写与 Token 预算裁剪
  * P3 治理：多格式深度解析 (CSV表头携带/DOCX/PDF流式/OCR识别) 与成本可观测性
  * P4 差异化：语义缓存 (<5ms 响应与 100% Token 节省)、图文跨模态多模态检索 (Chapter 18) 与 GraphRAG 实体多跳试点

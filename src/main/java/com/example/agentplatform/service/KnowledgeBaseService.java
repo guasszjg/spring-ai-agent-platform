@@ -1,5 +1,6 @@
 package com.example.agentplatform.service;
 
+import com.example.agentplatform.rag.pipeline.LocalEmbeddingService;
 import com.example.agentplatform.model.KnowledgeBase;
 import com.example.agentplatform.model.KnowledgeDocument;
 import com.example.agentplatform.model.KnowledgeFaq;
@@ -101,6 +102,26 @@ public class KnowledgeBaseService {
     private final SemanticCacheService semanticCacheService;
     private final GraphRagService graphRagService;
     private final OfflineRagGovernanceService offlineRagGovernanceService;
+    private LocalEmbeddingService embeddingService;
+
+    /** 可选注入（setter 方式，避免改动已有构造器签名）：用于把真实向量维度写入索引版本。 */
+    @Autowired(required = false)
+    public void setEmbeddingService(LocalEmbeddingService embeddingService) {
+        this.embeddingService = embeddingService;
+    }
+
+    /** 自研引擎的索引版本记录当前激活 Embedding 模型的真实维度，而不是实体默认的 1024。 */
+    private void applyEmbeddingDimension(KnowledgeIndexVersion version) {
+        if (embeddingService == null || version == null
+                || !"SPRING_AI".equalsIgnoreCase(version.getEngineType())) {
+            return;
+        }
+        try {
+            version.setDimension(embeddingService.resolveDimension());
+        } catch (RuntimeException e) {
+            log.debug("读取 Embedding 维度失败，索引版本保留默认维度: {}", e.getMessage());
+        }
+    }
 
     @Autowired
     public KnowledgeBaseService(KnowledgeBaseRepository knowledgeBaseRepository,
@@ -730,6 +751,7 @@ public class KnowledgeBaseService {
             v1.setEmbeddingModel(kb.getEmbeddingModel());
             v1.setEmbeddingProvider(kb.getEmbeddingProvider());
             v1.setCreatedBy(kb.getOwnerUsername() != null ? kb.getOwnerUsername() : "system");
+            applyEmbeddingDimension(v1);
             v1 = indexVersionRepository.save(v1);
 
             kb.setActiveIndexVersionId(v1.getId());
@@ -841,6 +863,7 @@ public class KnowledgeBaseService {
             v1.setEmbeddingModel(embeddingModel);
             v1.setEmbeddingProvider(embeddingProvider);
             v1.setCreatedBy(kb.getOwnerUsername());
+            applyEmbeddingDimension(v1);
             v1 = indexVersionRepository.save(v1);
 
             if (v1 != null && v1.getId() != null) {

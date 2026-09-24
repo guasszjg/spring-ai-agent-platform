@@ -156,10 +156,10 @@ public class LocalEmbeddingService {
     }
 
     /**
-     * P4 多模态扩展：生成图片的视觉与语义多模态 Embedding 向量 (1024 维统一投影，遵循第 18 章)
+     * P4 多模态扩展：生成图片的视觉与语义多模态 Embedding 向量（维度与当前激活的 Embedding 模型一致，遵循第 18 章）
      */
     public float[] embedImage(String imageRef, String caption, int dimension) {
-        int targetDim = dimension > 0 ? dimension : DEFAULT_DIMENSION;
+        int targetDim = dimension > 0 ? dimension : resolveDimension();
         String combined = "image_ref:" + (imageRef != null ? imageRef : "") + " " + (caption != null ? caption : "");
         return embed(combined, targetDim);
     }
@@ -170,15 +170,19 @@ public class LocalEmbeddingService {
 
     /**
      * 计算两个归一化向量的余弦相似度 (Cosine Similarity)
-     * 因为已进行 L2 归一化，余弦相似度等价于点积 dot(v1, v2)
+     * 因为已进行 L2 归一化，余弦相似度等价于点积 dot(v1, v2)。
+     * 维度不一致（例如切换 Embedding 模型前后的向量）时返回 0，不做截断比较。
      */
     public double cosineSimilarity(float[] v1, float[] v2) {
         if (v1 == null || v2 == null || v1.length == 0 || v2.length == 0) {
             return 0.0;
         }
-        int len = Math.min(v1.length, v2.length);
+        if (v1.length != v2.length) {
+            // 维度不同的向量来自不同模型，比较没有意义；以前按较短长度截断计算，会得到看似合理的错误分数
+            return 0.0;
+        }
         double dot = 0.0;
-        for (int i = 0; i < len; i++) {
+        for (int i = 0; i < v1.length; i++) {
             dot += v1[i] * v2[i];
         }
         return Math.max(-1.0, Math.min(1.0, dot));
