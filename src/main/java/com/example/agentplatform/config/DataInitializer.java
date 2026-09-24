@@ -22,7 +22,10 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -42,6 +45,7 @@ public class DataInitializer implements ApplicationRunner {
     private final ToolConfigSanitizer toolConfigSanitizer;
     private final com.example.agentplatform.repository.KnowledgeBaseRepository knowledgeBaseRepository;
     private final com.example.agentplatform.service.KnowledgeBaseService knowledgeBaseService;
+    private final TransactionTemplate isolatedTx;
 
     public DataInitializer(UserRepository userRepository,
                            AgentRepository agentRepository,
@@ -54,6 +58,7 @@ public class DataInitializer implements ApplicationRunner {
                            com.example.agentplatform.repository.KnowledgeBaseRepository knowledgeBaseRepository,
                            com.example.agentplatform.service.KnowledgeBaseService knowledgeBaseService,
                            com.example.agentplatform.service.OpenApiKeyService openApiKeyService,
+                           PlatformTransactionManager transactionManager,
                            @Value("${app.seed.demo-users:false}") boolean seedDemoUsers) {
         this.userRepository = userRepository;
         this.agentRepository = agentRepository;
@@ -67,6 +72,18 @@ public class DataInitializer implements ApplicationRunner {
         this.knowledgeBaseService = knowledgeBaseService;
         this.openApiKeyService = openApiKeyService;
         this.seedDemoUsers = seedDemoUsers;
+        // 依赖外部服务、允许失败的步骤放进独立事务：被调用的 @Transactional 方法抛异常会把外层事务标记为
+        // rollback-only，即使在这里 catch 住，run() 提交时仍会 UnexpectedRollbackException，导致空库首次启动失败。
+        TransactionTemplate tx = new TransactionTemplate(transactionManager);
+        tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        this.isolatedTx = tx;
+    }
+
+    private void runIsolated(Runnable action) {
+        try {
+            isolatedTx.executeWithoutResult(status -> action.run());
+        } catch (Exception ignored) {
+        }
     }
 
     @Override
@@ -88,11 +105,8 @@ public class DataInitializer implements ApplicationRunner {
 
     private void seedKnowledgeBases() {
         if (knowledgeBaseRepository.count() == 0) {
-            try {
-                knowledgeBaseService.syncFromDify();
-            } catch (Exception e) {
-                // Ignore if Dify is temporarily unreachable on startup
-            }
+            // Ignore if Dify is temporarily unreachable on startup
+            runIsolated(knowledgeBaseService::syncFromDify);
         }
         for (KnowledgeBase kb : knowledgeBaseRepository.findAll()) {
             boolean changed = false;
