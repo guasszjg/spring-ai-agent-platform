@@ -220,7 +220,7 @@ public class EmbeddingConfigService {
             if (plainKey != null && !plainKey.isBlank()) {
                 reqSpec.header(HttpHeaders.AUTHORIZATION, "Bearer " + plainKey);
             }
-            String respBody = reqSpec.retrieve().body(String.class);
+            String respBody = reqSpec.body(reqBody).retrieve().body(String.class);
             long cost = System.currentTimeMillis() - start;
 
             JsonNode root = objectMapper.readTree(respBody);

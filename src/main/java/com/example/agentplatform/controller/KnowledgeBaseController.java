@@ -93,9 +93,14 @@ public class KnowledgeBaseController {
     public ResponseEntity<ApiResponse<KnowledgeBase>> create(@RequestBody CreateKnowledgeBaseRequest req) {
         try {
             KnowledgeBase kb = knowledgeBaseService.createKnowledgeBase(req);
-            return ResponseEntity.ok(ApiResponse.ok("知识库创建成功并已同步至 Dify RAG 引擎", kb));
+            String msg = "DIFY".equalsIgnoreCase(kb.getProvider())
+                    ? "知识库创建成功并已同步至 Dify RAG 引擎"
+                    : "知识库创建成功";
+            return ResponseEntity.ok(ApiResponse.ok(msg, kb));
         } catch (IllegalStateException e) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
         }
     }
 

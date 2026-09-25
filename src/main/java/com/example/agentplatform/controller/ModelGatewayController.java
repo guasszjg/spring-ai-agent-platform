@@ -214,6 +214,26 @@ public class ModelGatewayController {
         return ResponseEntity.ok(ApiResponse.ok(embeddingConfigService.listViews()));
     }
 
+    /**
+     * 当前生效的向量模型摘要（任意登录用户可读，用于新建知识库时展示）。
+     * 只返回名称 / 模型 / 维度，不含接口地址与密钥。
+     */
+    @GetMapping("/embeddings/active")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> activeEmbedding() {
+        Map<String, Object> view = new java.util.LinkedHashMap<>();
+        embeddingConfigService.getActiveConfig().ifPresentOrElse(cfg -> {
+            view.put("configured", true);
+            view.put("name", cfg.getName());
+            view.put("provider", cfg.getProvider());
+            view.put("modelName", cfg.getModelName());
+            view.put("dimension", cfg.getDimension());
+        }, () -> {
+            view.put("configured", false);
+            view.put("dimension", 1024);
+        });
+        return ResponseEntity.ok(ApiResponse.ok(view));
+    }
+
     @PostMapping("/embeddings")
     public ResponseEntity<ApiResponse<EmbeddingConfigView>> createEmbedding(@RequestBody EmbeddingConfigRequest request) {
         if (!checkAdmin()) {

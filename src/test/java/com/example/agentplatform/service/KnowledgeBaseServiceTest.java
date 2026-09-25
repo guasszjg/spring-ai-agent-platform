@@ -45,6 +45,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -114,11 +115,25 @@ class KnowledgeBaseServiceTest {
     }
 
     @Test
+    void createKnowledgeBase_rejectsDifyWhenEngineNotConfigured() {
+        CreateKnowledgeBaseRequest req = new CreateKnowledgeBaseRequest();
+        req.setName("未配置引擎的知识库");
+        req.setProvider("DIFY");
+        when(difyProvider.getBaseUrl()).thenReturn("");
+
+        assertThatThrownBy(() -> knowledgeBaseService.createKnowledgeBase(req))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Dify 引擎未配置");
+        verify(knowledgeBaseRepository, never()).save(any(KnowledgeBase.class));
+    }
+
+    @Test
     void createKnowledgeBase_createsExternalDatasetAndPersistsLocal() {
         CreateKnowledgeBaseRequest req = new CreateKnowledgeBaseRequest();
         req.setName("企业售后知识库");
         req.setDescription("提供常见硬件与软件故障指引");
         req.setProvider("DIFY");
+        when(difyProvider.getBaseUrl()).thenReturn("http://dify.example.com/v1");
 
         DifyDatasetDto difyDto = new DifyDatasetDto();
         difyDto.setId("dify-ds-001");

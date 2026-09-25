@@ -779,6 +779,9 @@ public class KnowledgeBaseService {
         KnowledgeBaseProvider provider = resolveProvider(providerType);
 
         boolean isSpringAi = "SPRING_AI".equalsIgnoreCase(providerType);
+        if (!isSpringAi && !getEngineInfo().isConfigured()) {
+            throw new IllegalArgumentException("Dify 引擎未配置，无法创建 Dify 外挂知识库，请先在「模型网关 → Dify 知识引擎」中配置");
+        }
         String defaultEmbedding = isSpringAi ? "spring-ai-native-1024" : "text-embedding-v3";
         String defaultEmbeddingProvider = isSpringAi ? "spring_ai" : "langgenius/tongyi/tongyi";
         String embeddingModel = (req.getEmbeddingModel() != null && !req.getEmbeddingModel().isBlank()) ? req.getEmbeddingModel() : defaultEmbedding;
