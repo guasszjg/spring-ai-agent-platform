@@ -158,7 +158,7 @@ flowchart LR
 | `get_gateway_status` | R | P1 | 模型通道列表、默认/降级通道、最近探测结果（不含密钥） | `LlmGatewayService` | 超管；其他角色仅看"是否可用" |
 | `get_usage_summary` | R | P1 | 指定时间段的调用量、token、成本 | `UsageRecorder` / 统计服务 | 超管看全站，其余看本人 |
 | `diagnose_agent` | R | P1 | 组合检查：智能体状态、通道可用性、知识库绑定与索引状态，输出诊断结论 | 多个服务组合 | `canViewAgent` |
-| `search_platform_docs` | R | P1 | 检索平台使用文档（放在平台自己的知识库中） | `KnowledgeBaseService.retrieveChunks` | 所有登录用户 |
+| `search_platform_docs` | R | P2 | 检索平台使用文档（放在平台自己的知识库中，依赖已配置的向量模型） | `KnowledgeBaseService.retrieveChunks` | 所有登录用户 |
 | `list_templates` | R | P2 | 按行业查询场景模板 | `AgentTemplateService` | 所有登录用户 |
 | `create_agent` | W1 | P2 | 按描述生成名称、分类、提示词，或基于模板创建 | `AgentService.create` | 非只读角色 |
 | `create_knowledge_base` | W1 | P2 | 创建内置引擎知识库 | `KnowledgeBaseService.createKnowledgeBase` | 非只读角色 |
@@ -361,6 +361,8 @@ CREATE INDEX idx_asst_action_user ON assistant_actions (user_id, created_at DESC
 4. 问答 / 执行模式切换。
 5. 用量计入统计；按用户限流。
 
+**前置条件**：模型网关中至少有一个支持 Function Calling 的大模型通道（如 DeepSeek）；P1 不依赖向量模型。
+
 **验收标准**：
 - 开发者问"我有哪些运行中的智能体"，返回结果与智能体列表页一致；
 - 只读观察员与开发者看到的数据范围与界面一致，不能通过助手查到无权查看的资源；
@@ -376,7 +378,7 @@ CREATE INDEX idx_asst_action_user ON assistant_actions (user_id, created_at DESC
 2. 前端操作卡片：展示参数、确认 / 取消、执行结果与跳转链接。
 3. 写工具：`create_agent`（含基于模板创建）、`create_knowledge_base`、`add_faq`、`bind_knowledge_base`、`update_agent_prompt`、`set_agent_status`。
 4. 审计记录 `via=assistant`。
-5. 平台使用文档入库，`search_platform_docs` 替代系统提示词里的静态功能介绍。
+5. 平台使用文档入库，`search_platform_docs` 替代系统提示词里的静态功能介绍（前置条件：模型网关中已激活向量模型）。
 6. 回复"有用 / 没用"反馈。
 
 **验收标准**：
