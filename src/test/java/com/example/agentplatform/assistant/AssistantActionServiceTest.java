@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -73,6 +74,31 @@ class AssistantActionServiceTest {
         assertTrue(action.getResult().contains("/debug/agent-9"));
         verify(auditRecorder).record(eq("assistant.action.create_agent"), eq("AGENT"), eq("agent-9"), eq("SUCCESS"),
                 isNull(), eq("LOW"), contains("via=assistant"));
+    }
+
+    @Test
+    void secretIsReturnedOnceButNeverPersisted() {
+        action.setToolName("create_api_key");
+        when(actionRepository.claim(eq("act-1"), eq("u-dev"), any())).thenReturn(1);
+        when(writeTools.execute(anyString(), anyString(), any())).thenReturn(new AssistantWriteTools.ExecutionResult(
+                "API_KEY", "key-1", "已创建凭证", "查看开放凭证", "/dashboard?tab=open-platform", "sk-am-secretsecretsecret"));
+
+        Map<String, Object> card = service.confirm("act-1", dev);
+
+        assertEquals("sk-am-secretsecretsecret", card.get("secret"));
+        assertFalse(action.getResult().contains("secretsecret"));
+        assertFalse(service.card(action).containsKey("secret"));
+    }
+
+    @Test
+    void unmetDependencyRejectsWithoutConsumingCard() {
+        when(writeTools.unmetDependency(action, dev)).thenReturn("请先确认上一张卡片「创建知识库：退货库」");
+
+        assertThrows(AssistantActionService.DependencyNotMetException.class, () -> service.confirm("act-1", dev));
+
+        verify(actionRepository, never()).claim(anyString(), anyString(), any());
+        verify(writeTools, never()).execute(anyString(), anyString(), any());
+        assertEquals(AssistantAction.PENDING, action.getStatus());
     }
 
     @Test

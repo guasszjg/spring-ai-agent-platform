@@ -116,4 +116,22 @@ class AssistantToolRegistryTest {
         assertTrue(outcome.content().contains("只读观察员"));
         assertFalse(called[0]);
     }
+
+    @Test
+    void superAdminOnlyToolsAreHiddenAndRejectedForOthers() {
+        CurrentActor admin = new CurrentActor("u-admin", "admin", com.example.agentplatform.model.UserRole.SUPER_ADMIN);
+        boolean[] called = {false};
+        var registry = new AssistantToolRegistry(List.of(
+                AssistantTool.adminRead("test_gateway_channel", "测试模型通道", "测", Map.of("type", "object"), (args, c) -> {
+                    called[0] = true;
+                    return Map.of("ok", true);
+                })));
+
+        assertEquals(1, registry.definitions(admin).size());
+        assertTrue(registry.definitions(developer).isEmpty());
+        assertTrue(registry.definitions(viewer).isEmpty());
+        assertFalse(registry.execute("test_gateway_channel", "{}", ToolContext.of(developer, "asc-1")).ok());
+        assertFalse(called[0]);
+        assertTrue(registry.execute("test_gateway_channel", "{}", ToolContext.of(admin, "asc-1")).ok());
+    }
 }

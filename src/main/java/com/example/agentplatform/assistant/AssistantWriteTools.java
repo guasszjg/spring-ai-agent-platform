@@ -4,6 +4,7 @@ import com.example.agentplatform.model.Agent;
 import com.example.agentplatform.model.AgentStatus;
 import com.example.agentplatform.model.AgentTemplate;
 import com.example.agentplatform.model.AssistantAction;
+import com.example.agentplatform.model.CreateOpenApiKeyRequest;
 import com.example.agentplatform.model.KnowledgeBase;
 import com.example.agentplatform.model.KnowledgeFaq;
 import com.example.agentplatform.rag.dto.CreateFaqRequest;
@@ -12,10 +13,12 @@ import com.example.agentplatform.repository.AgentRepository;
 import com.example.agentplatform.repository.AssistantActionRepository;
 import com.example.agentplatform.repository.KnowledgeBaseRepository;
 import com.example.agentplatform.security.CurrentActor;
+import com.example.agentplatform.security.OpenApiScopes;
 import com.example.agentplatform.service.AgentService;
 import com.example.agentplatform.service.AgentTemplateService;
 import com.example.agentplatform.service.EmbeddingConfigService;
 import com.example.agentplatform.service.KnowledgeBaseService;
+import com.example.agentplatform.service.OpenApiKeyService;
 import com.example.agentplatform.service.ResourceAuthorizationService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -47,6 +50,7 @@ public class AssistantWriteTools {
     static final String BIND_KNOWLEDGE_BASE = "bind_knowledge_base";
     static final String UPDATE_AGENT_PROMPT = "update_agent_prompt";
     static final String SET_AGENT_STATUS = "set_agent_status";
+    static final String CREATE_API_KEY = "create_api_key";
 
     static final int ACTION_TTL_MINUTES = 10;
     static final int NAME_MAX = 50;
@@ -67,6 +71,7 @@ public class AssistantWriteTools {
     private final EmbeddingConfigService embeddingConfigService;
     private final ResourceAuthorizationService authorizationService;
     private final AssistantActionRepository actionRepository;
+    private final OpenApiKeyService openApiKeyService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public AssistantWriteTools(AssistantQueryTools queryTools,
@@ -77,7 +82,8 @@ public class AssistantWriteTools {
                                KnowledgeBaseRepository knowledgeBaseRepository,
                                EmbeddingConfigService embeddingConfigService,
                                ResourceAuthorizationService authorizationService,
-                               AssistantActionRepository actionRepository) {
+                               AssistantActionRepository actionRepository,
+                               OpenApiKeyService openApiKeyService) {
         this.queryTools = queryTools;
         this.agentService = agentService;
         this.agentRepository = agentRepository;
@@ -87,6 +93,7 @@ public class AssistantWriteTools {
         this.embeddingConfigService = embeddingConfigService;
         this.authorizationService = authorizationService;
         this.actionRepository = actionRepository;
+        this.openApiKeyService = openApiKeyService;
     }
 
     public List<AssistantTool> tools() {
@@ -114,7 +121,7 @@ public class AssistantWriteTools {
                 AssistantTool.write(ADD_FAQ, "生成添加 FAQ 操作",
                         "向知识库添加一条问答对（生成待确认操作卡片）。一次调用只添加一条。",
                         schema(Map.of(
-                                "knowledgeBase", prop("string", "知识库名称或 ID"),
+                                "knowledgeBase", prop("string", "知识库名称或 ID；知识库还在待确认的创建卡片中时，传该卡片的 pendingActionId（act- 开头）"),
                                 "question", prop("string", "问题"),
                                 "answer", prop("string", "答案"),
                                 "category", prop("string", "FAQ 分类，可选")), "knowledgeBase", "question", "answer"),
@@ -122,8 +129,8 @@ public class AssistantWriteTools {
                 AssistantTool.write(BIND_KNOWLEDGE_BASE, "生成绑定知识库操作",
                         "给智能体绑定或解绑一个知识库（生成待确认操作卡片，卡片展示修改前后）。",
                         schema(Map.of(
-                                "agent", prop("string", "智能体名称、编码或 ID"),
-                                "knowledgeBase", prop("string", "知识库名称或 ID"),
+                                "agent", prop("string", "智能体名称、编码或 ID；智能体还在待确认的创建卡片中时，传该卡片的 pendingActionId（act- 开头）"),
+                                "knowledgeBase", prop("string", "知识库名称或 ID；知识库还在待确认的创建卡片中时，传该卡片的 pendingActionId"),
                                 "operation", Map.of("type", "string", "enum", List.of("bind", "unbind"),
                                         "description", "bind 绑定（默认）/ unbind 解绑")), "agent", "knowledgeBase"),
                         this::draftBindKnowledgeBase),
@@ -140,7 +147,14 @@ public class AssistantWriteTools {
                                 "agent", prop("string", "智能体名称、编码或 ID"),
                                 "status", Map.of("type", "string", "enum", List.of("RUNNING", "DISABLED"),
                                         "description", "RUNNING 启用 / DISABLED 停用")), "agent", "status"),
-                        this::draftSetAgentStatus)
+                        this::draftSetAgentStatus),
+                AssistantTool.write(CREATE_API_KEY, "生成创建开放 API 凭证操作",
+                        "为智能体签发一个只能调用该智能体、只有对话权限的开放 API Key（生成待确认操作卡片）。"
+                                + "Key 明文只在用户确认后的卡片中显示一次，你永远看不到明文，不要编造或复述 Key。",
+                        schema(Map.of(
+                                "agent", prop("string", "智能体名称、编码或 ID；智能体还在待确认的创建卡片中时，传该卡片的 pendingActionId"),
+                                "name", prop("string", "凭证名称，可选，默认「智能体名 对话凭证」")), "agent"),
+                        this::draftCreateApiKey)
         );
     }
 
@@ -199,6 +213,10 @@ public class AssistantWriteTools {
 
         List<KnowledgeBase> kbs = new ArrayList<>();
         for (String ref : textList(args, "knowledgeBases")) {
+            if (ACTION_REF.matcher(ref).matches()) {
+                throw new IllegalArgumentException("知识库还在待确认的创建卡片中，不能在创建智能体时直接绑定：请先不带该知识库生成创建智能体卡片，"
+                        + "再调用 bind_knowledge_base，agent 传创建智能体卡片的 pendingActionId，knowledgeBase 传 " + ref);
+            }
             KnowledgeBase kb = queryTools.resolveKnowledgeBase(ref, actor);
             if (!authorizationService.canUseKnowledgeBase(actor, kb)) {
                 throw new IllegalArgumentException("你没有知识库「" + kb.getName() + "」的使用权限，不能绑定");
@@ -263,66 +281,101 @@ public class AssistantWriteTools {
 
     Map<String, Object> draftAddFaq(JsonNode args, ToolContext ctx) {
         CurrentActor actor = ctx.actor();
-        KnowledgeBase kb = queryTools.resolveKnowledgeBase(text(args, "knowledgeBase"), actor);
-        if (!authorizationService.canManageKnowledgeBase(actor, kb)) {
-            throw new IllegalArgumentException("你没有管理知识库「" + kb.getName() + "」的权限，不能添加 FAQ");
+        KbRef kb = resolveKbRef(text(args, "knowledgeBase"), ctx);
+        if (kb.existing() != null && !authorizationService.canManageKnowledgeBase(actor, kb.existing())) {
+            throw new IllegalArgumentException("你没有管理知识库「" + kb.name() + "」的权限，不能添加 FAQ");
         }
         String question = required(args, "question", QUESTION_MAX, "问题");
         String answer = required(args, "answer", ANSWER_MAX, "答案");
         String category = text(args, "category");
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("knowledgeBaseId", kb.getId());
+        kb.putInto(payload, "knowledgeBaseId", "knowledgeBaseFrom");
         payload.put("question", question);
         payload.put("answer", answer);
         payload.put("category", category);
         List<Map<String, Object>> fields = new ArrayList<>();
-        fields.add(field("知识库", kb.getName()));
+        fields.add(field("知识库", kb.display()));
         fields.add(field("问题", question));
         fields.add(longField("答案", answer));
         if (category != null) {
             fields.add(field("分类", category));
         }
-        return pending(ctx, ADD_FAQ, "W1", "添加 FAQ 到「" + kb.getName() + "」", payload, preview(fields, null, null), "KNOWLEDGE_BASE");
+        return pending(ctx, ADD_FAQ, "W1", "添加 FAQ 到「" + kb.name() + "」", payload, preview(fields, null, null), "KNOWLEDGE_BASE");
     }
 
     Map<String, Object> draftBindKnowledgeBase(JsonNode args, ToolContext ctx) {
         CurrentActor actor = ctx.actor();
-        AssistantQueryTools.AgentMatch match = queryTools.resolveAgent(text(args, "agent"), actor);
-        if (match.agent() == null) {
-            return match.response();
-        }
-        Agent agent = requireManageable(match.agent(), actor);
-        KnowledgeBase kb = queryTools.resolveKnowledgeBase(text(args, "knowledgeBase"), actor);
         boolean unbind = "unbind".equalsIgnoreCase(text(args, "operation"));
-        List<String> before = currentKnowledgeBaseIds(agent);
-        if (unbind && !before.contains(kb.getId())) {
-            throw new IllegalArgumentException("智能体「" + agent.getName() + "」没有绑定知识库「" + kb.getName() + "」");
+        AgentRef agent = resolveAgentRef(text(args, "agent"), ctx);
+        if (agent.response() != null) {
+            return agent.response();
+        }
+        if (agent.existing() != null) {
+            requireManageable(agent.existing(), actor);
+        }
+        KbRef kb = resolveKbRef(text(args, "knowledgeBase"), ctx);
+        if (unbind && (agent.dependsOn() != null || kb.dependsOn() != null)) {
+            throw new IllegalArgumentException("尚未创建的智能体或知识库不能解绑");
+        }
+        // 待创建的智能体：修改前的知识库以创建卡片中的为准
+        List<String> before = agent.existing() != null ? currentKnowledgeBaseIds(agent.existing()) : agent.pendingKnowledgeBaseIds();
+        String kbKey = kb.existing() != null ? kb.existing().getId() : kb.dependsOn();
+        if (unbind && !before.contains(kbKey)) {
+            throw new IllegalArgumentException("智能体「" + agent.name() + "」没有绑定知识库「" + kb.name() + "」");
         }
         if (!unbind) {
-            if (before.contains(kb.getId())) {
-                throw new IllegalArgumentException("智能体「" + agent.getName() + "」已经绑定了知识库「" + kb.getName() + "」");
+            if (before.contains(kbKey)) {
+                throw new IllegalArgumentException("智能体「" + agent.name() + "」已经绑定了知识库「" + kb.name() + "」");
             }
-            if (!authorizationService.canUseKnowledgeBase(actor, kb)) {
-                throw new IllegalArgumentException("你没有知识库「" + kb.getName() + "」的使用权限，不能绑定");
+            if (kb.existing() != null && !authorizationService.canUseKnowledgeBase(actor, kb.existing())) {
+                throw new IllegalArgumentException("你没有知识库「" + kb.name() + "」的使用权限，不能绑定");
             }
         }
-        List<String> after = new ArrayList<>(before);
+        List<String> beforeNames = knowledgeBaseNameList(before, actor);
+        List<String> afterNames = new ArrayList<>(beforeNames);
         if (unbind) {
-            after.remove(kb.getId());
+            afterNames.remove(kb.name());
         } else {
-            after.add(kb.getId());
+            afterNames.add(kb.dependsOn() != null ? kb.name() + "（待创建）" : kb.name());
         }
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("agentId", agent.getId());
-        payload.put("knowledgeBaseId", kb.getId());
+        agent.putInto(payload, "agentId", "agentFrom");
+        kb.putInto(payload, "knowledgeBaseId", "knowledgeBaseFrom");
         payload.put("operation", unbind ? "unbind" : "bind");
         List<Map<String, Object>> fields = List.of(
-                field("智能体", agent.getName()),
+                field("智能体", agent.display()),
                 field("操作", unbind ? "解绑知识库" : "绑定知识库"),
-                field("知识库", kb.getName()));
-        Map<String, Object> diff = diff("绑定的知识库", knowledgeBaseNames(before, actor), knowledgeBaseNames(after, actor));
-        String title = (unbind ? "解绑知识库：" : "绑定知识库：") + agent.getName() + (unbind ? " ✕ " : " ← ") + kb.getName();
+                field("知识库", kb.display()));
+        Map<String, Object> diff = diff("绑定的知识库", joinNames(beforeNames), joinNames(afterNames));
+        String title = (unbind ? "解绑知识库：" : "绑定知识库：") + agent.name() + (unbind ? " ✕ " : " ← ") + kb.name();
         return pending(ctx, BIND_KNOWLEDGE_BASE, "W2", title, payload, preview(fields, diff, null), "AGENT");
+    }
+
+    Map<String, Object> draftCreateApiKey(JsonNode args, ToolContext ctx) {
+        CurrentActor actor = ctx.actor();
+        AgentRef agent = resolveAgentRef(text(args, "agent"), ctx);
+        if (agent.response() != null) {
+            return agent.response();
+        }
+        if (agent.existing() != null && !authorizationService.canManageAgent(actor, agent.existing())) {
+            throw new IllegalArgumentException("你没有管理智能体「" + agent.name() + "」的权限，不能为它创建开放 API 凭证");
+        }
+        String name = text(args, "name");
+        if (name == null) {
+            name = agent.name() + " 对话凭证";
+        }
+        checkMax(name, NAME_MAX, "凭证名称");
+        Map<String, Object> payload = new LinkedHashMap<>();
+        agent.putInto(payload, "agentId", "agentFrom");
+        payload.put("name", name);
+        List<Map<String, Object>> fields = List.of(
+                field("凭证名称", name),
+                field("可调用的智能体", agent.display()),
+                field("权限范围", "对话（chat）"),
+                field("所属账号", actor.getUsername()));
+        return pending(ctx, CREATE_API_KEY, "W1", "创建开放 API 凭证：" + agent.name(), payload,
+                preview(fields, null, "确认后 API Key 明文只在卡片中显示一次，请立即复制保存；之后只能在「开放与安全 → 开放凭证」中查看前缀或轮换。"),
+                "API_KEY");
     }
 
     Map<String, Object> draftUpdateAgentPrompt(JsonNode args, ToolContext ctx) {
@@ -400,7 +453,11 @@ public class AssistantWriteTools {
     // ==================== 确认后执行 ====================
 
     /** 执行结果：资源类型与 ID、给用户看的说明，以及跳转链接（可为空）。 */
-    public record ExecutionResult(String resourceType, String resourceId, String message, String linkLabel, String linkUrl) {
+    public record ExecutionResult(String resourceType, String resourceId, String message, String linkLabel, String linkUrl,
+                                  String secret) {
+        public ExecutionResult(String resourceType, String resourceId, String message, String linkLabel, String linkUrl) {
+            this(resourceType, resourceId, message, linkLabel, linkUrl, null);
+        }
     }
 
     /**
@@ -421,6 +478,7 @@ public class AssistantWriteTools {
             case BIND_KNOWLEDGE_BASE -> executeBindKnowledgeBase(p, actor);
             case UPDATE_AGENT_PROMPT -> executeUpdateAgentPrompt(p, actor);
             case SET_AGENT_STATUS -> executeSetAgentStatus(p, actor);
+            case CREATE_API_KEY -> executeCreateApiKey(p, actor);
             default -> throw new IllegalStateException("不支持的操作：" + toolName);
         };
     }
@@ -449,7 +507,7 @@ public class AssistantWriteTools {
         agent.setKnowledgeBaseIds(kbIds);
         Agent created = agentService.create(agent, actor);
         return new ExecutionResult("AGENT", created.getId(), "已创建智能体「" + created.getName() + "」",
-                "去调试", "/debug/" + created.getId());
+                "去调试", AssistantQueryTools.agentLink(created.getId()));
     }
 
     private ExecutionResult executeCreateKnowledgeBase(JsonNode p, CurrentActor actor) {
@@ -459,7 +517,7 @@ public class AssistantWriteTools {
         req.setProvider("SPRING_AI");
         KnowledgeBase kb = knowledgeBaseService.createKnowledgeBase(req, actor);
         return new ExecutionResult("KNOWLEDGE_BASE", kb.getId(), "已创建知识库「" + kb.getName() + "」，可以去上传文档或添加 FAQ",
-                "查看知识库", "/dashboard?tab=knowledge");
+                "查看知识库", AssistantQueryTools.knowledgeBaseLink(kb.getId()));
     }
 
     private ExecutionResult executeAddFaq(JsonNode p, CurrentActor actor) {
@@ -469,15 +527,15 @@ public class AssistantWriteTools {
         if (p.hasNonNull("category")) {
             req.setCategory(p.get("category").asText());
         }
-        String kbId = p.path("knowledgeBaseId").asText();
+        String kbId = resolveId(p, "knowledgeBaseId", "knowledgeBaseFrom", actor);
         KnowledgeFaq faq = knowledgeBaseService.createFaq(kbId, req, actor);
         return new ExecutionResult("KNOWLEDGE_BASE", kbId, "已添加 FAQ（ID " + faq.getId() + "）",
-                "查看知识库", "/dashboard?tab=knowledge");
+                "查看知识库", AssistantQueryTools.knowledgeBaseLink(kbId));
     }
 
     private ExecutionResult executeBindKnowledgeBase(JsonNode p, CurrentActor actor) {
-        Agent agent = loadManageable(p.path("agentId").asText(), actor);
-        String kbId = p.path("knowledgeBaseId").asText();
+        Agent agent = loadManageable(resolveId(p, "agentId", "agentFrom", actor), actor);
+        String kbId = resolveId(p, "knowledgeBaseId", "knowledgeBaseFrom", actor);
         boolean unbind = "unbind".equals(p.path("operation").asText());
         List<String> ids = currentKnowledgeBaseIds(agent);
         if (unbind) {
@@ -491,7 +549,7 @@ public class AssistantWriteTools {
         String kbName = knowledgeBaseRepository.findById(kbId).map(KnowledgeBase::getName).orElse(kbId);
         return new ExecutionResult("AGENT", agent.getId(),
                 (unbind ? "已为「" + agent.getName() + "」解绑知识库「" : "已为「" + agent.getName() + "」绑定知识库「") + kbName + "」",
-                "去调试", "/debug/" + agent.getId());
+                "去调试", AssistantQueryTools.agentLink(agent.getId()));
     }
 
     private ExecutionResult executeUpdateAgentPrompt(JsonNode p, CurrentActor actor) {
@@ -505,7 +563,7 @@ public class AssistantWriteTools {
         patch.setSystemPrompt(p.path("systemPrompt").asText());
         agentService.update(agent.getId(), patch, actor);
         return new ExecutionResult("AGENT", agent.getId(), "已更新「" + agent.getName() + "」的系统提示词",
-                "去调试", "/debug/" + agent.getId());
+                "去调试", AssistantQueryTools.agentLink(agent.getId()));
     }
 
     private ExecutionResult executeSetAgentStatus(JsonNode p, CurrentActor actor) {
@@ -514,6 +572,177 @@ public class AssistantWriteTools {
         Agent updated = agentService.updateStatus(agentId, status, actor);
         return new ExecutionResult("AGENT", agentId, "「" + updated.getName() + "」已" + (status == AgentStatus.DISABLED ? "停用" : "启用"),
                 null, null);
+    }
+
+    /** 签发只允许调用该智能体、只有对话权限的开放 API 凭证，归属当前用户。明文只通过 secret 返回一次。 */
+    private ExecutionResult executeCreateApiKey(JsonNode p, CurrentActor actor) {
+        Agent agent = agentService.getById(resolveId(p, "agentId", "agentFrom", actor), actor)
+                .orElseThrow(() -> new IllegalStateException("智能体已不存在"));
+        if (!authorizationService.canManageAgent(actor, agent)) {
+            throw new IllegalStateException("你已没有管理该智能体的权限");
+        }
+        CreateOpenApiKeyRequest req = new CreateOpenApiKeyRequest();
+        req.setName(p.path("name").asText(agent.getName() + " 对话凭证"));
+        req.setOwnerId(actor.getUserId());
+        req.setScopes(List.of(OpenApiScopes.CHAT));
+        req.setAgentScope(List.of(agent.getId()));
+        Map<String, Object> created = openApiKeyService.create(req, actor);
+        Object view = created.get("key");
+        String keyId = null;
+        String prefix = "";
+        if (view instanceof Map<?, ?> map) {
+            keyId = map.get("id") != null ? String.valueOf(map.get("id")) : null;
+            prefix = map.get("keyPrefix") != null ? String.valueOf(map.get("keyPrefix")) : "";
+        }
+        return new ExecutionResult("API_KEY", keyId,
+                "已为「" + agent.getName() + "」创建开放 API 凭证（前缀 " + prefix + "）",
+                "查看开放凭证", "/dashboard?tab=open-platform", (String) created.get("plaintext"));
+    }
+
+    // ==================== 依赖前序操作卡片（多步编排） ====================
+
+    private static final Pattern ACTION_REF = Pattern.compile("^act-[0-9a-f]{8,32}$");
+    private static final List<String> DEPENDENCY_KEYS = List.of("agentFrom", "knowledgeBaseFrom");
+    private static final String PENDING_SUFFIX = "（待创建，需先确认上一张卡片）";
+
+    /** 智能体引用：已有智能体，或同一会话中尚未确认的"创建智能体"卡片（dependsOn 为卡片 ID）；response 非空表示需要用户澄清 */
+    record AgentRef(Agent existing, String dependsOn, String name, List<String> pendingKnowledgeBaseIds,
+                    Map<String, Object> response) {
+        String display() {
+            return dependsOn != null ? name + PENDING_SUFFIX : name;
+        }
+
+        void putInto(Map<String, Object> payload, String idKey, String fromKey) {
+            if (dependsOn != null) {
+                payload.put(fromKey, dependsOn);
+            } else {
+                payload.put(idKey, existing.getId());
+            }
+        }
+    }
+
+    /** 知识库引用：已有知识库，或同一会话中尚未确认的"创建知识库"卡片 */
+    record KbRef(KnowledgeBase existing, String dependsOn, String name) {
+        String display() {
+            return dependsOn != null ? name + PENDING_SUFFIX : name;
+        }
+
+        void putInto(Map<String, Object> payload, String idKey, String fromKey) {
+            if (dependsOn != null) {
+                payload.put(fromKey, dependsOn);
+            } else {
+                payload.put(idKey, existing.getId());
+            }
+        }
+    }
+
+    AgentRef resolveAgentRef(String ref, ToolContext ctx) {
+        AssistantAction action = referencedAction(ref, ctx, CREATE_AGENT);
+        if (action != null) {
+            if (AssistantAction.EXECUTED.equals(action.getStatus()) && action.getResourceId() != null) {
+                Agent agent = agentService.getById(action.getResourceId(), ctx.actor())
+                        .orElseThrow(() -> new IllegalArgumentException("该卡片创建的智能体已不存在"));
+                return new AgentRef(agent, null, agent.getName(), List.of(), null);
+            }
+            JsonNode p = readPayload(action);
+            List<String> kbIds = new ArrayList<>();
+            p.path("knowledgeBaseIds").forEach(node -> kbIds.add(node.asText()));
+            return new AgentRef(null, action.getId(), p.path("name").asText("新智能体"), kbIds, null);
+        }
+        AssistantQueryTools.AgentMatch match = queryTools.resolveAgent(ref, ctx.actor());
+        if (match.agent() == null) {
+            return new AgentRef(null, null, null, List.of(), match.response());
+        }
+        return new AgentRef(match.agent(), null, match.agent().getName(), List.of(), null);
+    }
+
+    KbRef resolveKbRef(String ref, ToolContext ctx) {
+        AssistantAction action = referencedAction(ref, ctx, CREATE_KNOWLEDGE_BASE);
+        if (action != null) {
+            if (AssistantAction.EXECUTED.equals(action.getStatus()) && action.getResourceId() != null) {
+                KnowledgeBase kb = knowledgeBaseRepository.findById(action.getResourceId())
+                        .orElseThrow(() -> new IllegalArgumentException("该卡片创建的知识库已不存在"));
+                return new KbRef(kb, null, kb.getName());
+            }
+            return new KbRef(null, action.getId(), readPayload(action).path("name").asText("新知识库"));
+        }
+        KnowledgeBase kb = queryTools.resolveKnowledgeBase(ref, ctx.actor());
+        return new KbRef(kb, null, kb.getName());
+    }
+
+    /**
+     * ref 是 act- 开头的卡片 ID 时，解析为当前用户、当前会话中指定类型的卡片；已取消、失败或过期的卡片不能引用。
+     * 其他情况返回 null，由调用方按名称或 ID 解析已有资源。
+     */
+    private AssistantAction referencedAction(String ref, ToolContext ctx, String expectedTool) {
+        if (ref == null || !ACTION_REF.matcher(ref.trim()).matches()) {
+            return null;
+        }
+        AssistantAction action = actionRepository.findByIdAndUserId(ref.trim(), ctx.actor().getUserId())
+                .filter(a -> ctx.conversationId() == null || ctx.conversationId().equals(a.getConversationId()))
+                .orElseThrow(() -> new IllegalArgumentException("找不到操作卡片 " + ref.trim() + "（只能引用本会话中生成的卡片）"));
+        if (!expectedTool.equals(action.getToolName())) {
+            throw new IllegalArgumentException("卡片 " + action.getId() + " 不是" + (CREATE_AGENT.equals(expectedTool) ? "创建智能体" : "创建知识库") + "的卡片");
+        }
+        String status = AssistantActionService.effectiveStatus(action);
+        if (!AssistantAction.PENDING.equals(status) && !AssistantAction.EXECUTED.equals(status)) {
+            throw new IllegalArgumentException("卡片「" + action.getTitle() + "」" + AssistantActionService.statusLabel(status) + "，不能再引用，请重新生成");
+        }
+        return action;
+    }
+
+    /** 卡片依赖的前序卡片 ID（前端据此在前序卡片执行成功前禁用确认按钮）。 */
+    public List<String> dependencies(AssistantAction action) {
+        JsonNode p = readPayload(action);
+        List<String> deps = new ArrayList<>();
+        for (String key : DEPENDENCY_KEYS) {
+            if (p.hasNonNull(key)) {
+                deps.add(p.get(key).asText());
+            }
+        }
+        return deps;
+    }
+
+    /**
+     * 确认前检查依赖：依赖的前序卡片必须已执行成功。
+     *
+     * @return 未满足时给用户的提示；无依赖或已满足时为 null
+     */
+    public String unmetDependency(AssistantAction action, CurrentActor actor) {
+        for (String depId : dependencies(action)) {
+            AssistantAction dep = actionRepository.findByIdAndUserId(depId, actor.getUserId()).orElse(null);
+            if (dep == null) {
+                return "依赖的前序操作已不存在，请让助手重新生成";
+            }
+            if (!AssistantAction.EXECUTED.equals(dep.getStatus())) {
+                return "请先确认上一张卡片「" + dep.getTitle() + "」（当前：" + AssistantActionService.statusLabel(AssistantActionService.effectiveStatus(dep)) + "）";
+            }
+        }
+        return null;
+    }
+
+    /** 执行时取资源 ID：卡片中直接给出的 ID，或依赖的前序卡片创建出的资源 ID。 */
+    private String resolveId(JsonNode p, String idKey, String fromKey, CurrentActor actor) {
+        if (p.hasNonNull(idKey)) {
+            return p.get(idKey).asText();
+        }
+        if (p.hasNonNull(fromKey)) {
+            AssistantAction dep = actionRepository.findByIdAndUserId(p.get(fromKey).asText(), actor.getUserId())
+                    .orElseThrow(() -> new IllegalStateException("依赖的前序操作已不存在，请让助手重新生成"));
+            if (!AssistantAction.EXECUTED.equals(dep.getStatus()) || dep.getResourceId() == null) {
+                throw new IllegalStateException("请先确认上一张卡片「" + dep.getTitle() + "」");
+            }
+            return dep.getResourceId();
+        }
+        throw new IllegalStateException("操作参数不完整，请让助手重新生成");
+    }
+
+    private JsonNode readPayload(AssistantAction action) {
+        try {
+            return objectMapper.readTree(action.getPayload() == null ? "{}" : action.getPayload());
+        } catch (Exception e) {
+            return objectMapper.createObjectNode();
+        }
     }
 
     // ==================== 工具方法 ====================
@@ -557,13 +786,14 @@ public class AssistantWriteTools {
                 : new ArrayList<>(agent.getKnowledgeBaseIds().stream().filter(id -> id != null && !id.isBlank()).toList());
     }
 
-    private String knowledgeBaseNames(List<String> ids, CurrentActor actor) {
-        if (ids.isEmpty()) {
-            return "（无）";
-        }
-        return String.join("、", ids.stream().map(id -> knowledgeBaseRepository.findById(id)
+    private List<String> knowledgeBaseNameList(List<String> ids, CurrentActor actor) {
+        return new ArrayList<>(ids.stream().map(id -> knowledgeBaseRepository.findById(id)
                 .map(kb -> authorizationService.canViewKnowledgeBase(actor, kb) ? kb.getName() : "（无权查看的知识库）")
                 .orElse("（已删除的知识库）")).toList());
+    }
+
+    private static String joinNames(List<String> names) {
+        return names.isEmpty() ? "（无）" : String.join("、", names);
     }
 
     private String generateCode() {

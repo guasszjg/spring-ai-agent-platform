@@ -41,11 +41,27 @@ public class AssistantActionService {
         this.auditRecorder = auditRecorder;
     }
 
-    /** 用户确认执行。任何情况下都返回最新的卡片数据，前端据此刷新卡片。 */
+    /** 依赖的前序卡片尚未执行成功：拒绝确认，卡片保持 PENDING（不消耗）。 */
+    public static class DependencyNotMetException extends IllegalStateException {
+        public DependencyNotMetException(String message) {
+            super(message);
+        }
+    }
+
+    /**
+     * 用户确认执行，返回最新的卡片数据，前端据此刷新卡片。
+     * 执行结果中的敏感信息（如新签发的 API Key 明文）只放在本次返回的卡片 secret 字段中，不落库。
+     *
+     * @throws DependencyNotMetException 依赖的前序卡片还未确认执行成功
+     */
     public Map<String, Object> confirm(String actionId, CurrentActor actor) {
         AssistantAction action = load(actionId, actor);
         if (!AssistantAction.PENDING.equals(action.getStatus())) {
             return card(action);
+        }
+        String unmet = writeTools.unmetDependency(action, actor);
+        if (unmet != null) {
+            throw new DependencyNotMetException(unmet);
         }
         if (actionRepository.claim(actionId, actor.getUserId(), LocalDateTime.now()) != 1) {
             // 并发确认、刚好过期或已被取消：以数据库中的最新状态为准
@@ -53,11 +69,13 @@ public class AssistantActionService {
         }
 
         Map<String, Object> result = new LinkedHashMap<>();
+        String secret = null;
         try {
             AssistantWriteTools.ExecutionResult executed = writeTools.execute(action.getToolName(), action.getPayload(), actor);
             action.setStatus(AssistantAction.EXECUTED);
             action.setResourceType(executed.resourceType());
             action.setResourceId(executed.resourceId());
+            secret = executed.secret();
             result.put("message", executed.message());
             if (executed.linkUrl() != null) {
                 result.put("link", Map.of("label", executed.linkLabel(), "url", executed.linkUrl()));
@@ -75,7 +93,11 @@ public class AssistantActionService {
         }
         action.setResult(toJson(result));
         action.setExecutedAt(LocalDateTime.now());
-        return card(actionRepository.save(action));
+        Map<String, Object> card = card(actionRepository.save(action));
+        if (secret != null) {
+            card.put("secret", secret);
+        }
+        return card;
     }
 
     public Map<String, Object> cancel(String actionId, CurrentActor actor) {
@@ -104,6 +126,10 @@ public class AssistantActionService {
         for (AssistantAction action : actionRepository.findByConversationIdOrderByCreatedAtAsc(conversationId)) {
             String status = effectiveStatus(action);
             String note = "「" + action.getTitle() + "」：" + statusLabel(status);
+            if (AssistantAction.PENDING.equals(status)) {
+                // 模型在后续轮次中编排依赖此卡片的操作时需要卡片 ID
+                note += "（pendingActionId " + action.getId() + "）";
+            }
             if (AssistantAction.EXECUTED.equals(status) && action.getResourceId() != null) {
                 note += "（资源 ID " + action.getResourceId() + "）";
             }
@@ -138,6 +164,7 @@ public class AssistantActionService {
         m.put("status", status);
         m.put("preview", readJson(action.getPreview()));
         m.put("result", readJson(action.getResult()));
+        m.put("dependsOn", writeTools.dependencies(action));
         // 时间统一输出 ISO 字符串：卡片既走 SSE（普通 ObjectMapper）也走 REST，两边格式一致
         m.put("expiresAt", iso(action.getExpiresAt()));
         m.put("createdAt", iso(action.getCreatedAt()));

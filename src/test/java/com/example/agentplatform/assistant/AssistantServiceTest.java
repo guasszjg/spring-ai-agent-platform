@@ -115,8 +115,33 @@ class AssistantServiceTest {
         provider.setName("DeepSeek");
         provider.setBaseUrl("https://api.deepseek.com");
         provider.setDefaultModel("deepseek-v4-flash");
-        when(gatewayService.resolveRoute(isNull())).thenReturn(Optional.of(
-                new LlmGatewayService.ResolvedRoute(provider, null, 30000, 0, "sk-test", null)));
+        when(gatewayService.resolveAssistantRoute()).thenReturn(Optional.of(new LlmGatewayService.AssistantRoute(
+                new LlmGatewayService.ResolvedRoute(provider, null, 30000, 0, "sk-test", null), null, false)));
+    }
+
+    @Test
+    void dedicatedAssistantModelOverridesChannelDefaultAndPageContextIsInSystemPrompt() {
+        LlmProvider provider = new LlmProvider();
+        provider.setName("Qwen");
+        provider.setBaseUrl("https://dashscope.example.com");
+        provider.setDefaultModel("qwen-plus");
+        when(gatewayService.resolveAssistantRoute()).thenReturn(Optional.of(new LlmGatewayService.AssistantRoute(
+                new LlmGatewayService.ResolvedRoute(provider, null, 30000, 0, "sk-test", null), "qwen-max", true)));
+        AssistantQueryTools queryTools = org.mockito.Mockito.mock(AssistantQueryTools.class);
+        when(queryTools.describeContext(any(), eq(actor))).thenReturn("用户正在查看智能体「售后客服」（ID agent-1）");
+        service.setQueryTools(queryTools);
+        when(openAiClient.streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(), any(), any(), any(), anyInt(), any(), any()))
+                .thenReturn(new OpenAiCompatibleClient.StreamResult("好的", List.of(), 10, 2));
+
+        service.converse(new AssistantChatRequest(null, "这个智能体怎么样", "AGENT",
+                Map.of("page", "debug", "resourceType", "AGENT", "resourceId", "agent-1")), actor, sink);
+
+        ArgumentCaptor<List<Map<String, Object>>> messages = ArgumentCaptor.forClass(List.class);
+        verify(openAiClient).streamChat(anyString(), anyString(), eq("qwen-max"), any(), anyBoolean(),
+                messages.capture(), any(), any(), anyInt(), any(), any());
+        String system = String.valueOf(messages.getValue().get(0).get("content"));
+        assertTrue(system.contains("【页面上下文】"));
+        assertTrue(system.contains("agent-1"));
     }
 
     private List<String> eventNames() {

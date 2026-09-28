@@ -50,6 +50,7 @@ public class AssistantToolRegistry {
         }
         return tools.values().stream()
                 .filter(tool -> !tool.write() || canWrite(actor))
+                .filter(tool -> !tool.superAdminOnly() || actor.isSuperAdmin())
                 .map(AssistantTool::definition)
                 .toList();
     }
@@ -83,6 +84,9 @@ public class AssistantToolRegistry {
         if (tool.write() && !canWrite(actor)) {
             // 定义里已经过滤掉了；这里兜底，防止模型凭历史记忆调用写工具
             return Outcome.failure(name, tool.label(), "当前账号为只读观察员，不能创建或修改任何资源");
+        }
+        if (tool.superAdminOnly() && !actor.isSuperAdmin()) {
+            return Outcome.failure(name, tool.label(), "该操作仅超级管理员可用");
         }
         JsonNode args;
         try {

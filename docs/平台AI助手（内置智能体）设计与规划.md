@@ -2,9 +2,9 @@
 
 **项目**：AgentMatrix 企业级智能体平台
 **范围**：`spring-ai-agent-platform`（后端）、`spring-ai-agent-platform-ui`（前端）
-**文档版本**：1.2
+**文档版本**：1.3
 **日期**：2026-09-28
-**状态**：P0、P1、P2 已完成，P3 起按本文分阶段实施
+**状态**：P0～P3 已完成，P4 按本文实施
 
 ---
 
@@ -428,7 +428,7 @@ CREATE INDEX idx_asst_action_user ON assistant_actions (user_id, created_at DESC
   - 输出护栏：拦截模式命中即中断；脱敏模式命中内容打码后继续输出（与开放 API 的流式实现不同，后者命中即中断）。
   - 用量：助手 token 按用户计入概览页（总量、趋势、模型分布、成本），并单独给出 `assistantPromptTokens / assistantCompletionTokens`。
   - 流式请求返回后，会话拦截器在 `afterConcurrentHandlingStarted` 中清理 `CurrentActor`，避免残留在容器线程。
-- 未做：前端资源名称点击跳转（留待 P3 与页面上下文一起做）；评测集（第 12 节）尚未建立。
+- 未做：前端资源名称点击跳转（P3 已完成）；评测集（第 12 节，之后已建立）。
 
 ### P2：引导式创建（写操作 + 确认，已完成）
 
@@ -475,6 +475,27 @@ CREATE INDEX idx_asst_action_user ON assistant_actions (user_id, created_at DESC
 3. 多步任务：一句话拆成多个操作卡片，按顺序确认（例如"建客服智能体 → 建知识库 → 绑定"）。
 4. 工具：`create_api_key`、`test_gateway_channel`。
 5. 网关支持"助手专用模型"。
+
+**完成情况（2026-09-28，47 环境 DeepSeek 通道实测；评测集 63 条全部通过）**：
+
+- 页面上下文：前端各页面向 `useAssistantContext` 登记当前页面与正在查看的资源（仪表盘各模块、知识库详情、调试台的智能体），
+  发送消息时带上 `context: { page, resourceType, resourceId }`；输入框上方显示"关于 智能体「X」"，可点"不关联"排除本次提问。
+  后端只接受字母数字短横线的短值，按当前用户权限解析资源名称后写入系统提示词；伪造或无权查看的资源 ID 直接忽略，不泄露任何信息。
+  实测在调试台问"这个智能体绑定了哪些知识库"，助手直接用该智能体 ID 查询，不再追问是哪一个。
+- 入口：调试台接入同一个助手面板（入口按钮上移，避开调试台自己的发送按钮）；欢迎页的示例问题随上下文变化。
+- 可点击的资源链接：查询工具的结果带 `link`（智能体 `/debug/{id}`，知识库 `/dashboard?tab=knowledge&kb={id}`），
+  提示词要求模型只使用工具给出的链接写 Markdown 链接；前端只渲染以 `/` 开头的站内链接并用路由跳转，知识库链接会直接打开该知识库详情。
+- 多步编排：写工具的智能体 / 知识库参数可以传同一会话中尚未确认的"创建"卡片的 `pendingActionId`（`act-` 开头），
+  卡片记录依赖（`agentFrom` / `knowledgeBaseFrom`），字段显示"（待创建，需先确认上一张卡片）"。确认时前序卡片未执行成功返回 409，
+  卡片保持待确认、不被消耗；前端在前序卡片执行前禁用确认按钮并提示先确认哪一张。执行时从前序卡片取新资源 ID。
+  只能引用本人、本会话、仍有效（待确认或已执行）的卡片。实测一句话生成"建知识库 → 建智能体 → 绑定 → 签发凭证"4 张卡片，乱序确认被拒，按序确认全部成功。
+- `create_api_key`（W1）：签发只有对话权限、只能调用该智能体、归属当前用户的凭证；要求对该智能体有管理权限。
+  明文只放在确认接口本次响应的卡片 `secret` 字段中，不写入操作结果、对话记录与审计，模型也看不到；再次确认或重新打开会话都不会再返回。
+- `test_gateway_channel`（仅超级管理员）：对指定通道做一次连通性探测。工具新增"仅超级管理员"级别，其他角色既看不到也不能按名称调用。
+- 助手专用模型（迁移 `V18__assistant_dedicated_model.sql`）：模型网关路由策略中可为助手单独选择通道与模型，保存时校验模型在通道的模型列表中；
+  专用通道不可用时自动回到默认通道；降级备用通道使用其默认模型。
+- 评测集新增 7 条 P3 用例（页面上下文、依赖卡片编排、签发凭证、通道测试与越权），用例支持 `context` 字段与 `{{agent_id}}` / `{{kb_id}}` 占位符。
+- 顺带修复：调试台卸载时引用了不存在的 `handleResize`，异常会中断 Vue 的后续挂载回调，导致从调试台跳回仪表盘时页面数据不加载。
 
 ### P4：主动建议
 
@@ -541,13 +562,15 @@ CREATE INDEX idx_asst_action_user ON assistant_actions (user_id, created_at DESC
 - 页面：{context.page}，资源：{context.resource}
 ```
 
-## 附录 B：现状代码位置（P0 / P1 / P2）
+## 附录 B：现状代码位置（P0～P3）
 
 | 模块 | 位置 |
 |---|---|
 | 前端助手面板 | `spring-ai-agent-platform-ui/src/components/AssistantDock.vue`（流式渲染、工具提示、模式切换、停止生成、历史对话、操作卡片、回复反馈） |
 | 前端 SSE 读取 | `spring-ai-agent-platform-ui/src/api/http.js` 的 `http.stream()` |
-| 前端挂载 | `spring-ai-agent-platform-ui/src/views/DashboardView.vue` |
+| 前端挂载 | `spring-ai-agent-platform-ui/src/views/DashboardView.vue`、`src/views/DebugView.vue`（P3） |
+| 页面上下文（P3） | 前端 `src/composables/useAssistantContext.js`；后端 `AssistantQueryTools.describeContext()`、`AssistantController.sanitizeContext()` |
+| 助手专用模型（P3） | `LlmGatewayService.resolveAssistantRoute()`，迁移 `V18__assistant_dedicated_model.sql`；前端 `GatewayPanel.vue` 路由策略 |
 | 助手接口 | `controller/AssistantController.java`（`/chat`、`/chat/stream`、`/conversations`） |
 | 流式对话与工具循环（P1） | `assistant/AssistantService.java` |
 | 写工具与确认后执行（P2） | `assistant/AssistantWriteTools.java` |

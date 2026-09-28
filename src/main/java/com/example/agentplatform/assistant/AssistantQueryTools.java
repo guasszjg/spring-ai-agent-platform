@@ -139,8 +139,106 @@ public class AssistantQueryTools {
                 AssistantTool.read("search_platform_docs", "检索平台文档",
                         "检索平台使用文档。回答\"怎么用\"\"在哪里设置\"\"是什么意思\"\"报错怎么办\"等平台使用问题前先调用，以文档为准回答。",
                         schema(Map.of("query", prop("string", "检索问题，用完整的一句话描述")), "query"),
-                        (args, ctx) -> searchPlatformDocs(args))
+                        (args, ctx) -> searchPlatformDocs(args)),
+                AssistantTool.adminRead("test_gateway_channel", "测试模型通道",
+                        "对一个大模型通道发起一次连通性测试并返回结果（仅超级管理员）。用户问\"XX 通道还能用吗\"\"帮我测一下通道\"时使用。",
+                        schema(Map.of("channel", prop("string", "通道名称或 ID")), "channel"),
+                        (args, ctx) -> testGatewayChannel(args, ctx.actor()))
         );
+    }
+
+    // ==================== test_gateway_channel ====================
+
+    Map<String, Object> testGatewayChannel(JsonNode args, CurrentActor actor) {
+        if (!actor.isSuperAdmin()) {
+            throw new IllegalStateException("测试模型通道仅超级管理员可用");
+        }
+        String ref = text(args, "channel");
+        if (ref == null) {
+            throw new IllegalArgumentException("请提供通道名称或 ID");
+        }
+        List<LlmProviderView> providers = gatewayService.overview().getProviders();
+        List<LlmProviderView> matched = providers.stream()
+                .filter(p -> ref.equalsIgnoreCase(p.getId()) || ref.equalsIgnoreCase(p.getName()))
+                .toList();
+        if (matched.isEmpty()) {
+            matched = providers.stream().filter(p -> p.getName() != null
+                    && p.getName().toLowerCase(Locale.ROOT).contains(ref.toLowerCase(Locale.ROOT))).toList();
+        }
+        if (matched.isEmpty()) {
+            throw new IllegalArgumentException("没有找到通道「" + ref + "」，可用通道："
+                    + String.join("、", providers.stream().map(LlmProviderView::getName).toList()));
+        }
+        if (matched.size() > 1) {
+            throw new IllegalArgumentException("匹配到多个通道，请让用户确认：" + String.join("、", matched.stream().map(LlmProviderView::getName).toList()));
+        }
+        LlmProviderView probed = gatewayService.probe(matched.get(0).getId());
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("channel", probed.getName());
+        m.put("status", probed.getLastProbeStatus());
+        m.put("message", truncate(probed.getLastProbeMessage(), 200));
+        m.put("testedAt", format(probed.getLastProbeAt()));
+        m.put("enabled", probed.isEnabled());
+        m.put("keyConfigured", probed.isConfigured());
+        return ok(m);
+    }
+
+    // ==================== 页面上下文与链接 ====================
+
+    static String agentLink(String agentId) {
+        return "/debug/" + agentId;
+    }
+
+    static String knowledgeBaseLink(String kbId) {
+        return "/dashboard?tab=knowledge&kb=" + kbId;
+    }
+
+    private static final Map<String, String> PAGE_NAMES = Map.ofEntries(
+            Map.entry("overview", "概览"), Map.entry("agents", "智能体列表"), Map.entry("templates", "场景模板"),
+            Map.entry("tools", "工具"), Map.entry("knowledge", "知识库"), Map.entry("gateway", "模型网关"),
+            Map.entry("users", "用户"), Map.entry("roles", "角色与权限"), Map.entry("security", "开放与安全"),
+            Map.entry("assistant-eval", "助手评测"), Map.entry("debug", "智能体编排与调试"));
+
+    /**
+     * 把前端传来的页面上下文转成给模型的说明。资源只在当前用户有权查看时才展开名称，
+     * 伪造或无权的资源 ID 一律忽略，不泄露任何信息。
+     */
+    String describeContext(Map<String, String> context, CurrentActor actor) {
+        if (context == null || context.isEmpty()) {
+            return null;
+        }
+        String page = PAGE_NAMES.get(context.getOrDefault("page", ""));
+        String type = context.get("resourceType");
+        String id = context.get("resourceId");
+        String resource = null;
+        if (id != null && !id.isBlank()) {
+            if ("AGENT".equalsIgnoreCase(type)) {
+                try {
+                    resource = agentService.getById(id, actor)
+                            .map(a -> "智能体「" + a.getName() + "」（ID " + a.getId() + "）")
+                            .orElse(null);
+                } catch (IllegalStateException ignored) {
+                    resource = null;
+                }
+            } else if ("KNOWLEDGE_BASE".equalsIgnoreCase(type)) {
+                resource = knowledgeBaseRepository.findById(id)
+                        .filter(kb -> authorizationService.canViewKnowledgeBase(actor, kb))
+                        .map(kb -> "知识库「" + kb.getName() + "」（ID " + kb.getId() + "）")
+                        .orElse(null);
+            }
+        }
+        if (page == null && resource == null) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        if (page != null) {
+            sb.append("用户当前在「").append(page).append("」页面");
+        }
+        if (resource != null) {
+            sb.append(sb.isEmpty() ? "用户" : "，").append("正在查看").append(resource)
+                    .append("。用户说\"这个\"\"当前的\"智能体或知识库时，指的就是它，直接用它的 ID 调用工具");
+        }
+        return sb.append("。").toString();
     }
 
     // ==================== list_templates ====================
@@ -239,6 +337,7 @@ public class AssistantQueryTools {
         m.put("avgLatencyMs", a.getAvgResponseTimeMs());
         m.put("owner", Boolean.TRUE.equals(a.getIsSystem()) ? "系统内置" : a.getOwnerUsername());
         m.put("updatedAt", format(a.getUpdatedAt()));
+        m.put("link", agentLink(a.getId()));
         return m;
     }
 
@@ -336,6 +435,7 @@ public class AssistantQueryTools {
             m.put("owner", Boolean.TRUE.equals(kb.getIsSystem()) ? "系统内置" : kb.getOwnerUsername());
             m.put("description", truncate(kb.getDescription(), 80));
             m.put("updatedAt", format(kb.getUpdatedAt()));
+            m.put("link", knowledgeBaseLink(kb.getId()));
             return m;
         }).toList();
         return ok(Map.of("total", page.getTotal(), "returned", items.size(), "items", items));
