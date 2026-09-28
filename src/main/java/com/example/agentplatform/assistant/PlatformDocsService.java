@@ -12,7 +12,9 @@ import com.example.agentplatform.service.EmbeddingConfigService;
 import com.example.agentplatform.service.KnowledgeBaseService;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
+import com.example.agentplatform.storage.ObjectStorageService;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.core.io.ClassPathResource;
@@ -36,7 +38,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 平台使用文档：助手回答"怎么用"类问题的依据（P2）。
  *
  * <p>jar 内置 {@code assistant/platform-guide.md}，启动后在后台导入名为「平台使用文档」的系统知识库（平台内置引擎）。
- * 内置文档内容变化（SHA-256 不同）时自动替换该文档；超级管理员在界面中向这个知识库追加的其他文档不受影响，同样可被检索。
+ * 内置文档内容变化（SHA-256 不同），或原件归档在当前机器上不存在（换机器、换工作目录部署）时，自动重新导入该文档；
+ * 超级管理员在界面中向这个知识库追加的其他文档不受影响，同样可被检索。
  * 导入依赖已激活的向量模型：未配置时跳过，助手退回系统提示词中的静态功能介绍；之后首次检索时会再尝试导入。
  */
 @Service
@@ -64,6 +67,13 @@ public class PlatformDocsService {
     });
     private volatile boolean ready;
     private volatile long lastAttemptAt;
+    private ObjectStorageService objectStorageService;
+
+    /** 可选注入：用于检查原件归档是否在本机存在。 */
+    @Autowired(required = false)
+    public void setObjectStorageService(ObjectStorageService objectStorageService) {
+        this.objectStorageService = objectStorageService;
+    }
 
     public PlatformDocsService(KnowledgeBaseService knowledgeBaseService,
                                KnowledgeBaseRepository knowledgeBaseRepository,
@@ -149,7 +159,8 @@ public class PlatformDocsService {
         List<KnowledgeDocument> existing = documentRepository.findByKnowledgeBaseId(kb.getId()).stream()
                 .filter(doc -> GUIDE_FILE_NAME.equals(doc.getName()))
                 .toList();
-        if (existing.size() == 1 && sha256.equalsIgnoreCase(existing.get(0).getSha256())) {
+        if (existing.size() == 1 && sha256.equalsIgnoreCase(existing.get(0).getSha256())
+                && archiveExists(existing.get(0))) {
             ready = true;
             return;
         }
@@ -159,6 +170,30 @@ public class PlatformDocsService {
         knowledgeBaseService.uploadDocuments(kb.getId(), List.of(new BytesMultipartFile(GUIDE_FILE_NAME, guide)), SYSTEM);
         ready = true;
         log.info("平台使用文档已导入知识库「{}」（sha256={}）", KB_NAME, sha256.substring(0, 12));
+    }
+
+    /**
+     * 原件归档是否在当前机器的对象存储中。归档存在运行程序那台机器上（默认 ./data/kb-files），
+     * 换一台机器或换一个工作目录启动时会缺失：此时重新导入，让归档与检索数据一起补齐。
+     * 未配置对象存储时不检查。
+     */
+    private boolean archiveExists(KnowledgeDocument doc) {
+        if (objectStorageService == null) {
+            return true;
+        }
+        if (doc.getObjectKey() == null || doc.getObjectKey().isBlank()) {
+            return false;
+        }
+        try {
+            boolean exists = objectStorageService.exists(doc.getObjectKey());
+            if (!exists) {
+                log.info("平台使用文档的原件归档在本机不存在（{}），将重新导入", doc.getObjectKey());
+            }
+            return exists;
+        } catch (Exception e) {
+            log.debug("检查平台使用文档归档失败: {}", e.getMessage());
+            return true;
+        }
     }
 
     Optional<KnowledgeBase> findKnowledgeBase() {

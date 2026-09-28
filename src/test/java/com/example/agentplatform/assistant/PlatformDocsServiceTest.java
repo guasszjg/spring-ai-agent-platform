@@ -7,6 +7,7 @@ import com.example.agentplatform.repository.KnowledgeBaseRepository;
 import com.example.agentplatform.repository.KnowledgeDocumentRepository;
 import com.example.agentplatform.service.EmbeddingConfigService;
 import com.example.agentplatform.service.KnowledgeBaseService;
+import com.example.agentplatform.storage.ObjectStorageService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -102,6 +103,38 @@ class PlatformDocsServiceTest {
         assertTrue(service.isReady());
         verify(knowledgeBaseService, never()).uploadDocuments(anyString(), any(), any());
         verify(knowledgeBaseService, never()).deleteDocument(anyString(), anyString(), any());
+    }
+
+    @Test
+    void missingArchiveOnThisMachineTriggersReimport() throws Exception {
+        ObjectStorageService storage = org.mockito.Mockito.mock(ObjectStorageService.class);
+        service.setObjectStorageService(storage);
+        when(knowledgeBaseRepository.findAll()).thenReturn(List.of(docsKb));
+        KnowledgeDocument doc = guideDoc(PlatformDocsService.sha256(PlatformDocsService.readGuide()));
+        doc.setObjectKey("kb/kb-docs/docs/doc-1/platform-guide.md");
+        when(documentRepository.findByKnowledgeBaseId("kb-docs")).thenReturn(List.of(doc));
+        when(storage.exists("kb/kb-docs/docs/doc-1/platform-guide.md")).thenReturn(false);
+
+        service.sync();
+
+        verify(knowledgeBaseService).deleteDocument(eq("kb-docs"), eq("doc-1"), any());
+        verify(knowledgeBaseService).uploadDocuments(eq("kb-docs"), any(), any());
+        assertTrue(service.isReady());
+    }
+
+    @Test
+    void presentArchiveAndSameContentSkipsReimport() throws Exception {
+        ObjectStorageService storage = org.mockito.Mockito.mock(ObjectStorageService.class);
+        service.setObjectStorageService(storage);
+        when(knowledgeBaseRepository.findAll()).thenReturn(List.of(docsKb));
+        KnowledgeDocument doc = guideDoc(PlatformDocsService.sha256(PlatformDocsService.readGuide()));
+        doc.setObjectKey("kb/kb-docs/docs/doc-1/platform-guide.md");
+        when(documentRepository.findByKnowledgeBaseId("kb-docs")).thenReturn(List.of(doc));
+        when(storage.exists(anyString())).thenReturn(true);
+
+        service.sync();
+
+        verify(knowledgeBaseService, never()).uploadDocuments(anyString(), any(), any());
     }
 
     @Test
