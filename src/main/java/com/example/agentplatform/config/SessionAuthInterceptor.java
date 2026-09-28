@@ -11,13 +11,13 @@ import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
-import org.springframework.web.servlet.HandlerInterceptor;
+import org.springframework.web.servlet.AsyncHandlerInterceptor;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Set;
 
 @Component
-public class SessionAuthInterceptor implements HandlerInterceptor {
+public class SessionAuthInterceptor implements AsyncHandlerInterceptor {
 
     public static final String SESSION_USER = "LOGGED_IN_USER";
 
@@ -154,6 +154,15 @@ public class SessionAuthInterceptor implements HandlerInterceptor {
 
     @Override
     public void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) {
+        CurrentActor.clear();
+    }
+
+    /**
+     * 异步请求（如 SSE 流式接口）返回后，请求线程不会调用 afterCompletion，而是调用本方法；
+     * 必须在这里清理，否则 CurrentActor 会残留在归还给容器的线程上。
+     */
+    @Override
+    public void afterConcurrentHandlingStarted(HttpServletRequest request, HttpServletResponse response, Object handler) {
         CurrentActor.clear();
     }
 

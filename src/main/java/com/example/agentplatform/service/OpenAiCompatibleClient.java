@@ -261,6 +261,212 @@ public class OpenAiCompatibleClient {
         }
     }
 
+    /**
+     * 流式对话（单轮）：增量内容通过 onContent 回调推送；模型发起的工具调用不执行，拼装后原样返回给调用方决定如何处理。
+     * 通道忽略 stream 参数直接返回完整 JSON 时也能正确解析；不支持 stream_options 的通道自动去掉该参数重试一次。
+     *
+     * @param cancelled 返回 true 时停止读取（如前端已断开），返回已收到的部分结果
+     */
+    public StreamResult streamChat(String baseUrl, String apiKey, String model,
+                                   Map<String, String> customHeaders,
+                                   boolean defaultWebSearch,
+                                   List<Map<String, Object>> messages,
+                                   List<Map<String, Object>> tools,
+                                   ChatGeneration generation, int timeoutMs,
+                                   java.util.function.Consumer<String> onContent,
+                                   java.util.function.BooleanSupplier cancelled) {
+        outboundUrlValidator.validateProviderBaseUrl(baseUrl);
+        try {
+            return doStreamChat(baseUrl, apiKey, model, customHeaders, defaultWebSearch, messages, tools,
+                    generation, timeoutMs, onContent, cancelled, true);
+        } catch (StreamOptionsRejected e) {
+            return doStreamChat(baseUrl, apiKey, model, customHeaders, defaultWebSearch, messages, tools,
+                    generation, timeoutMs, onContent, cancelled, false);
+        }
+    }
+
+    private StreamResult doStreamChat(String baseUrl, String apiKey, String model,
+                                      Map<String, String> customHeaders, boolean defaultWebSearch,
+                                      List<Map<String, Object>> messages, List<Map<String, Object>> tools,
+                                      ChatGeneration generation, int timeoutMs,
+                                      java.util.function.Consumer<String> onContent,
+                                      java.util.function.BooleanSupplier cancelled,
+                                      boolean includeUsage) {
+        String url = resolveChatUrl(baseUrl);
+        try {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("model", model);
+            payload.put("messages", messages);
+            if (tools != null && !tools.isEmpty()) {
+                payload.put("tools", tools);
+            }
+            applyGeneration(payload, generation, defaultWebSearch);
+            payload.put("stream", true);
+            if (includeUsage) {
+                payload.put("stream_options", Map.of("include_usage", true));
+            }
+            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
+                    .timeout(Duration.ofMillis(Math.max(5000, timeoutMs)))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "text/event-stream");
+            if (apiKey != null && !apiKey.isBlank()) {
+                builder.header("Authorization", "Bearer " + apiKey.trim());
+            }
+            if (customHeaders != null) {
+                customHeaders.forEach((k, v) -> {
+                    if (k != null && !k.isBlank() && v != null && !"content-type".equalsIgnoreCase(k)
+                            && !"accept".equalsIgnoreCase(k)) {
+                        builder.header(k.trim(), v.trim());
+                    }
+                });
+            }
+            applyExtraHeaders(builder, generation);
+            HttpRequest request = builder
+                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload), StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<java.io.InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            try (java.io.InputStream body = response.body();
+                 java.io.BufferedReader reader = new java.io.BufferedReader(
+                         new java.io.InputStreamReader(body, StandardCharsets.UTF_8))) {
+                if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                    String error = reader.lines().limit(50).collect(java.util.stream.Collectors.joining(" "));
+                    if (includeUsage && response.statusCode() == 400 && error.contains("stream_options")) {
+                        throw new StreamOptionsRejected();
+                    }
+                    throw new IllegalStateException("HTTP " + response.statusCode() + " " + truncate(error));
+                }
+                return parseStream(reader, onContent, cancelled);
+            }
+        } catch (StreamOptionsRejected | IllegalStateException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException("模型调用失败: " + e.getMessage(), e);
+        }
+    }
+
+    /** 解析 OpenAI 兼容的 SSE 流；首个非空行不是 SSE（通道忽略了 stream 参数）时按完整 JSON 解析。 */
+    StreamResult parseStream(java.io.BufferedReader reader,
+                             java.util.function.Consumer<String> onContent,
+                             java.util.function.BooleanSupplier cancelled) throws java.io.IOException {
+        StringBuilder content = new StringBuilder();
+        java.util.TreeMap<Integer, String[]> toolParts = new java.util.TreeMap<>(); // index -> [id, name, arguments]
+        int promptTokens = 0;
+        int completionTokens = 0;
+        boolean sawEvent = false;
+        String line;
+        while ((line = reader.readLine()) != null) {
+            if (cancelled != null && cancelled.getAsBoolean()) {
+                break;
+            }
+            String trimmed = line.trim();
+            if (trimmed.isEmpty() || trimmed.startsWith(":")) {
+                continue;
+            }
+            if (!sawEvent && trimmed.startsWith("{")) {
+                // 非流式响应：读完剩余内容按普通 completion 解析
+                StringBuilder full = new StringBuilder(trimmed);
+                String rest;
+                while ((rest = reader.readLine()) != null) {
+                    full.append(rest);
+                }
+                return parseCompletion(full.toString(), onContent);
+            }
+            if (!trimmed.startsWith("data:")) {
+                continue; // event: / id: 等字段
+            }
+            sawEvent = true;
+            String data = trimmed.substring(5).trim();
+            if ("[DONE]".equals(data)) {
+                break;
+            }
+            JsonNode chunk;
+            try {
+                chunk = objectMapper.readTree(data);
+            } catch (Exception e) {
+                continue;
+            }
+            JsonNode usage = chunk.path("usage");
+            if (usage.isObject()) {
+                promptTokens = Math.max(promptTokens, usage.path("prompt_tokens").asInt(0));
+                completionTokens = Math.max(completionTokens, usage.path("completion_tokens").asInt(0));
+            }
+            JsonNode delta = chunk.path("choices").path(0).path("delta");
+            JsonNode text = delta.path("content");
+            if (text.isTextual() && !text.asText().isEmpty()) {
+                content.append(text.asText());
+                if (onContent != null) {
+                    onContent.accept(text.asText());
+                }
+            }
+            JsonNode calls = delta.path("tool_calls");
+            if (calls.isArray()) {
+                for (JsonNode call : calls) {
+                    int index = call.path("index").asInt(toolParts.size());
+                    String[] parts = toolParts.computeIfAbsent(index, k -> new String[]{null, null, ""});
+                    if (call.hasNonNull("id") && !call.get("id").asText().isBlank()) {
+                        parts[0] = call.get("id").asText();
+                    }
+                    JsonNode fn = call.path("function");
+                    if (fn.hasNonNull("name") && !fn.get("name").asText().isBlank()) {
+                        parts[1] = fn.get("name").asText();
+                    }
+                    if (fn.hasNonNull("arguments")) {
+                        parts[2] = parts[2] + fn.get("arguments").asText();
+                    }
+                }
+            }
+        }
+        List<ToolCall> toolCalls = new ArrayList<>();
+        toolParts.forEach((index, parts) -> {
+            if (parts[1] != null) {
+                String id = parts[0] != null ? parts[0] : "call_" + index;
+                toolCalls.add(new ToolCall(id, parts[1], parts[2].isBlank() ? "{}" : parts[2]));
+            }
+        });
+        return new StreamResult(content.toString(), toolCalls, promptTokens, completionTokens);
+    }
+
+    private StreamResult parseCompletion(String body, java.util.function.Consumer<String> onContent) throws java.io.IOException {
+        JsonNode root = objectMapper.readTree(body);
+        JsonNode message = root.path("choices").path(0).path("message");
+        List<ToolCall> toolCalls = new ArrayList<>();
+        JsonNode calls = message.path("tool_calls");
+        if (calls.isArray()) {
+            int i = 0;
+            for (JsonNode call : calls) {
+                String name = call.path("function").path("name").asText("");
+                if (!name.isBlank()) {
+                    toolCalls.add(new ToolCall(call.path("id").asText("call_" + i), name,
+                            call.path("function").path("arguments").asText("{}")));
+                }
+                i++;
+            }
+        }
+        String content = message.path("content").isTextual() ? message.path("content").asText() : "";
+        if (!content.isEmpty() && onContent != null) {
+            onContent.accept(content);
+        }
+        return new StreamResult(content, toolCalls,
+                root.path("usage").path("prompt_tokens").asInt(0),
+                root.path("usage").path("completion_tokens").asInt(0));
+    }
+
+    /** 通道不支持 stream_options 参数（仅内部用于去掉该参数重试） */
+    private static class StreamOptionsRejected extends RuntimeException {
+        StreamOptionsRejected() {
+            super(null, null, false, false);
+        }
+    }
+
+    public record ToolCall(String id, String name, String arguments) {
+    }
+
+    public record StreamResult(String content, List<ToolCall> toolCalls, int promptTokens, int completionTokens) {
+        public boolean hasToolCalls() {
+            return toolCalls != null && !toolCalls.isEmpty();
+        }
+    }
+
     private void applyGeneration(Map<String, Object> payload, ChatGeneration generation) {
         applyGeneration(payload, generation, false);
     }

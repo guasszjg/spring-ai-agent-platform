@@ -56,6 +56,14 @@ public class AgentService {
         this.ownerNameResolver = ownerNameResolver;
     }
 
+    private com.example.agentplatform.assistant.AssistantUsageService assistantUsageService;
+
+    /** 可选注入（setter 方式，避免改动已有构造器签名）：概览页用量计入平台 AI 助手的 token。 */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setAssistantUsageService(com.example.agentplatform.assistant.AssistantUsageService assistantUsageService) {
+        this.assistantUsageService = assistantUsageService;
+    }
+
     @Transactional(readOnly = true)
     public PageResult<Agent> searchAgents(String keyword, String category, AgentStatus status, int page, int size) {
         return searchAgents(keyword, category, status, null, CurrentActor.get(), page, size);
@@ -473,18 +481,33 @@ public class AgentService {
                 .collect(Collectors.groupingBy(a -> a.getCategory() == null ? "其它" : a.getCategory(), Collectors.counting()));
         stats.setCategoryDistribution(categoryCount);
 
-        long promptTokens = current.stream().mapToLong(AgentDailyStat::getPromptTokens).sum();
-        long completionTokens = current.stream().mapToLong(AgentDailyStat::getCompletionTokens).sum();
+        stats.setPeriodCalls(successCalls);
+
+        // 平台 AI 助手的 token 计入同一口径（范围同样是超管看全站、其余看本人）
+        var assistantUsage = assistantUsageService != null
+                ? assistantUsageService.usage(actor, start, end)
+                : new com.example.agentplatform.assistant.AssistantUsageService.Usage();
+        stats.setAssistantPromptTokens(assistantUsage.getPromptTokens());
+        stats.setAssistantCompletionTokens(assistantUsage.getCompletionTokens());
+
+        long promptTokens = current.stream().mapToLong(AgentDailyStat::getPromptTokens).sum()
+                + assistantUsage.getPromptTokens();
+        long completionTokens = current.stream().mapToLong(AgentDailyStat::getCompletionTokens).sum()
+                + assistantUsage.getCompletionTokens();
         stats.setPromptTokens(promptTokens);
         stats.setCompletionTokens(completionTokens);
         long totalTokens = promptTokens + completionTokens;
-        Map<String, Long> modelTokens = conversationService.tokenUsageByModel(null, accessibleIds, start, end);
+        Map<String, Long> modelTokens = new LinkedHashMap<>(conversationService.tokenUsageByModel(null, accessibleIds, start, end));
+        assistantUsage.getTokensByModel().forEach((model, tokens) -> modelTokens.merge(model, tokens, Long::sum));
         stats.setModelDistribution(modelTokens);
         stats.setEstimatedCostCny(LlmPriceCatalog.estimateCny(modelTokens, promptTokens, completionTokens));
 
         long prevTokens = previous.stream()
                 .mapToLong(s -> s.getPromptTokens() + s.getCompletionTokens())
                 .sum();
+        if (assistantUsageService != null) {
+            prevTokens += assistantUsageService.usage(actor, prevStart, prevEnd).getTotalTokens();
+        }
         double change = prevTokens == 0 ? 0.0 : (totalTokens - prevTokens) * 100.0 / prevTokens;
         stats.setTokenChangePercent(Math.round(change * 10.0) / 10.0);
 
@@ -497,6 +520,11 @@ public class AgentService {
             bucket[0] += row.getPromptTokens();
             bucket[1] += row.getCompletionTokens();
         }
+        assistantUsage.getByDay().forEach((day, values) -> {
+            long[] bucket = byDay.computeIfAbsent(day, k -> new long[]{0L, 0L});
+            bucket[0] += values[0];
+            bucket[1] += values[1];
+        });
         List<DashboardStats.TrendPoint> trend = new ArrayList<>();
         byDay.forEach((date, values) ->
                 trend.add(new DashboardStats.TrendPoint(date.format(TREND_LABEL), values[0], values[1])));

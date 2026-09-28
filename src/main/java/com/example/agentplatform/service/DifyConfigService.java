@@ -4,6 +4,7 @@ import com.example.agentplatform.config.SecretCrypto;
 import com.example.agentplatform.model.DifyConfig;
 import com.example.agentplatform.model.DifyConfigRequest;
 import com.example.agentplatform.model.DifyConfigView;
+import com.example.agentplatform.rag.dto.KnowledgeEngineInfo;
 import com.example.agentplatform.repository.DifyConfigRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -43,6 +44,28 @@ public class DifyConfigService {
         return repository.findAllByOrderByCreatedAtDesc().stream()
                 .map(d -> DifyConfigView.from(d, decryptKey(d.getApiKeyEncrypted())))
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * 填充 Dify 引擎的就绪状态：已配置且最近一次连通性探测成功才算就绪。
+     * 仅通过配置文件提供地址（无网关配置记录）时没有探测记录，视为就绪。
+     */
+    public KnowledgeEngineInfo applyReadiness(KnowledgeEngineInfo info) {
+        if (!info.isConfigured()) {
+            info.setReady(false);
+            info.setProbeStatus("UNCONFIGURED");
+            return info;
+        }
+        var active = getActiveConfig();
+        if (active.isPresent()) {
+            String status = active.get().getLastProbeStatus();
+            info.setProbeStatus(status != null ? status : "UNTESTED");
+            info.setReady("SUCCESS".equalsIgnoreCase(status));
+        } else {
+            info.setProbeStatus("SUCCESS");
+            info.setReady(true);
+        }
+        return info;
     }
 
     public Optional<DifyConfig> getActiveConfig() {

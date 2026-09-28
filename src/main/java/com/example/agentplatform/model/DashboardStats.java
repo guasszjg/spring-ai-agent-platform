@@ -22,8 +22,37 @@ public class DashboardStats {
     private List<TrendPoint> tokenTrend = new ArrayList<>();
     private List<RankingItem> ranking = new ArrayList<>();
     private List<CategoryLatency> latencyByCategory = new ArrayList<>();
+    /** 统计区间内智能体的调用次数（totalCalls 是累计值） */
+    private long periodCalls;
+    /** 统计区间内平台 AI 助手消耗的 token，已计入 promptTokens / completionTokens 与趋势 */
+    private long assistantPromptTokens;
+    private long assistantCompletionTokens;
 
     public DashboardStats() {
+    }
+
+    public long getPeriodCalls() {
+        return periodCalls;
+    }
+
+    public void setPeriodCalls(long periodCalls) {
+        this.periodCalls = periodCalls;
+    }
+
+    public long getAssistantPromptTokens() {
+        return assistantPromptTokens;
+    }
+
+    public void setAssistantPromptTokens(long assistantPromptTokens) {
+        this.assistantPromptTokens = assistantPromptTokens;
+    }
+
+    public long getAssistantCompletionTokens() {
+        return assistantCompletionTokens;
+    }
+
+    public void setAssistantCompletionTokens(long assistantCompletionTokens) {
+        this.assistantCompletionTokens = assistantCompletionTokens;
     }
 
     public long getTotalAgents() {

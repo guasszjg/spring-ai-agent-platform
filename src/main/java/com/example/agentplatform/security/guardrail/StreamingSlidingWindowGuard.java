@@ -104,6 +104,11 @@ public class StreamingSlidingWindowGuard {
         return violationDetected;
     }
 
+    /** 命中后是否中断输出；为 false 时（脱敏模式）命中内容已被打码，输出可以继续 */
+    public boolean isBlockOnViolation() {
+        return blockOnViolation;
+    }
+
     public String getViolatedTerm() {
         return violatedTerm;
     }

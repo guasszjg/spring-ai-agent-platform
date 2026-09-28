@@ -199,23 +199,6 @@ public class AiChatService {
 
     private static final int ASSISTANT_HISTORY_LIMIT = 12;
 
-    private static final String ASSISTANT_PROMPT = """
-            你是 AgentMatrix 企业级智能体平台内置的 AI 助手，帮助用户使用和管理这个平台。
-            平台主要功能：
-            - 智能体：创建、编排（系统提示词、变量、知识库、工具）、调试、发布上线，以及通过开放 API 对外调用；
-            - 场景模板：按行业预置的智能体模板，可一键套用创建智能体；
-            - 工具：时间、联网检索等内置工具，以及自定义 HTTP 工具；
-            - 知识库：支持"平台内置引擎"（本地切片、向量化、混合检索）和"Dify 外部引擎"，可上传文档、维护 FAQ、做召回测试；
-            - 模型网关：管理大语言模型通道（默认通道、降级备用、故障转移）、向量模型、OCR 与 Dify 知识引擎；
-            - 用户与角色：超级管理员、开发者、只读观察员三种角色；
-            - 开放与安全：开放 API 凭证、接入终端、护栏策略、审计日志与告警。
-            回答要求：
-            1. 使用简体中文，简洁清晰，优先给出可操作的步骤，可以使用 Markdown 列表和加粗；
-            2. 涉及平台操作时，说明具体在哪个菜单完成；
-            3. 不确定的内容如实说明，不要编造平台不存在的功能；
-            4. 也可以回答与平台无关的通用问题。
-            """;
-
     /**
      * 平台 AI 助手对话：不绑定任何智能体，使用模型网关解析出的默认路由；主通道失败时按策略切换降级通道。
      */
@@ -241,8 +224,7 @@ public class AiChatService {
         }
 
         var route = routeOpt.get();
-        String instruction = ASSISTANT_PROMPT + "\n当前时间：" + ZonedDateTime.now(ZoneId.of("Asia/Shanghai"))
-                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm（EEEE）", Locale.CHINESE));
+        String instruction = com.example.agentplatform.assistant.AssistantPrompts.chatMode();
         var messages = OpenAiCompatibleClient.toMessages(instruction, userMessage, recent);
         OpenAiCompatibleClient.ChatResult result = callProvider(route.primary(), route.primaryKey(), null, generation,
                 route.timeoutMs(), route.maxRetries(), messages, List.of(), routedModel);

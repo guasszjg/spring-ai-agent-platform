@@ -2,9 +2,9 @@
 
 **项目**：AgentMatrix 企业级智能体平台
 **范围**：`spring-ai-agent-platform`（后端）、`spring-ai-agent-platform-ui`（前端）
-**文档版本**：1.0
-**日期**：2026-09-27
-**状态**：P0 已完成，P1 起按本文分阶段实施
+**文档版本**：1.1
+**日期**：2026-09-28
+**状态**：P0、P1 已完成，P2 起按本文分阶段实施
 
 ---
 
@@ -275,6 +275,15 @@ CREATE INDEX idx_asst_action_user ON assistant_actions (user_id, created_at DESC
 
 会话与消息默认保留 90 天，由现有的数据保留清理任务（`RetentionCleanupTask`）统一清理。
 
+**P1 实际落地（V14、V15）与上面草案的差异**：
+
+- `assistant_messages` 增加 `user_id`（按用户统计 token）、`mode`（CHAT / AGENT）、`tool_calls`（本轮调用过的工具：name / label / ok）、`degraded`；
+  只保存用户消息与助手最终回复，**不保存工具的原始结果**（可能较大且含业务数据），`role` 只有 user / assistant。
+- `assistant_conversations` 增加 `deleted_at`（V15）：用户删除会话是**软删除**——立即对用户不可见并清空消息内容，
+  但保留消息行上的 token 用量，保证概览页的用量与成本不因删除会话而减少；行数据由保留清理任务到期物理删除。
+- `assistant_actions` 属于 P2，尚未创建。
+- 配置项：`app.assistant.rate-limit-per-minute`（默认 20）、`app.assistant.max-concurrent`（默认 16）、`app.assistant.retention-days`（默认 90）。
+
 ---
 
 ## 9. 接口设计
@@ -301,6 +310,17 @@ CREATE INDEX idx_asst_action_user ON assistant_actions (user_id, created_at DESC
 ```
 
 所有接口位于 `/api/**` 下，由现有会话拦截器保证仅登录用户可用；写接口需带 CSRF Token（与现有前端请求一致）。
+
+**SSE 事件（P1 实际实现）**：参数校验与限流在建立流之前完成，失败时返回普通 JSON（400 / 429）。
+
+| 事件 | 数据 | 说明 |
+|---|---|---|
+| `start` | `{conversationId}` | 会话已建立（新会话此时拿到 ID） |
+| `tool` | `{id, name, label, status}` | 工具调用进度，status 为 running / done / failed |
+| `message` | `{delta}` | 回复的增量文本（已经过输出护栏） |
+| `guardrail` | `{message}` | 输出命中内容安全策略（拦截模式），流式输出中断 |
+| `done` | `{conversationId, messageId, content, model, latencyMs, promptTokens, completionTokens, tools, mode, degraded, notice}` | 结束；`content` 为清理后的完整回复，前端以此为准 |
+| `error` | `{message}` | 无法处理（输入被护栏拦截、会话不存在等） |
 
 ---
 
@@ -350,7 +370,7 @@ CREATE INDEX idx_asst_action_user ON assistant_actions (user_id, created_at DESC
 - 轻量 Markdown 渲染（已转义防 XSS），回复下方显示模型、耗时、token。
 - 无可用通道时给出配置指引。
 
-### P1：查询与诊断（只读，建议下一迭代）
+### P1：查询与诊断（只读，已完成）
 
 **目标**：助手"懂这个平台的数据"，能查、能诊断，零写入风险。
 
@@ -368,6 +388,19 @@ CREATE INDEX idx_asst_action_user ON assistant_actions (user_id, created_at DESC
 - 只读观察员与开发者看到的数据范围与界面一致，不能通过助手查到无权查看的资源；
 - 任意工具结果中不出现密钥或密码；
 - 首字耗时 ≤ 3 秒（取决于模型通道）。
+
+**完成情况（2026-09-28，DeepSeek deepseek-v4-flash 通道实测）**：
+
+- 以上验收标准全部通过：查询结果与数据库、列表页一致；新建只读观察员账号验证，助手可见的 8 个智能体、6 个知识库与界面完全一致，
+  无权查看的智能体按"未找到"处理、不泄露是否存在，模型通道只返回"是否可用"；工具结果为字段白名单（单测覆盖：不含 API Key、通道地址、自定义请求头）。
+- 首字耗时：模型直接作答或先输出过渡语时约 0.9 秒；模型第一轮只发起工具调用时，首字在工具完成后出现（实测 2～3.8 秒），期间前端显示"正在查询…"提示。
+- 实现要点：
+  - 工具调用循环最多 5 轮，最后一轮不再提供工具以迫使模型作答；主通道按策略重试，尚未向用户输出内容时才切换降级通道，避免同一回复拼接两个模型的内容。
+  - 通道拒绝 tools 参数时自动按问答模式重试并提示；自定义 HTTP 协议通道不支持工具与流式，一次性取回后整段推送。
+  - 输出护栏：拦截模式命中即中断；脱敏模式命中内容打码后继续输出（与开放 API 的流式实现不同，后者命中即中断）。
+  - 用量：助手 token 按用户计入概览页（总量、趋势、模型分布、成本），并单独给出 `assistantPromptTokens / assistantCompletionTokens`。
+  - 流式请求返回后，会话拦截器在 `afterConcurrentHandlingStarted` 中清理 `CurrentActor`，避免残留在容器线程。
+- 未做：前端资源名称点击跳转（留待 P3 与页面上下文一起做）；评测集（第 12 节）尚未建立。
 
 ### P2：引导式创建（写操作 + 确认）
 
@@ -461,14 +494,21 @@ CREATE INDEX idx_asst_action_user ON assistant_actions (user_id, created_at DESC
 - 页面：{context.page}，资源：{context.resource}
 ```
 
-## 附录 B：现状代码位置（P0）
+## 附录 B：现状代码位置（P0 / P1）
 
 | 模块 | 位置 |
 |---|---|
-| 前端助手面板 | `spring-ai-agent-platform-ui/src/components/AssistantDock.vue` |
+| 前端助手面板 | `spring-ai-agent-platform-ui/src/components/AssistantDock.vue`（流式渲染、工具提示、模式切换、停止生成、历史对话） |
+| 前端 SSE 读取 | `spring-ai-agent-platform-ui/src/api/http.js` 的 `http.stream()` |
 | 前端挂载 | `spring-ai-agent-platform-ui/src/views/DashboardView.vue` |
-| 助手接口 | `controller/AssistantController.java`（`POST /api/assistant/chat`） |
-| 助手对话逻辑 | `service/AiChatService.java` 的 `assistantChat()` |
+| 助手接口 | `controller/AssistantController.java`（`/chat`、`/chat/stream`、`/conversations`） |
+| 流式对话与工具循环（P1） | `assistant/AssistantService.java` |
+| 工具注册表与只读工具（P1） | `assistant/AssistantToolRegistry.java`、`assistant/AssistantQueryTools.java` |
+| 会话持久化（P1） | `assistant/AssistantConversationService.java`，迁移 `V14__assistant_conversations.sql`、`V15__assistant_conversation_soft_delete.sql` |
+| 系统提示词 | `assistant/AssistantPrompts.java`（问答模式与 P0 共用） |
+| 助手用量统计 | `assistant/AssistantUsageService.java`，由 `AgentService.getDashboardStats()` 计入概览页 |
+| 流式模型调用 | `service/OpenAiCompatibleClient.streamChat()` |
+| P0 非流式对话（兜底） | `service/AiChatService.java` 的 `assistantChat()` |
 | 可复用：模型路由 | `service/LlmGatewayService.resolveRoute()` |
 | 可复用：工具调用循环 | `service/OpenAiCompatibleClient.chatWithTools()` |
 | 可复用：流式输出 | `service/OpenChatService`（`SseEmitter`） |
