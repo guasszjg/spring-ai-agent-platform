@@ -28,6 +28,30 @@ public class GatewayPolicy {
     private Integer maxRetries;
     private LocalDateTime updatedAt;
 
+    /** 平台 AI 助手专用通道：为空时助手走默认通道 */
+    @Column(length = 64)
+    private String assistantProviderId;
+
+    /** 平台 AI 助手专用模型：为空时使用该通道的默认模型 */
+    @Column(length = 128)
+    private String assistantModel;
+
+    public String getAssistantProviderId() {
+        return assistantProviderId;
+    }
+
+    public void setAssistantProviderId(String assistantProviderId) {
+        this.assistantProviderId = assistantProviderId;
+    }
+
+    public String getAssistantModel() {
+        return assistantModel;
+    }
+
+    public void setAssistantModel(String assistantModel) {
+        this.assistantModel = assistantModel;
+    }
+
     public String getId() {
         return id;
     }

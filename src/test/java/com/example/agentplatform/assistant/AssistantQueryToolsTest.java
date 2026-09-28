@@ -229,4 +229,62 @@ class AssistantQueryToolsTest {
         assertEquals(List.of("时区转换", "时间戳转换"), tools.enabledToolNames(config));
         assertEquals(List.of(), tools.enabledToolNames("not json"));
     }
+
+    // ==================== P3 ====================
+
+    @Test
+    void testGatewayChannelProbesMatchedChannelForAdminOnly() throws Exception {
+        LlmProviderView view = new LlmProviderView();
+        view.setId("llm-deepseek");
+        view.setName("DeepSeek");
+        view.setEnabled(true);
+        view.setConfigured(true);
+        GatewayOverview overview = new GatewayOverview();
+        overview.setProviders(List.of(view));
+        when(gatewayService.overview()).thenReturn(overview);
+        LlmProviderView probed = new LlmProviderView();
+        probed.setId("llm-deepseek");
+        probed.setName("DeepSeek");
+        probed.setLastProbeStatus("SUCCESS");
+        probed.setLastProbeMessage("ok");
+        when(gatewayService.probe("llm-deepseek")).thenReturn(probed);
+
+        var node = mapper.readTree(run("test_gateway_channel", "{\"channel\":\"deepseek\"}", admin));
+        assertEquals("SUCCESS", node.path("status").asText());
+        verify(gatewayService).probe("llm-deepseek");
+
+        // 开发者看不到也调用不了
+        assertTrue(new AssistantToolRegistry(tools.tools()).definitions(developer).stream()
+                .noneMatch(d -> String.valueOf(d).contains("test_gateway_channel")));
+        assertFalse(mapper.readTree(run("test_gateway_channel", "{\"channel\":\"deepseek\"}", developer)).path("ok").asBoolean(true));
+        verify(gatewayService, org.mockito.Mockito.times(1)).probe(any());
+    }
+
+    @Test
+    void describeContextExpandsOnlyVisibleResources() {
+        when(agentService.getById(eq("a1"), eq(developer))).thenReturn(Optional.of(agent("a1", "售后客服")));
+        String described = tools.describeContext(Map.of("page", "debug", "resourceType", "AGENT", "resourceId", "a1"), developer);
+        assertTrue(described.contains("智能体编排与调试"));
+        assertTrue(described.contains("售后客服"));
+        assertTrue(described.contains("a1"));
+
+        KnowledgeBase kb = new KnowledgeBase();
+        kb.setId("kb-secret");
+        kb.setName("机密库");
+        when(knowledgeBaseRepository.findById("kb-secret")).thenReturn(Optional.of(kb));
+        when(authorizationService.canViewKnowledgeBase(developer, kb)).thenReturn(false);
+        String hidden = tools.describeContext(Map.of("page", "knowledge", "resourceType", "KNOWLEDGE_BASE", "resourceId", "kb-secret"), developer);
+        assertFalse(hidden.contains("机密库"));
+        assertFalse(hidden.contains("kb-secret"));
+
+        when(agentService.getById(eq("a-private"), eq(developer))).thenThrow(new IllegalStateException("权限不足"));
+        assertEquals(null, tools.describeContext(Map.of("resourceType", "AGENT", "resourceId", "a-private"), developer));
+        assertEquals(null, tools.describeContext(Map.of(), developer));
+    }
+
+    @Test
+    void resourceLinksPointToInternalPages() {
+        assertEquals("/debug/a1", AssistantQueryTools.agentLink("a1"));
+        assertEquals("/dashboard?tab=knowledge&kb=kb-1", AssistantQueryTools.knowledgeBaseLink("kb-1"));
+    }
 }

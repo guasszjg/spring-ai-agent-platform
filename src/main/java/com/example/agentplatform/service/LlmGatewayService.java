@@ -33,6 +33,8 @@ import java.util.stream.Collectors;
 @Service
 public class LlmGatewayService {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(LlmGatewayService.class);
+
     public static final String POLICY_ID = "default";
 
     private final LlmProviderRepository providerRepository;
@@ -297,7 +299,58 @@ public class LlmGatewayService {
         if (incoming.getMaxRetries() != null) {
             policy.setMaxRetries(Math.max(0, Math.min(3, incoming.getMaxRetries())));
         }
+        String assistantProviderId = blankToNull(incoming.getAssistantProviderId());
+        String assistantModel = blankToNull(incoming.getAssistantModel());
+        if (assistantProviderId != null) {
+            LlmProvider provider = providerRepository.findById(assistantProviderId)
+                    .orElseThrow(() -> new IllegalArgumentException("助手专用通道不存在"));
+            List<String> models = parseModels(provider);
+            if (assistantModel != null && !models.isEmpty()
+                    && models.stream().noneMatch(m -> m.equalsIgnoreCase(assistantModel))) {
+                throw new IllegalArgumentException("助手专用模型不在通道「" + provider.getName() + "」的模型列表中");
+            }
+        }
+        policy.setAssistantProviderId(assistantProviderId);
+        policy.setAssistantModel(assistantProviderId != null ? assistantModel : null);
         return policyRepository.save(policy);
+    }
+
+    /**
+     * 平台 AI 助手的路由：配置了助手专用通道且可用时优先使用（模型为助手专用模型或该通道默认模型），
+     * 降级通道沿用网关策略；专用通道不可用或未配置时回退到默认路由。
+     */
+    @Transactional
+    public Optional<AssistantRoute> resolveAssistantRoute() {
+        GatewayPolicy policy = ensurePolicy();
+        String assistantProviderId = policy.getAssistantProviderId();
+        if (assistantProviderId != null) {
+            List<LlmProvider> all = providerRepository.findAllByOrderByBuiltinDescCreatedAtAsc();
+            LlmProvider dedicated = findReady(all, assistantProviderId);
+            if (dedicated != null) {
+                LlmProvider fallback = Boolean.TRUE.equals(policy.getFailoverEnabled())
+                        ? findReady(all, policy.getFallbackProviderId())
+                        : null;
+                if (fallback != null && fallback.getId().equals(dedicated.getId())) {
+                    fallback = null;
+                }
+                int timeout = firstPositive(dedicated.getTimeoutMs(), policy.getTimeoutMs(), 30000);
+                int retries = dedicated.getMaxRetries() != null
+                        ? dedicated.getMaxRetries()
+                        : (policy.getMaxRetries() != null ? policy.getMaxRetries() : 1);
+                ResolvedRoute route = new ResolvedRoute(dedicated, fallback, timeout, retries, decryptKey(dedicated),
+                        fallback != null ? decryptKey(fallback) : null);
+                return Optional.of(new AssistantRoute(route, blankToNull(policy.getAssistantModel()), true));
+            }
+            log.warn("Assistant dedicated channel [{}] is not ready, falling back to the default route", assistantProviderId);
+        }
+        return resolveRoute(null).map(route -> new AssistantRoute(route, null, false));
+    }
+
+    /**
+     * @param model     助手使用的模型（仅对主通道生效）；为空时用通道默认模型
+     * @param dedicated 是否命中了助手专用通道
+     */
+    public record AssistantRoute(ResolvedRoute route, String model, boolean dedicated) {
     }
 
     @Transactional

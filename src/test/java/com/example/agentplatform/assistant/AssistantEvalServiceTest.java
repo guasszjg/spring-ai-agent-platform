@@ -55,7 +55,7 @@ class AssistantEvalServiceTest {
     void bundledCasesLoadAndOnlyReferenceExistingTools() {
         Set<String> known = new HashSet<>(AssistantEvalScorer.WRITE_TOOLS);
         known.addAll(List.of("list_agents", "get_agent_detail", "list_knowledge_bases", "get_gateway_status",
-                "get_usage_summary", "diagnose_agent", "list_templates", "search_platform_docs"));
+                "get_usage_summary", "diagnose_agent", "list_templates", "search_platform_docs", "test_gateway_channel"));
         List<AssistantEvalCase> cases = service.cases();
 
         assertTrue(cases.size() >= 50, "评测用例数量应不少于 50，实际 " + cases.size());
@@ -73,7 +73,7 @@ class AssistantEvalServiceTest {
             if (e.args() != null) {
                 e.args().forEach(a -> {
                     assertTrue(known.contains(a.tool()), c.id() + " 引用了不存在的工具：" + a.tool());
-                    Pattern.compile(AssistantEvalService.substitute(a.pattern(), Map.of("agent", "x", "kb", "y"), true));
+                    Pattern.compile(AssistantEvalService.substitute(a.pattern(), Map.of("agent", "x", "kb", "y", "agent_id", "a1", "kb_id", "k1"), true));
                 });
             }
         }
@@ -91,7 +91,7 @@ class AssistantEvalServiceTest {
 
     @Test
     void caseWithUnresolvablePlaceholderIsSkipped() {
-        var c = new AssistantEvalCase("x", "数据查询", "SUPER_ADMIN", null, null, "「{{kb}}」有几篇文档？",
+        var c = new AssistantEvalCase("x", "数据查询", "SUPER_ADMIN", null, null, "「{{kb}}」有几篇文档？", null,
                 new AssistantEvalCase.Expect(null, null, null, null, null, null, null, null, null, null, null));
 
         Map<String, Object> result = service.runCase(c, Map.of("year", "2026"));
@@ -101,7 +101,7 @@ class AssistantEvalServiceTest {
 
     @Test
     void runsCaseAsVirtualRoleScoresAndCancelsGeneratedCards() {
-        var c = new AssistantEvalCase("w", "创建修改", "SUPER_ADMIN", null, null, "帮我建一个客服智能体",
+        var c = new AssistantEvalCase("w", "创建修改", "SUPER_ADMIN", null, null, "帮我建一个客服智能体", null,
                 new AssistantEvalCase.Expect(List.of("create_agent"), null, null, null, null, 1, 1,
                         null, List.of("确认"), null, null));
         when(assistantService.converse(any(), any(), any())).thenAnswer(inv -> {
@@ -136,7 +136,7 @@ class AssistantEvalServiceTest {
 
     @Test
     void degradedReplyIsRecordedAsErrorNotFailure() {
-        var c = new AssistantEvalCase("q", "数据查询", "VIEWER", null, null, "有哪些智能体",
+        var c = new AssistantEvalCase("q", "数据查询", "VIEWER", null, null, "有哪些智能体", null,
                 new AssistantEvalCase.Expect(List.of("list_agents"), null, null, null, null, null, null, null, null, null, null));
         when(assistantService.converse(any(), any(), any())).thenAnswer(inv -> {
             AssistantService.Sink sink = inv.getArgument(2);

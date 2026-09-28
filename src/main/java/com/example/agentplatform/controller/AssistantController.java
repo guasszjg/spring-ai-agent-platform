@@ -86,7 +86,8 @@ public class AssistantController {
                     .header("Retry-After", String.valueOf(Math.max(1, limit.resetSeconds())))
                     .body(ApiResponse.error("提问太频繁了，请 " + Math.max(1, limit.resetSeconds()) + " 秒后再试"));
         }
-        AssistantChatRequest normalized = new AssistantChatRequest(request.conversationId(), message, request.mode());
+        AssistantChatRequest normalized = new AssistantChatRequest(request.conversationId(), message, request.mode(),
+                sanitizeContext(request.context()));
         return ResponseEntity.ok()
                 .contentType(MediaType.TEXT_EVENT_STREAM)
                 .header("Cache-Control", "no-cache")
@@ -110,11 +111,13 @@ public class AssistantController {
                 .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error("会话不存在或已删除")));
     }
 
-    /** 确认执行待确认操作；无论成功失败都返回最新的卡片数据。 */
+    /** 确认执行待确认操作；无论成功失败都返回最新的卡片数据。依赖的前序卡片未执行时返回 409，卡片不消耗。 */
     @PostMapping("/actions/{id}/confirm")
     public ResponseEntity<ApiResponse<Map<String, Object>>> confirmAction(@PathVariable String id) {
         try {
             return ResponseEntity.ok(ApiResponse.ok(actionService.confirm(id, CurrentActor.get())));
+        } catch (AssistantActionService.DependencyNotMetException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error(e.getMessage()));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
         }
@@ -149,6 +152,21 @@ public class AssistantController {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error("会话不存在或已删除"));
         }
         return ResponseEntity.ok(ApiResponse.ok(null));
+    }
+
+    /** 页面上下文只接受已知字段并限制长度；资源是否可见由助手按当前用户权限再校验 */
+    static Map<String, String> sanitizeContext(Map<String, String> context) {
+        if (context == null || context.isEmpty()) {
+            return null;
+        }
+        Map<String, String> clean = new java.util.LinkedHashMap<>();
+        for (String key : List.of("page", "resourceType", "resourceId")) {
+            String value = context.get(key);
+            if (value != null && !value.isBlank() && value.length() <= 64 && value.matches("[A-Za-z0-9_-]+")) {
+                clean.put(key, value);
+            }
+        }
+        return clean.isEmpty() ? null : clean;
     }
 
     private static String validateMessage(String message) {

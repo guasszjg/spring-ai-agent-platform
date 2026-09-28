@@ -187,7 +187,19 @@ public class AssistantEvalService {
         if (!setup.isEmpty()) {
             r.put("setup", setup);
         }
-        String unresolved = firstUnresolved(question, setup);
+        Map<String, String> context = null;
+        if (evalCase.context() != null) {
+            context = new LinkedHashMap<>();
+            for (Map.Entry<String, String> e : evalCase.context().entrySet()) {
+                context.put(e.getKey(), substitute(e.getValue(), placeholders, false));
+            }
+            r.put("context", context);
+        }
+        List<String> checked = new ArrayList<>(setup);
+        if (context != null) {
+            checked.addAll(context.values());
+        }
+        String unresolved = firstUnresolved(question, checked);
         if (unresolved != null) {
             r.put("status", "SKIPPED");
             r.put("failures", List.of("当前环境没有可用于占位符 {{" + unresolved + "}} 的数据"));
@@ -204,7 +216,7 @@ public class AssistantEvalService {
             String conversationId = null;
             for (String q : setup) {
                 Capture warmup = new Capture();
-                ToolContext ctx = assistantService.converse(new AssistantChatRequest(conversationId, q, mode(evalCase)), actor, warmup);
+                ToolContext ctx = assistantService.converse(new AssistantChatRequest(conversationId, q, mode(evalCase), context), actor, warmup);
                 if (ctx == null) {
                     return error(r, "前置问题未能执行：" + warmup.error);
                 }
@@ -214,7 +226,7 @@ public class AssistantEvalService {
                 cancelActions(ctx, actor);
             }
             Capture capture = new Capture();
-            ToolContext ctx = assistantService.converse(new AssistantChatRequest(conversationId, question, mode(evalCase)), actor, capture);
+            ToolContext ctx = assistantService.converse(new AssistantChatRequest(conversationId, question, mode(evalCase), context), actor, capture);
             promptTokens += capture.promptTokens;
             completionTokens += capture.completionTokens;
             r.put("latencyMs", System.currentTimeMillis() - start);
@@ -261,13 +273,19 @@ public class AssistantEvalService {
             List<Agent> agents = agentService.searchAgents(null, null, null, null, admin, 1, 200).getRecords();
             agents.stream().filter(a -> a.getStatus() == AgentStatus.RUNNING)
                     .sorted((a, b) -> Boolean.compare(Boolean.TRUE.equals(a.getIsSystem()), Boolean.TRUE.equals(b.getIsSystem())))
-                    .findFirst().ifPresent(a -> values.put("agent", a.getName()));
+                    .findFirst().ifPresent(a -> {
+                        values.put("agent", a.getName());
+                        values.put("agent_id", a.getId());
+                    });
             agents.stream().filter(a -> Boolean.TRUE.equals(a.getIsSystem()))
                     .findFirst().ifPresent(a -> values.put("system_agent", a.getName()));
             List<KnowledgeBase> kbs = knowledgeBaseService.searchKnowledgeBases(null, null, 1, 50, admin).getRecords();
             kbs.stream().filter(kb -> !PlatformDocsService.KB_NAME.equals(kb.getName())).findFirst()
                     .or(() -> kbs.stream().findFirst())
-                    .ifPresent(kb -> values.put("kb", kb.getName()));
+                    .ifPresent(kb -> {
+                        values.put("kb", kb.getName());
+                        values.put("kb_id", kb.getId());
+                    });
         } finally {
             CurrentActor.clear();
         }

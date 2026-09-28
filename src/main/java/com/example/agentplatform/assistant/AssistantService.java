@@ -178,15 +178,15 @@ public class AssistantService {
         conversationService.append(conversation, userMessage);
         sink.send("start", Map.of("conversationId", conversation.getId()));
 
-        String system = AssistantChatRequest.MODE_CHAT.equals(mode)
+        String system = (AssistantChatRequest.MODE_CHAT.equals(mode)
                 ? AssistantPrompts.chatMode() + docsContext(effectiveMessage)
-                : AssistantPrompts.agentMode(actor);
+                : AssistantPrompts.agentMode(actor)) + pageContext(request.context(), actor);
         List<Map<String, Object>> messages = buildMessages(system, history,
                 actionService.statusNotes(conversation.getId()), effectiveMessage);
 
         ToolContext toolContext = ToolContext.of(actor, conversation.getId());
         Turn turn = new Turn(contentGuardService.createStreamingGuard(policy), sink);
-        var route = gatewayService.resolveRoute(null);
+        var route = gatewayService.resolveAssistantRoute();
         if (route.isEmpty()) {
             turn.degraded = true;
             turn.emit(NO_CHANNEL_REPLY);
@@ -235,6 +235,28 @@ public class AssistantService {
         done.put("actionIds", toolContext.createdActions().stream().map(AssistantAction::getId).toList());
         sink.send("done", done);
         return toolContext;
+    }
+
+    private AssistantQueryTools queryTools;
+
+    /** 可选注入（setter 方式，避免改动已有构造器签名）：用于把页面上下文解析成资源名称。 */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setQueryTools(AssistantQueryTools queryTools) {
+        this.queryTools = queryTools;
+    }
+
+    /** 页面上下文（P3）：用户在哪个页面、正在看哪个资源，让模型理解"这个智能体""当前知识库" */
+    private String pageContext(Map<String, String> context, CurrentActor actor) {
+        if (queryTools == null || context == null) {
+            return "";
+        }
+        try {
+            String description = queryTools.describeContext(context, actor);
+            return description == null ? "" : "\n\n【页面上下文】" + description;
+        } catch (RuntimeException e) {
+            log.debug("Failed to describe assistant page context: {}", e.getMessage());
+            return "";
+        }
     }
 
     /** 回复中是否声称已经生成了操作卡片 */
@@ -286,12 +308,14 @@ public class AssistantService {
     }
 
     /** 主通道按策略重试；仍失败且尚未向用户输出任何内容时切换到降级通道。 */
-    private void runWithFailover(LlmGatewayService.ResolvedRoute route, List<Map<String, Object>> messages,
+    private void runWithFailover(LlmGatewayService.AssistantRoute assistantRoute, List<Map<String, Object>> messages,
                                  boolean agentMode, ToolContext toolContext, Turn turn, Sink sink) {
         List<Channel> channels = new ArrayList<>();
-        channels.add(new Channel(route.primary(), route.primaryKey()));
+        LlmGatewayService.ResolvedRoute route = assistantRoute.route();
+        // 助手专用模型只作用于主通道；降级通道使用它自己的默认模型
+        channels.add(new Channel(route.primary(), route.primaryKey(), assistantRoute.model()));
         if (route.fallback() != null && gatewayService.hasKey(route.fallback())) {
-            channels.add(new Channel(route.fallback(), route.fallbackKey()));
+            channels.add(new Channel(route.fallback(), route.fallbackKey(), null));
         }
         int attempts = Math.max(1, route.maxRetries() + 1);
         for (Channel channel : channels) {
@@ -414,9 +438,9 @@ public class AssistantService {
         }
     }
 
-    record Channel(LlmProvider provider, String key) {
+    record Channel(LlmProvider provider, String key, String modelOverride) {
         String model() {
-            return provider.getDefaultModel();
+            return modelOverride != null && !modelOverride.isBlank() ? modelOverride : provider.getDefaultModel();
         }
     }
 

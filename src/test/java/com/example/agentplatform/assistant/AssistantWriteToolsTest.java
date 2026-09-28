@@ -3,6 +3,7 @@ package com.example.agentplatform.assistant;
 import com.example.agentplatform.model.Agent;
 import com.example.agentplatform.model.AgentStatus;
 import com.example.agentplatform.model.AssistantAction;
+import com.example.agentplatform.model.CreateOpenApiKeyRequest;
 import com.example.agentplatform.model.KnowledgeBase;
 import com.example.agentplatform.model.UserRole;
 import com.example.agentplatform.repository.AgentRepository;
@@ -13,6 +14,7 @@ import com.example.agentplatform.service.AgentService;
 import com.example.agentplatform.service.AgentTemplateService;
 import com.example.agentplatform.service.EmbeddingConfigService;
 import com.example.agentplatform.service.KnowledgeBaseService;
+import com.example.agentplatform.service.OpenApiKeyService;
 import com.example.agentplatform.service.ResourceAuthorizationService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -54,6 +56,7 @@ class AssistantWriteToolsTest {
     @Mock EmbeddingConfigService embeddingConfigService;
     @Mock ResourceAuthorizationService authorizationService;
     @Mock AssistantActionRepository actionRepository;
+    @Mock OpenApiKeyService openApiKeyService;
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final CurrentActor developer = new CurrentActor("u-dev", "dev", UserRole.DEVELOPER);
@@ -63,7 +66,7 @@ class AssistantWriteToolsTest {
     @BeforeEach
     void setUp() {
         tools = new AssistantWriteTools(queryTools, agentService, agentRepository, templateService, knowledgeBaseService,
-                knowledgeBaseRepository, embeddingConfigService, authorizationService, actionRepository);
+                knowledgeBaseRepository, embeddingConfigService, authorizationService, actionRepository, openApiKeyService);
         ctx = ToolContext.of(developer, "asc-1");
         when(actionRepository.save(any())).thenAnswer(inv -> {
             AssistantAction a = inv.getArgument(0);
@@ -263,5 +266,133 @@ class AssistantWriteToolsTest {
         assertTrue(preview.contains("平台内置引擎"));
         assertTrue(preview.contains("未激活向量模型"));
         assertFalse(preview.contains("DIFY"));
+    }
+
+    // ==================== P3：多步编排与开放凭证 ====================
+
+    private static final String AGENT_CARD = "act-aaaaaaaa11111111";
+    private static final String KB_CARD = "act-bbbbbbbb22222222";
+
+    private AssistantAction card(String id, String tool, String status, String payload) {
+        AssistantAction a = new AssistantAction();
+        a.setId(id);
+        a.setUserId("u-dev");
+        a.setConversationId("asc-1");
+        a.setToolName(tool);
+        a.setTitle(tool + " 卡片");
+        a.setStatus(status);
+        a.setPayload(payload);
+        a.setExpiresAt(java.time.LocalDateTime.now().plusMinutes(5));
+        when(actionRepository.findByIdAndUserId(id, "u-dev")).thenReturn(Optional.of(a));
+        return a;
+    }
+
+    @Test
+    void bindCanReferencePendingCreateCardsAndRecordsDependencies() throws Exception {
+        card(AGENT_CARD, AssistantWriteTools.CREATE_AGENT, AssistantAction.PENDING, "{\"name\":\"退货助手\",\"knowledgeBaseIds\":[]}");
+        card(KB_CARD, AssistantWriteTools.CREATE_KNOWLEDGE_BASE, AssistantAction.PENDING, "{\"name\":\"退货库\"}");
+
+        tools.draftBindKnowledgeBase(args("{\"agent\":\"" + AGENT_CARD + "\",\"knowledgeBase\":\"" + KB_CARD + "\"}"), ctx);
+
+        AssistantAction action = ctx.createdActions().get(0);
+        JsonNode payload = mapper.readTree(action.getPayload());
+        assertEquals(AGENT_CARD, payload.path("agentFrom").asText());
+        assertEquals(KB_CARD, payload.path("knowledgeBaseFrom").asText());
+        assertFalse(payload.has("agentId"));
+        assertTrue(action.getPreview().contains("待创建，需先确认上一张卡片"));
+        assertEquals(List.of(AGENT_CARD, KB_CARD), tools.dependencies(action));
+        verify(queryTools, never()).resolveAgent(anyString(), any());
+    }
+
+    @Test
+    void executedCreateCardResolvesToRealResource() throws Exception {
+        AssistantAction created = card(KB_CARD, AssistantWriteTools.CREATE_KNOWLEDGE_BASE, AssistantAction.EXECUTED, "{\"name\":\"退货库\"}");
+        created.setResourceId("kb-9");
+        KnowledgeBase kb = kb("kb-9", "退货库");
+        when(knowledgeBaseRepository.findById("kb-9")).thenReturn(Optional.of(kb));
+        when(authorizationService.canManageKnowledgeBase(developer, kb)).thenReturn(true);
+
+        tools.draftAddFaq(args("{\"knowledgeBase\":\"" + KB_CARD + "\",\"question\":\"几天可退\",\"answer\":\"7 天\"}"), ctx);
+
+        JsonNode payload = mapper.readTree(ctx.createdActions().get(0).getPayload());
+        assertEquals("kb-9", payload.path("knowledgeBaseId").asText());
+        assertFalse(payload.has("knowledgeBaseFrom"));
+    }
+
+    @Test
+    void cannotReferenceCardFromOtherConversationWrongTypeOrCancelled() {
+        AssistantAction other = card(AGENT_CARD, AssistantWriteTools.CREATE_AGENT, AssistantAction.PENDING, "{\"name\":\"x\"}");
+        other.setConversationId("asc-other");
+        assertThrows(IllegalArgumentException.class, () -> tools.draftCreateApiKey(args("{\"agent\":\"" + AGENT_CARD + "\"}"), ctx));
+
+        card(KB_CARD, AssistantWriteTools.CREATE_AGENT, AssistantAction.PENDING, "{\"name\":\"x\"}");
+        assertThrows(IllegalArgumentException.class, () -> tools.draftAddFaq(args(
+                "{\"knowledgeBase\":\"" + KB_CARD + "\",\"question\":\"q\",\"answer\":\"a\"}"), ctx));
+
+        card("act-cccccccc33333333", AssistantWriteTools.CREATE_AGENT, AssistantAction.CANCELLED, "{\"name\":\"x\"}");
+        assertThrows(IllegalArgumentException.class, () -> tools.draftCreateApiKey(args("{\"agent\":\"act-cccccccc33333333\"}"), ctx));
+        assertTrue(ctx.createdActions().isEmpty());
+    }
+
+    @Test
+    void dependentCardCannotExecuteBeforePredecessor() {
+        AssistantAction dep = card(KB_CARD, AssistantWriteTools.CREATE_KNOWLEDGE_BASE, AssistantAction.PENDING, "{\"name\":\"退货库\"}");
+        AssistantAction faq = new AssistantAction();
+        faq.setPayload("{\"knowledgeBaseFrom\":\"" + KB_CARD + "\",\"question\":\"q\",\"answer\":\"a\"}");
+
+        assertTrue(tools.unmetDependency(faq, developer).contains("请先确认上一张卡片"));
+        assertThrows(IllegalStateException.class, () -> tools.execute(AssistantWriteTools.ADD_FAQ, faq.getPayload(), developer));
+
+        dep.setStatus(AssistantAction.EXECUTED);
+        dep.setResourceId("kb-9");
+        when(knowledgeBaseService.createFaq(eq("kb-9"), any(), eq(developer))).thenReturn(new com.example.agentplatform.model.KnowledgeFaq());
+        assertEquals(null, tools.unmetDependency(faq, developer));
+        var result = tools.execute(AssistantWriteTools.ADD_FAQ, faq.getPayload(), developer);
+        assertEquals("kb-9", result.resourceId());
+    }
+
+    @Test
+    void createAgentRejectsPendingKnowledgeBaseRefWithGuidance() {
+        var e = assertThrows(IllegalArgumentException.class, () -> tools.draftCreateAgent(args(
+                "{\"name\":\"退货助手\",\"systemPrompt\":\"p\",\"knowledgeBases\":[\"" + KB_CARD + "\"]}"), ctx));
+        assertTrue(e.getMessage().contains("bind_knowledge_base"));
+    }
+
+    @Test
+    void createApiKeyCardAndExecutionScopedToAgentWithSecretOnlyInResult() throws Exception {
+        Agent a = agent("agent-1", "售后客服", "p");
+        when(queryTools.resolveAgent("售后客服", developer)).thenReturn(new AssistantQueryTools.AgentMatch(a, null));
+        when(agentService.getById("agent-1", developer)).thenReturn(Optional.of(a));
+        when(authorizationService.canManageAgent(developer, a)).thenReturn(true);
+
+        Map<String, Object> drafted = tools.draftCreateApiKey(args("{\"agent\":\"售后客服\"}"), ctx);
+        assertEquals(true, drafted.get("ok"));
+        AssistantAction action = ctx.createdActions().get(0);
+        assertEquals(AssistantWriteTools.CREATE_API_KEY, action.getToolName());
+        assertTrue(action.getPreview().contains("只在卡片中显示一次"));
+        verify(openApiKeyService, never()).create(any(), any());
+
+        when(openApiKeyService.create(any(), eq(developer))).thenReturn(Map.of(
+                "key", Map.of("id", "key-1", "keyPrefix", "sk-am-abc"), "plaintext", "sk-am-abcdefghijklmnopqrstuvwxyz"));
+        var result = tools.execute(AssistantWriteTools.CREATE_API_KEY, action.getPayload(), developer);
+
+        ArgumentCaptor<CreateOpenApiKeyRequest> req = ArgumentCaptor.forClass(CreateOpenApiKeyRequest.class);
+        verify(openApiKeyService).create(req.capture(), eq(developer));
+        assertEquals(List.of("chat"), req.getValue().getScopes());
+        assertEquals(List.of("agent-1"), req.getValue().getAgentScope());
+        assertEquals("u-dev", req.getValue().getOwnerId());
+        assertEquals("key-1", result.resourceId());
+        assertEquals("sk-am-abcdefghijklmnopqrstuvwxyz", result.secret());
+        assertFalse(result.message().contains("abcdefghijklmnop"));
+    }
+
+    @Test
+    void createApiKeyRequiresManagePermission() {
+        Agent a = agent("agent-1", "系统客服", "p");
+        when(queryTools.resolveAgent("系统客服", developer)).thenReturn(new AssistantQueryTools.AgentMatch(a, null));
+        when(authorizationService.canManageAgent(developer, a)).thenReturn(false);
+
+        assertThrows(IllegalArgumentException.class, () -> tools.draftCreateApiKey(args("{\"agent\":\"系统客服\"}"), ctx));
+        assertTrue(ctx.createdActions().isEmpty());
     }
 }
