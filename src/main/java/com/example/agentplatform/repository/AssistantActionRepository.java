@@ -58,4 +58,10 @@ public interface AssistantActionRepository extends JpaRepository<AssistantAction
     @Modifying
     @Query(value = "DELETE FROM assistant_actions WHERE created_at < :cutoff", nativeQuery = true)
     int deleteByCreatedAtBefore(@Param("cutoff") LocalDateTime cutoff);
+
+    /** 评测结束后清理评测虚拟身份生成的操作（评测只生成、从不确认）。 */
+    @Transactional
+    @Modifying
+    @Query(value = "DELETE FROM assistant_actions WHERE user_id LIKE :prefix || '%'", nativeQuery = true)
+    int deleteByUserIdPrefix(@Param("prefix") String prefix);
 }

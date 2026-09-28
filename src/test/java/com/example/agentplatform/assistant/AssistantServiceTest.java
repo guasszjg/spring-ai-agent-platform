@@ -314,6 +314,27 @@ class AssistantServiceTest {
     }
 
     @Test
+    void claimingCardsWithoutCallingWriteToolAddsNotice() {
+        when(openAiClient.streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(), any(), any(), any(), anyInt(), any(), any()))
+                .thenAnswer(inv -> {
+                    contentCallback(inv).accept("两张待确认卡片已生成，请按顺序确认。");
+                    return new OpenAiCompatibleClient.StreamResult("两张待确认卡片已生成，请按顺序确认。", List.of(), 1, 1);
+                });
+
+        service.converse(new AssistantChatRequest(null, "建一个智能体和一个知识库", "AGENT"), actor, sink);
+
+        assertTrue(payloadOf("done").contains(AssistantService.CARD_CLAIM_NOTICE));
+    }
+
+    @Test
+    void recognisesCardClaims() {
+        assertTrue(AssistantService.claimsCardGenerated("两张待确认卡片已生成，请确认"));
+        assertTrue(AssistantService.claimsCardGenerated("已为你生成创建智能体的操作卡片"));
+        assertFalse(AssistantService.claimsCardGenerated("确认后我再为你生成绑定卡片"));
+        assertFalse(AssistantService.claimsCardGenerated("有 3 个运行中的智能体"));
+    }
+
+    @Test
     void historyExcludesDegradedRepliesAndTruncatesLongMessages() {
         AssistantMessage oldUser = new AssistantMessage();
         oldUser.setRole("user");

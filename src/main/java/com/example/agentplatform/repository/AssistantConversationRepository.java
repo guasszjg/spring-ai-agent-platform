@@ -20,4 +20,10 @@ public interface AssistantConversationRepository extends JpaRepository<Assistant
     @Modifying
     @Query(value = "DELETE FROM assistant_conversations WHERE updated_at < :cutoff", nativeQuery = true)
     int deleteByUpdatedAtBefore(@Param("cutoff") LocalDateTime cutoff);
+
+    /** 评测结束后清理评测虚拟身份产生的会话（消息由外键级联删除），避免计入用量统计。 */
+    @org.springframework.transaction.annotation.Transactional
+    @Modifying
+    @Query(value = "DELETE FROM assistant_conversations WHERE user_id LIKE :prefix || '%'", nativeQuery = true)
+    int deleteByUserIdPrefix(@Param("prefix") String prefix);
 }

@@ -66,6 +66,9 @@ public class AssistantService {
     static final String NO_CHANNEL_REPLY = "当前还没有可用的大模型通道。请先到「模型网关 → 大语言模型」中添加并启用一个模型通道，然后再来和我对话。";
     static final String CHANNEL_FAILED_REPLY = "模型通道暂时没有返回结果，请稍后重试，或到「模型网关」中检查通道的连通性。";
     static final String TOOLS_UNSUPPORTED_NOTICE = "当前模型通道不支持工具调用，本次已按问答模式回答，无法查询平台数据。";
+    static final String CARD_CLAIM_NOTICE = "注意：本轮实际没有生成任何操作卡片，上面关于\"卡片已生成\"的说法有误。如需创建或修改，请让助手重新生成。";
+    private static final java.util.regex.Pattern CARD_CLAIM = java.util.regex.Pattern.compile(
+            "(已|已经)(为你|为您|帮你|帮您)?生成[^。\n]{0,12}卡片|卡片[^。\n]{0,6}已(经)?生成");
 
     private final LlmGatewayService gatewayService;
     private final OpenAiCompatibleClient openAiClient;
@@ -141,7 +144,11 @@ public class AssistantService {
         return emitter;
     }
 
-    void converse(AssistantChatRequest request, CurrentActor actor, Sink sink) {
+    /**
+     * 完成一轮对话。返回本轮的工具上下文（工具调用与生成的待确认操作），供评测使用；
+     * 输入被拦截或会话不存在时返回 null。
+     */
+    ToolContext converse(AssistantChatRequest request, CurrentActor actor, Sink sink) {
         long start = System.currentTimeMillis();
         String mode = request.normalizedMode();
         String message = request.message() == null ? "" : request.message().trim();
@@ -152,7 +159,7 @@ public class AssistantService {
             auditRecorder.record("assistant.input_blocked", "ASSISTANT", request.conversationId(), "BLOCKED",
                     input.getDenyCode(), "MEDIUM", input.getMatchedTerm());
             sink.send("error", Map.of("message", input.getDenyMessage() != null ? input.getDenyMessage() : "输入内容不符合安全策略"));
-            return;
+            return null;
         }
         String effectiveMessage = input.getProcessedMessage() != null ? input.getProcessedMessage() : message;
 
@@ -161,7 +168,7 @@ public class AssistantService {
             conversation = conversationService.openOrCreate(request.conversationId(), effectiveMessage, actor);
         } catch (IllegalArgumentException e) {
             sink.send("error", Map.of("message", e.getMessage()));
-            return;
+            return null;
         }
         List<AssistantMessage> history = conversationService.recentHistory(conversation.getId(), HISTORY_LIMIT);
         AssistantMessage userMessage = new AssistantMessage();
@@ -187,6 +194,12 @@ public class AssistantService {
             runWithFailover(route.get(), messages, AssistantChatRequest.MODE_AGENT.equals(mode), toolContext, turn, sink);
         }
         turn.finish();
+        if (AssistantChatRequest.MODE_AGENT.equals(mode) && toolContext.createdActions().isEmpty()
+                && claimsCardGenerated(turn.shown.toString())) {
+            // 模型偶尔会在没有调用写工具的情况下声称"已生成卡片"：明确提示，避免用户误以为操作已在进行
+            turn.notice = CARD_CLAIM_NOTICE;
+            log.warn("Assistant claimed an action card without calling a write tool (conversation {})", conversation.getId());
+        }
 
         String content = turn.finalContent();
         AssistantMessage reply = new AssistantMessage();
@@ -221,6 +234,12 @@ public class AssistantService {
         done.put("notice", turn.notice);
         done.put("actionIds", toolContext.createdActions().stream().map(AssistantAction::getId).toList());
         sink.send("done", done);
+        return toolContext;
+    }
+
+    /** 回复中是否声称已经生成了操作卡片 */
+    static boolean claimsCardGenerated(String content) {
+        return content != null && CARD_CLAIM.matcher(content).find();
     }
 
     /** 问答模式没有工具：自动检索平台使用文档注入系统提示词；文档未就绪时退回静态功能介绍。 */
@@ -347,6 +366,7 @@ public class AssistantService {
                     sink.send("action", actionService.card(action));
                 }
                 turn.tools.add(Map.of("name", call.name(), "label", label, "ok", outcome.ok()));
+                toolContext.calls().add(new ToolContext.ToolCallRecord(call.name(), call.arguments(), outcome.ok()));
                 messages.add(Map.of("role", "tool", "tool_call_id", call.id(), "content", outcome.content()));
             }
             turn.separateNextRound();
