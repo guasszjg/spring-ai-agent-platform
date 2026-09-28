@@ -1,5 +1,6 @@
 package com.example.agentplatform.security.audit;
 
+import com.example.agentplatform.repository.AssistantActionRepository;
 import com.example.agentplatform.repository.AssistantConversationRepository;
 import com.example.agentplatform.repository.AuditEventRepository;
 import com.example.agentplatform.repository.OpenApiCallLogRepository;
@@ -37,6 +38,7 @@ public class RetentionCleanupTask {
     private int assistantDays = 90;
 
     private AssistantConversationRepository assistantConversationRepository;
+    private AssistantActionRepository assistantActionRepository;
 
     public RetentionCleanupTask(AuditEventRepository auditEventRepository,
                                 OpenApiCallLogRepository openApiCallLogRepository,
@@ -50,6 +52,12 @@ public class RetentionCleanupTask {
     @Autowired(required = false)
     public void setAssistantConversationRepository(AssistantConversationRepository assistantConversationRepository) {
         this.assistantConversationRepository = assistantConversationRepository;
+    }
+
+    /** 可选注入：平台 AI 助手的待确认操作记录与会话同样按保留天数清理。 */
+    @Autowired(required = false)
+    public void setAssistantActionRepository(AssistantActionRepository assistantActionRepository) {
+        this.assistantActionRepository = assistantActionRepository;
     }
 
     // Runs every day at 03:30 AM
@@ -72,6 +80,9 @@ public class RetentionCleanupTask {
             if (assistantConversationRepository != null) {
                 LocalDateTime cutoffAssistant = LocalDateTime.now().minusDays(Math.max(1, assistantDays));
                 deletedConversations = assistantConversationRepository.deleteByUpdatedAtBefore(cutoffAssistant);
+                if (assistantActionRepository != null) {
+                    assistantActionRepository.deleteByCreatedAtBefore(cutoffAssistant);
+                }
             }
 
             if (deletedAudits > 0 || deletedCallLogs > 0 || deletedConversations > 0) {

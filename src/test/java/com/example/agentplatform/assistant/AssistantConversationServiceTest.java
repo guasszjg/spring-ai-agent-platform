@@ -2,6 +2,7 @@ package com.example.agentplatform.assistant;
 
 import com.example.agentplatform.model.AssistantConversation;
 import com.example.agentplatform.model.UserRole;
+import com.example.agentplatform.repository.AssistantActionRepository;
 import com.example.agentplatform.repository.AssistantConversationRepository;
 import com.example.agentplatform.repository.AssistantMessageRepository;
 import com.example.agentplatform.security.CurrentActor;
@@ -28,6 +29,7 @@ class AssistantConversationServiceTest {
 
     @Mock AssistantConversationRepository conversationRepository;
     @Mock AssistantMessageRepository messageRepository;
+    @Mock AssistantActionRepository actionRepository;
     @InjectMocks AssistantConversationService service;
 
     private final CurrentActor alice = new CurrentActor("u-alice", "alice", UserRole.DEVELOPER);
@@ -53,6 +55,7 @@ class AssistantConversationServiceTest {
         assertTrue(service.delete("asc-1", alice));
 
         verify(messageRepository).clearContents("asc-1");
+        verify(actionRepository).clearForConversation("asc-1");
         verify(conversationRepository, never()).delete(any());
         assertNotNull(conversation.getDeletedAt());
         assertEquals(null, conversation.getTitle());

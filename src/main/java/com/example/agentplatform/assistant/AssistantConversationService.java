@@ -2,6 +2,7 @@ package com.example.agentplatform.assistant;
 
 import com.example.agentplatform.model.AssistantConversation;
 import com.example.agentplatform.model.AssistantMessage;
+import com.example.agentplatform.repository.AssistantActionRepository;
 import com.example.agentplatform.repository.AssistantConversationRepository;
 import com.example.agentplatform.repository.AssistantMessageRepository;
 import com.example.agentplatform.security.CurrentActor;
@@ -22,13 +23,42 @@ public class AssistantConversationService {
 
     static final int TITLE_MAX = 30;
 
+    static final java.util.Set<String> FEEDBACK_VALUES = java.util.Set.of("UP", "DOWN");
+
     private final AssistantConversationRepository conversationRepository;
     private final AssistantMessageRepository messageRepository;
+    private final AssistantActionRepository actionRepository;
 
     public AssistantConversationService(AssistantConversationRepository conversationRepository,
-                                        AssistantMessageRepository messageRepository) {
+                                        AssistantMessageRepository messageRepository,
+                                        AssistantActionRepository actionRepository) {
         this.conversationRepository = conversationRepository;
         this.messageRepository = messageRepository;
+        this.actionRepository = actionRepository;
+    }
+
+    /**
+     * 回复反馈：只能对自己会话中的助手回复打分；rating 为 null 表示撤销。
+     */
+    @Transactional
+    public boolean feedback(String messageId, String rating, CurrentActor actor) {
+        if (actor == null || actor.getUserId() == null || messageId == null) {
+            return false;
+        }
+        String normalized = rating == null || rating.isBlank() ? null : rating.trim().toUpperCase(java.util.Locale.ROOT);
+        if (normalized != null && !FEEDBACK_VALUES.contains(normalized)) {
+            throw new IllegalArgumentException("反馈只能是 UP 或 DOWN");
+        }
+        Optional<AssistantMessage> message = messageRepository.findById(messageId)
+                .filter(m -> actor.getUserId().equals(m.getUserId()))
+                .filter(m -> AssistantMessage.ROLE_ASSISTANT.equals(m.getRole()))
+                .filter(m -> find(m.getConversationId(), actor).isPresent());
+        message.ifPresent(m -> {
+            m.setFeedback(normalized);
+            m.setFeedbackAt(normalized == null ? null : LocalDateTime.now());
+            messageRepository.save(m);
+        });
+        return message.isPresent();
     }
 
     /** 取当前用户自己的会话；conversationId 为空时新建，标题取首条消息。 */
@@ -102,6 +132,7 @@ public class AssistantConversationService {
         Optional<AssistantConversation> conversation = find(conversationId, actor);
         conversation.ifPresent(c -> {
             messageRepository.clearContents(c.getId());
+            actionRepository.clearForConversation(c.getId());
             c.setTitle(null);
             c.setDeletedAt(LocalDateTime.now());
             conversationRepository.save(c);

@@ -15,6 +15,7 @@ import com.example.agentplatform.repository.KnowledgeBaseRepository;
 import com.example.agentplatform.repository.KnowledgeIndexVersionRepository;
 import com.example.agentplatform.security.CurrentActor;
 import com.example.agentplatform.service.AgentService;
+import com.example.agentplatform.service.AgentTemplateService;
 import com.example.agentplatform.service.DifyConfigService;
 import com.example.agentplatform.service.EmbeddingConfigService;
 import com.example.agentplatform.service.KnowledgeBaseService;
@@ -56,6 +57,8 @@ class AssistantQueryToolsTest {
     @Mock DifyConfigService difyConfigService;
     @Mock ResourceAuthorizationService authorizationService;
     @Mock AgentDailyStatRepository dailyStatRepository;
+    @Mock AgentTemplateService templateService;
+    @Mock PlatformDocsService platformDocsService;
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final CurrentActor developer = new CurrentActor("u-dev", "dev", UserRole.DEVELOPER);
@@ -65,7 +68,8 @@ class AssistantQueryToolsTest {
     @BeforeEach
     void setUp() {
         tools = new AssistantQueryTools(agentService, knowledgeBaseService, knowledgeBaseRepository, indexVersionRepository,
-                gatewayService, embeddingConfigService, difyConfigService, authorizationService, dailyStatRepository);
+                gatewayService, embeddingConfigService, difyConfigService, authorizationService, dailyStatRepository,
+                templateService, platformDocsService);
         when(dailyStatRepository.findByAgentIdAndStatDateBetween(any(), any(), any())).thenReturn(List.of());
         when(authorizationService.canRunAgent(any(), any())).thenReturn(true);
     }
@@ -82,7 +86,7 @@ class AssistantQueryToolsTest {
     }
 
     private String run(String tool, String args, CurrentActor actor) {
-        return new AssistantToolRegistry(tools.tools()).execute(tool, args, actor).content();
+        return new AssistantToolRegistry(tools.tools()).execute(tool, args, ToolContext.of(actor, "asc-test")).content();
     }
 
     @Test

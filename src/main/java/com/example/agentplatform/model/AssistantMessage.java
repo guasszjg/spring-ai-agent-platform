@@ -56,6 +56,13 @@ public class AssistantMessage {
 
     private Boolean degraded;
 
+    /** 用户对助手回复的反馈：UP 有用 / DOWN 没用 */
+    @Column(length = 8)
+    private String feedback;
+
+    @Column(name = "feedback_at")
+    private LocalDateTime feedbackAt;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
@@ -93,6 +100,10 @@ public class AssistantMessage {
     public void setLatencyMs(Long latencyMs) { this.latencyMs = latencyMs; }
     public Boolean getDegraded() { return degraded; }
     public void setDegraded(Boolean degraded) { this.degraded = degraded; }
+    public String getFeedback() { return feedback; }
+    public void setFeedback(String feedback) { this.feedback = feedback; }
+    public LocalDateTime getFeedbackAt() { return feedbackAt; }
+    public void setFeedbackAt(LocalDateTime feedbackAt) { this.feedbackAt = feedbackAt; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
 }

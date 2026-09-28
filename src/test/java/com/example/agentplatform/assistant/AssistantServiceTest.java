@@ -1,5 +1,6 @@
 package com.example.agentplatform.assistant;
 
+import com.example.agentplatform.model.AssistantAction;
 import com.example.agentplatform.model.AssistantConversation;
 import com.example.agentplatform.model.AssistantMessage;
 import com.example.agentplatform.model.GuardrailPolicy;
@@ -57,6 +58,8 @@ class AssistantServiceTest {
     @Mock ContentGuardService contentGuardService;
     @Mock GuardrailPolicyService policyService;
     @Mock AuditRecorder auditRecorder;
+    @Mock AssistantActionService actionService;
+    @Mock PlatformDocsService platformDocsService;
 
     private final CurrentActor actor = new CurrentActor("u1", "dev", UserRole.DEVELOPER);
     private final List<String[]> events = new ArrayList<>();
@@ -66,13 +69,25 @@ class AssistantServiceTest {
 
     @BeforeEach
     void setUp() {
-        AssistantToolRegistry registry = new AssistantToolRegistry(List.of(new AssistantTool("list_agents", "查询智能体列表",
-                "列出智能体", Map.of("type", "object", "properties", Map.of()), (args, who) -> {
-                    toolArgs.add(who.getUserId() + ":" + args);
-                    return Map.of("ok", true, "total", 2);
-                })));
+        AssistantToolRegistry registry = new AssistantToolRegistry(List.of(
+                AssistantTool.read("list_agents", "查询智能体列表",
+                        "列出智能体", Map.of("type", "object", "properties", Map.of()), (args, ctx) -> {
+                            toolArgs.add(ctx.actor().getUserId() + ":" + args);
+                            return Map.of("ok", true, "total", 2);
+                        }),
+                AssistantTool.write("create_agent", "生成创建智能体操作",
+                        "创建智能体", Map.of("type", "object", "properties", Map.of()), (args, ctx) -> {
+                            AssistantAction action = new AssistantAction();
+                            action.setId("act-1");
+                            action.setConversationId(ctx.conversationId());
+                            ctx.createdActions().add(action);
+                            return Map.of("ok", true, "pendingActionId", "act-1");
+                        })));
         service = new AssistantService(gatewayService, openAiClient, customHttpClient, registry, conversationService,
-                contentGuardService, policyService, auditRecorder, 1);
+                contentGuardService, policyService, auditRecorder, actionService, platformDocsService, 1);
+        when(actionService.statusNotes(any())).thenReturn(List.of());
+        when(actionService.card(any())).thenAnswer(inv -> Map.of("id", ((AssistantAction) inv.getArgument(0)).getId()));
+        when(platformDocsService.search(anyString(), anyInt())).thenReturn(List.of());
         sink = new AssistantService.Sink(new SseEmitter()) {
             @Override
             synchronized void send(String event, Object data) {
@@ -240,6 +255,62 @@ class AssistantServiceTest {
         String shown = events.stream().filter(e -> e[0].equals("message")).map(e -> e[1]).reduce("", String::concat);
         assertTrue(shown.contains("后文"));
         assertFalse(shown.contains("违禁词"));
+    }
+
+    @Test
+    void writeToolPushesActionCardAndAttachesItToTheReply() {
+        when(openAiClient.streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(), any(), any(), any(), anyInt(), any(), any()))
+                .thenReturn(new OpenAiCompatibleClient.StreamResult("", List.of(
+                        new OpenAiCompatibleClient.ToolCall("call_1", "create_agent", "{\"name\":\"售后客服\"}")), 10, 5))
+                .thenAnswer(inv -> {
+                    contentCallback(inv).accept("已生成创建卡片，请确认。");
+                    return new OpenAiCompatibleClient.StreamResult("已生成创建卡片，请确认。", List.of(), 20, 8);
+                });
+
+        service.converse(new AssistantChatRequest(null, "帮我建一个售后客服智能体", "AGENT"), actor, sink);
+
+        assertEquals(List.of("start", "tool", "tool", "action", "message", "done"), eventNames());
+        assertTrue(payloadOf("action").contains("act-1"));
+        assertTrue(payloadOf("done").contains("actionIds=[act-1]"));
+        ArgumentCaptor<java.util.Collection<AssistantAction>> attached = ArgumentCaptor.forClass(java.util.Collection.class);
+        verify(actionService).attachMessage(eq("asm-assistant"), attached.capture());
+        assertEquals("act-1", attached.getValue().iterator().next().getId());
+    }
+
+    @Test
+    void actionStatusNotesAreGivenToTheModelBeforeTheNewQuestion() {
+        when(actionService.statusNotes("asc-1")).thenReturn(List.of("「创建智能体：售后客服」：用户已确认并执行成功（资源 ID agent-9）"));
+        when(openAiClient.streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(), any(), any(), any(), anyInt(), any(), any()))
+                .thenReturn(new OpenAiCompatibleClient.StreamResult("好的", List.of(), 1, 1));
+
+        service.converse(new AssistantChatRequest("asc-1", "再给它绑定售后知识库", "AGENT"), actor, sink);
+
+        ArgumentCaptor<List<Map<String, Object>>> messages = ArgumentCaptor.forClass(List.class);
+        verify(openAiClient).streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(),
+                messages.capture(), any(), any(), anyInt(), any(), any());
+        List<Map<String, Object>> sent = messages.getValue();
+        Map<String, Object> notes = sent.get(sent.size() - 2);
+        assertEquals("system", notes.get("role"));
+        assertTrue(notes.get("content").toString().contains("agent-9"));
+        assertEquals("再给它绑定售后知识库", sent.get(sent.size() - 1).get("content"));
+    }
+
+    @Test
+    void chatModeInjectsPlatformDocsIntoSystemPrompt() {
+        when(platformDocsService.search(anyString(), anyInt())).thenReturn(List.of(new com.example.agentplatform.rag.RetrievedChunk(
+                "c1", "d1", null, "platform-guide.md", null, null, null, null,
+                "平台内置引擎必须先激活向量模型", null, 0.9, null, null, null, "HYBRID", 10, Map.of())));
+        when(openAiClient.streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(), any(), isNull(), any(), anyInt(), any(), any()))
+                .thenReturn(new OpenAiCompatibleClient.StreamResult("需要先激活向量模型", List.of(), 1, 1));
+
+        service.converse(new AssistantChatRequest(null, "内置引擎知识库检索不到怎么办", "CHAT"), actor, sink);
+
+        ArgumentCaptor<List<Map<String, Object>>> messages = ArgumentCaptor.forClass(List.class);
+        verify(openAiClient).streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(),
+                messages.capture(), isNull(), any(), anyInt(), any(), any());
+        String system = messages.getValue().get(0).get("content").toString();
+        assertTrue(system.contains("【平台使用文档参考】"));
+        assertTrue(system.contains("平台内置引擎必须先激活向量模型"));
     }
 
     @Test

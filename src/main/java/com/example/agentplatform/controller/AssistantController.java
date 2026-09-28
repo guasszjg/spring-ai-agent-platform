@@ -1,5 +1,6 @@
 package com.example.agentplatform.controller;
 
+import com.example.agentplatform.assistant.AssistantActionService;
 import com.example.agentplatform.assistant.AssistantChatRequest;
 import com.example.agentplatform.assistant.AssistantConversationService;
 import com.example.agentplatform.assistant.AssistantService;
@@ -37,17 +38,20 @@ public class AssistantController {
     private final AiChatService aiChatService;
     private final AssistantService assistantService;
     private final AssistantConversationService conversationService;
+    private final AssistantActionService actionService;
     private final RateLimiter rateLimiter;
     private final int rateLimitPerMinute;
 
     public AssistantController(AiChatService aiChatService,
                                AssistantService assistantService,
                                AssistantConversationService conversationService,
+                               AssistantActionService actionService,
                                RateLimiter rateLimiter,
                                @Value("${app.assistant.rate-limit-per-minute:20}") int rateLimitPerMinute) {
         this.aiChatService = aiChatService;
         this.assistantService = assistantService;
         this.conversationService = conversationService;
+        this.actionService = actionService;
         this.rateLimiter = rateLimiter;
         this.rateLimitPerMinute = rateLimitPerMinute;
     }
@@ -98,8 +102,45 @@ public class AssistantController {
     @GetMapping("/conversations/{id}")
     public ResponseEntity<ApiResponse<Map<String, Object>>> conversation(@PathVariable String id) {
         return conversationService.detail(id, CurrentActor.get())
-                .map(detail -> ResponseEntity.ok(ApiResponse.ok(detail)))
+                .map(detail -> {
+                    // detail 已校验会话属于当前用户，再附上会话中的操作卡片
+                    detail.put("actions", actionService.cardsForConversation(id));
+                    return ResponseEntity.ok(ApiResponse.ok(detail));
+                })
                 .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error("会话不存在或已删除")));
+    }
+
+    /** 确认执行待确认操作；无论成功失败都返回最新的卡片数据。 */
+    @PostMapping("/actions/{id}/confirm")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> confirmAction(@PathVariable String id) {
+        try {
+            return ResponseEntity.ok(ApiResponse.ok(actionService.confirm(id, CurrentActor.get())));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/actions/{id}/cancel")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> cancelAction(@PathVariable String id) {
+        try {
+            return ResponseEntity.ok(ApiResponse.ok(actionService.cancel(id, CurrentActor.get())));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    /** 回复反馈：{"rating": "UP" | "DOWN" | null}，null 表示撤销。 */
+    @PostMapping("/messages/{id}/feedback")
+    public ResponseEntity<ApiResponse<Void>> feedback(@PathVariable String id, @RequestBody(required = false) Map<String, String> body) {
+        try {
+            String rating = body != null ? body.get("rating") : null;
+            if (!conversationService.feedback(id, rating, CurrentActor.get())) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error("消息不存在"));
+            }
+            return ResponseEntity.ok(ApiResponse.ok(null));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     @DeleteMapping("/conversations/{id}")

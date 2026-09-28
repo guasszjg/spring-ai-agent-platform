@@ -1,11 +1,13 @@
 package com.example.agentplatform.assistant;
 
+import com.example.agentplatform.model.AssistantAction;
 import com.example.agentplatform.model.AssistantConversation;
 import com.example.agentplatform.model.AssistantMessage;
 import com.example.agentplatform.model.ChatGeneration;
 import com.example.agentplatform.model.GuardrailPolicy;
 import com.example.agentplatform.model.LlmProtocolType;
 import com.example.agentplatform.model.LlmProvider;
+import com.example.agentplatform.rag.RetrievedChunk;
 import com.example.agentplatform.security.CurrentActor;
 import com.example.agentplatform.security.guardrail.ContentGuardService;
 import com.example.agentplatform.security.guardrail.InputGuardResult;
@@ -42,8 +44,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   <li>{@code start}：{conversationId}，会话已建立；</li>
  *   <li>{@code message}：{delta}，回复的增量文本；</li>
  *   <li>{@code tool}：{id, name, label, status: running|done|failed}，工具调用进度；</li>
+ *   <li>{@code action}：操作卡片数据，写工具生成了待确认操作（见 {@link AssistantActionService#card}）；</li>
  *   <li>{@code guardrail}：{message}，输出命中护栏，流式输出已中断；</li>
- *   <li>{@code done}：{conversationId, messageId, content, model, latencyMs, promptTokens, completionTokens, tools, mode, degraded, notice}；</li>
+ *   <li>{@code done}：{conversationId, messageId, content, model, latencyMs, promptTokens, completionTokens, tools, mode, degraded, notice, actionIds}；</li>
  *   <li>{@code error}：{message}，请求无法处理（输入被拦截、会话不存在等）。</li>
  * </ul>
  *
@@ -72,6 +75,8 @@ public class AssistantService {
     private final ContentGuardService contentGuardService;
     private final GuardrailPolicyService policyService;
     private final AuditRecorder auditRecorder;
+    private final AssistantActionService actionService;
+    private final PlatformDocsService platformDocsService;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ExecutorService executor;
 
@@ -83,7 +88,11 @@ public class AssistantService {
                             ContentGuardService contentGuardService,
                             GuardrailPolicyService policyService,
                             AuditRecorder auditRecorder,
+                            AssistantActionService actionService,
+                            PlatformDocsService platformDocsService,
                             @Value("${app.assistant.max-concurrent:16}") int maxConcurrent) {
+        this.actionService = actionService;
+        this.platformDocsService = platformDocsService;
         this.gatewayService = gatewayService;
         this.openAiClient = openAiClient;
         this.customHttpClient = customHttpClient;
@@ -163,17 +172,19 @@ public class AssistantService {
         sink.send("start", Map.of("conversationId", conversation.getId()));
 
         String system = AssistantChatRequest.MODE_CHAT.equals(mode)
-                ? AssistantPrompts.chatMode()
+                ? AssistantPrompts.chatMode() + docsContext(effectiveMessage)
                 : AssistantPrompts.agentMode(actor);
-        List<Map<String, Object>> messages = buildMessages(system, history, effectiveMessage);
+        List<Map<String, Object>> messages = buildMessages(system, history,
+                actionService.statusNotes(conversation.getId()), effectiveMessage);
 
+        ToolContext toolContext = ToolContext.of(actor, conversation.getId());
         Turn turn = new Turn(contentGuardService.createStreamingGuard(policy), sink);
         var route = gatewayService.resolveRoute(null);
         if (route.isEmpty()) {
             turn.degraded = true;
             turn.emit(NO_CHANNEL_REPLY);
         } else {
-            runWithFailover(route.get(), messages, AssistantChatRequest.MODE_AGENT.equals(mode), actor, turn, sink);
+            runWithFailover(route.get(), messages, AssistantChatRequest.MODE_AGENT.equals(mode), toolContext, turn, sink);
         }
         turn.finish();
 
@@ -189,6 +200,7 @@ public class AssistantService {
         reply.setDegraded(turn.degraded);
         reply.setToolCalls(turn.tools.isEmpty() ? null : toJson(turn.tools));
         reply = conversationService.append(conversation, reply);
+        actionService.attachMessage(reply.getId(), toolContext.createdActions());
 
         if (turn.blocked) {
             auditRecorder.record("assistant.output_blocked", "ASSISTANT", conversation.getId(), "BLOCKED",
@@ -207,10 +219,33 @@ public class AssistantService {
         done.put("mode", mode);
         done.put("degraded", turn.degraded);
         done.put("notice", turn.notice);
+        done.put("actionIds", toolContext.createdActions().stream().map(AssistantAction::getId).toList());
         sink.send("done", done);
     }
 
+    /** 问答模式没有工具：自动检索平台使用文档注入系统提示词；文档未就绪时退回静态功能介绍。 */
+    private String docsContext(String question) {
+        List<RetrievedChunk> chunks = platformDocsService.search(question, 4);
+        if (chunks.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder("\n\n【平台使用文档参考】回答平台使用问题时以下面的文档内容为准；文档没有提到的，如实说明不确定：\n");
+        for (RetrievedChunk chunk : chunks) {
+            String content = chunk.content() == null ? "" : chunk.content().trim();
+            sb.append("---\n").append(content.length() > 1200 ? content.substring(0, 1200) + "…" : content).append('\n');
+        }
+        return sb.toString();
+    }
+
     static List<Map<String, Object>> buildMessages(String system, List<AssistantMessage> history, String userMessage) {
+        return buildMessages(system, history, List.of(), userMessage);
+    }
+
+    /**
+     * @param actionNotes 会话中待确认操作的最新状态：用户在卡片上确认后，模型在后续对话中才知道资源已创建及其 ID
+     */
+    static List<Map<String, Object>> buildMessages(String system, List<AssistantMessage> history,
+                                                   List<String> actionNotes, String userMessage) {
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "system", "content", system));
         for (AssistantMessage item : history) {
@@ -223,13 +258,17 @@ public class AssistantService {
                     : item.getContent();
             messages.add(Map.of("role", role, "content", content));
         }
+        if (actionNotes != null && !actionNotes.isEmpty()) {
+            messages.add(Map.of("role", "system", "content",
+                    "本会话中操作卡片的最新状态（以此为准，不要重复生成已执行的操作）：\n- " + String.join("\n- ", actionNotes)));
+        }
         messages.add(Map.of("role", "user", "content", userMessage));
         return messages;
     }
 
     /** 主通道按策略重试；仍失败且尚未向用户输出任何内容时切换到降级通道。 */
     private void runWithFailover(LlmGatewayService.ResolvedRoute route, List<Map<String, Object>> messages,
-                                 boolean agentMode, CurrentActor actor, Turn turn, Sink sink) {
+                                 boolean agentMode, ToolContext toolContext, Turn turn, Sink sink) {
         List<Channel> channels = new ArrayList<>();
         channels.add(new Channel(route.primary(), route.primaryKey()));
         if (route.fallback() != null && gatewayService.hasKey(route.fallback())) {
@@ -240,11 +279,12 @@ public class AssistantService {
             for (int attempt = 0; attempt < attempts; attempt++) {
                 turn.model = channel.model();
                 try {
-                    runRounds(channel, route.timeoutMs(), messages, agentMode, actor, turn, sink);
+                    runRounds(channel, route.timeoutMs(), messages, agentMode, toolContext, turn, sink);
                     return;
                 } catch (RuntimeException e) {
                     log.warn("Assistant channel [{}] attempt {} failed: {}", channel.provider().getName(), attempt + 1, e.getMessage());
-                    if (turn.hasShownContent() || sink.isCancelled()) {
+                    // 已输出内容或已生成操作卡片后不再重试，避免同一回复拼接两次结果或重复生成卡片
+                    if (turn.hasShownContent() || !toolContext.createdActions().isEmpty() || sink.isCancelled()) {
                         turn.interrupted = true;
                         return;
                     }
@@ -257,7 +297,8 @@ public class AssistantService {
     }
 
     private void runRounds(Channel channel, int timeoutMs, List<Map<String, Object>> baseMessages,
-                           boolean agentMode, CurrentActor actor, Turn turn, Sink sink) {
+                           boolean agentMode, ToolContext toolContext, Turn turn, Sink sink) {
+        CurrentActor actor = toolContext.actor();
         List<Map<String, Object>> messages = new ArrayList<>(baseMessages);
         ChatGeneration generation = new ChatGeneration();
         generation.setTemperature(agentMode ? 0.3 : 0.5);
@@ -296,10 +337,15 @@ public class AssistantService {
             for (OpenAiCompatibleClient.ToolCall call : result.toolCalls()) {
                 String label = toolRegistry.labelOf(call.name());
                 sink.send("tool", Map.of("id", call.id(), "name", call.name(), "label", label, "status", "running"));
-                AssistantToolRegistry.Outcome outcome = toolRegistry.execute(call.name(), call.arguments(), actor);
+                int actionsBefore = toolContext.createdActions().size();
+                AssistantToolRegistry.Outcome outcome = toolRegistry.execute(call.name(), call.arguments(), toolContext);
                 log.info("Assistant tool [{}] ok={} for user [{}]", call.name(), outcome.ok(), actor.getUsername());
                 sink.send("tool", Map.of("id", call.id(), "name", call.name(), "label", label,
                         "status", outcome.ok() ? "done" : "failed"));
+                // 写工具生成了待确认操作：推送操作卡片
+                for (AssistantAction action : toolContext.createdActions().subList(actionsBefore, toolContext.createdActions().size())) {
+                    sink.send("action", actionService.card(action));
+                }
                 turn.tools.add(Map.of("name", call.name(), "label", label, "ok", outcome.ok()));
                 messages.add(Map.of("role", "tool", "tool_call_id", call.id(), "content", outcome.content()));
             }
@@ -472,8 +518,16 @@ public class AssistantService {
             if (cancelled.get() || completed.get()) {
                 return;
             }
+            String json;
             try {
-                emitter.send(SseEmitter.event().name(event).data(mapper.writeValueAsString(data)));
+                json = mapper.writeValueAsString(data);
+            } catch (Exception e) {
+                // 序列化失败是程序问题，不是前端断开：记录并跳过该事件，不中断整个对话
+                log.error("Failed to serialize assistant SSE event [{}]: {}", event, e.getMessage());
+                return;
+            }
+            try {
+                emitter.send(SseEmitter.event().name(event).data(json));
             } catch (Exception e) {
                 cancelled.set(true);
             }

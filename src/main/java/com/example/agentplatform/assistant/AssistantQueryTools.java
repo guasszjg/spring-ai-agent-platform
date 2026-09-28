@@ -3,6 +3,8 @@ package com.example.agentplatform.assistant;
 import com.example.agentplatform.model.Agent;
 import com.example.agentplatform.model.AgentDailyStat;
 import com.example.agentplatform.model.AgentStatus;
+import com.example.agentplatform.model.AgentTemplate;
+import com.example.agentplatform.service.AgentTemplateService;
 import com.example.agentplatform.model.DashboardStats;
 import com.example.agentplatform.model.GatewayOverview;
 import com.example.agentplatform.model.KnowledgeBase;
@@ -63,6 +65,8 @@ public class AssistantQueryTools {
     private final DifyConfigService difyConfigService;
     private final ResourceAuthorizationService authorizationService;
     private final AgentDailyStatRepository dailyStatRepository;
+    private final AgentTemplateService templateService;
+    private final PlatformDocsService platformDocsService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public AssistantQueryTools(AgentService agentService,
@@ -73,7 +77,11 @@ public class AssistantQueryTools {
                                EmbeddingConfigService embeddingConfigService,
                                DifyConfigService difyConfigService,
                                ResourceAuthorizationService authorizationService,
-                               AgentDailyStatRepository dailyStatRepository) {
+                               AgentDailyStatRepository dailyStatRepository,
+                               AgentTemplateService templateService,
+                               PlatformDocsService platformDocsService) {
+        this.templateService = templateService;
+        this.platformDocsService = platformDocsService;
         this.agentService = agentService;
         this.knowledgeBaseService = knowledgeBaseService;
         this.knowledgeBaseRepository = knowledgeBaseRepository;
@@ -87,7 +95,7 @@ public class AssistantQueryTools {
 
     public List<AssistantTool> tools() {
         return List.of(
-                new AssistantTool("list_agents", "查询智能体列表",
+                AssistantTool.read("list_agents", "查询智能体列表",
                         "查询当前用户可见的智能体列表。用户问\"有哪些智能体\"\"哪些在运行\"\"哪个调用最多\"时使用。",
                         schema(Map.of(
                                 "keyword", prop("string", "名称、编码、描述、标签或创建人关键词，可选"),
@@ -96,32 +104,108 @@ public class AssistantQueryTools {
                                 "scope", enumProp("范围：mine 只看我创建的，all 看我可见的全部（默认）", "mine", "all"),
                                 "sort", enumProp("排序：updated 最近更新（默认），calls 累计调用次数", "updated", "calls"),
                                 "limit", prop("integer", "返回数量，默认 10，最大 20"))),
-                        this::listAgents),
-                new AssistantTool("get_agent_detail", "查看智能体配置",
+                        (args, ctx) -> listAgents(args, ctx.actor())),
+                AssistantTool.read("get_agent_detail", "查看智能体配置",
                         "查看一个智能体的配置摘要：模型、提示词摘要、绑定的知识库与工具、状态和调用指标。",
                         schema(Map.of("agent", prop("string", "智能体的 ID、编码或名称")), "agent"),
-                        this::getAgentDetail),
-                new AssistantTool("list_knowledge_bases", "查询知识库列表",
+                        (args, ctx) -> getAgentDetail(args, ctx.actor())),
+                AssistantTool.read("list_knowledge_bases", "查询知识库列表",
                         "查询当前用户可见的知识库，含引擎类型、文档数与 FAQ 数。",
                         schema(Map.of(
                                 "keyword", prop("string", "名称、描述或创建人关键词，可选"),
                                 "engine", enumProp("引擎：SPRING_AI 平台内置引擎，DIFY 外部引擎，可选", "SPRING_AI", "DIFY"),
                                 "limit", prop("integer", "返回数量，默认 10，最大 20"))),
-                        this::listKnowledgeBases),
-                new AssistantTool("get_gateway_status", "查询模型网关状态",
+                        (args, ctx) -> listKnowledgeBases(args, ctx.actor())),
+                AssistantTool.read("get_gateway_status", "查询模型网关状态",
                         "查询大模型通道是否可用。超级管理员可看到各通道、默认/降级设置与最近探测结果，其他角色只能看到是否可用。",
                         schema(Map.of()),
-                        this::getGatewayStatus),
-                new AssistantTool("get_usage_summary", "统计用量与成本",
+                        (args, ctx) -> getGatewayStatus(args, ctx.actor())),
+                AssistantTool.read("get_usage_summary", "统计用量与成本",
                         "统计一段时间内的调用量、token 用量与估算成本。超级管理员为全站数据，其他角色为本人数据。",
                         schema(Map.of("range", enumProp("时间范围：today 今天，7days 近 7 天（默认），30days 近 30 天",
                                 "today", "7days", "30days"))),
-                        this::getUsageSummary),
-                new AssistantTool("diagnose_agent", "诊断智能体",
+                        (args, ctx) -> getUsageSummary(args, ctx.actor())),
+                AssistantTool.read("diagnose_agent", "诊断智能体",
                         "排查智能体\"没有回复\"\"回答不对\"\"检索不到\"等问题：检查运行状态、模型通道、知识库绑定与索引、近期调用成功率，给出结论和建议。",
                         schema(Map.of("agent", prop("string", "智能体的 ID、编码或名称")), "agent"),
-                        this::diagnoseAgent)
+                        (args, ctx) -> diagnoseAgent(args, ctx.actor())),
+                AssistantTool.read("list_templates", "查询场景模板",
+                        "按行业或关键词查询可套用的智能体场景模板。用户想基于模板创建智能体、或问\"有哪些模板\"时使用。",
+                        schema(Map.of(
+                                "keyword", prop("string", "模板名称、描述关键词，可选"),
+                                "category", prop("string", "分类，可选"),
+                                "limit", prop("integer", "返回数量，默认 10，最大 20"))),
+                        (args, ctx) -> listTemplates(args, ctx.actor())),
+                AssistantTool.read("search_platform_docs", "检索平台文档",
+                        "检索平台使用文档。回答\"怎么用\"\"在哪里设置\"\"是什么意思\"\"报错怎么办\"等平台使用问题前先调用，以文档为准回答。",
+                        schema(Map.of("query", prop("string", "检索问题，用完整的一句话描述")), "query"),
+                        (args, ctx) -> searchPlatformDocs(args))
         );
+    }
+
+    // ==================== list_templates ====================
+
+    Map<String, Object> listTemplates(JsonNode args, CurrentActor actor) {
+        int limit = limit(args);
+        List<AgentTemplate> templates = templateService.list(text(args, "keyword"), text(args, "category"), actor);
+        List<Map<String, Object>> items = templates.stream().limit(limit).map(t -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", t.getId());
+            m.put("name", t.getName());
+            m.put("category", t.getCategory());
+            m.put("description", truncate(t.getDescription(), 80));
+            m.put("builtin", Boolean.TRUE.equals(t.getIsBuiltin()));
+            return m;
+        }).toList();
+        return ok(Map.of("total", templates.size(), "returned", items.size(), "items", items));
+    }
+
+    // ==================== search_platform_docs ====================
+
+    Map<String, Object> searchPlatformDocs(JsonNode args) {
+        String query = text(args, "query");
+        if (query == null) {
+            throw new IllegalArgumentException("请提供检索问题");
+        }
+        if (!platformDocsService.isReady()) {
+            platformDocsService.search(query, 1); // 触发后台导入
+            return Map.of("ok", false, "error", "平台文档尚未就绪（未激活向量模型或正在导入），请根据你已知的平台功能介绍回答，并说明可能不够准确");
+        }
+        List<Map<String, Object>> snippets = platformDocsService.search(query, 4).stream().map(chunk -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("source", chunk.sourceName());
+            m.put("content", truncate(chunk.content(), 1200));
+            return m;
+        }).toList();
+        if (snippets.isEmpty()) {
+            return Map.of("ok", true, "items", List.of(), "note", "平台文档中没有找到相关内容，如实告诉用户不确定，不要编造");
+        }
+        return ok(Map.of("items", snippets));
+    }
+
+    /**
+     * 按 ID → 名称精确 → 关键词模糊 解析当前用户可见的知识库；多个候选时抛出业务异常，把候选名称交给模型让用户确认。
+     */
+    KnowledgeBase resolveKnowledgeBase(String ref, CurrentActor actor) {
+        if (ref == null || ref.isBlank()) {
+            throw new IllegalArgumentException("请提供知识库的名称或 ID");
+        }
+        String key = ref.trim();
+        Optional<KnowledgeBase> byId = knowledgeBaseRepository.findById(key);
+        if (byId.isPresent() && authorizationService.canViewKnowledgeBase(actor, byId.get())) {
+            return byId.get();
+        }
+        List<KnowledgeBase> candidates = knowledgeBaseService.searchKnowledgeBases(key, null, 1, 50, actor).getRecords();
+        List<KnowledgeBase> exact = candidates.stream().filter(kb -> key.equalsIgnoreCase(kb.getName())).toList();
+        List<KnowledgeBase> pool = exact.isEmpty() ? candidates : exact;
+        if (pool.size() == 1) {
+            return pool.get(0);
+        }
+        if (pool.isEmpty()) {
+            throw new IllegalArgumentException("没有找到名称或 ID 为「" + key + "」的知识库（或当前账号无权查看）");
+        }
+        throw new IllegalArgumentException("匹配到多个知识库，请让用户确认是哪一个："
+                + String.join("、", pool.stream().limit(MAX_LIMIT).map(KnowledgeBase::getName).toList()));
     }
 
     // ==================== list_agents ====================
