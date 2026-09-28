@@ -2,9 +2,9 @@
 
 **项目**：AgentMatrix 企业级智能体平台
 **范围**：`spring-ai-agent-platform`（后端）、`spring-ai-agent-platform-ui`（前端）
-**文档版本**：1.1
+**文档版本**：1.2
 **日期**：2026-09-28
-**状态**：P0、P1 已完成，P2 起按本文分阶段实施
+**状态**：P0、P1、P2 已完成，P3 起按本文分阶段实施
 
 ---
 
@@ -281,8 +281,16 @@ CREATE INDEX idx_asst_action_user ON assistant_actions (user_id, created_at DESC
   只保存用户消息与助手最终回复，**不保存工具的原始结果**（可能较大且含业务数据），`role` 只有 user / assistant。
 - `assistant_conversations` 增加 `deleted_at`（V15）：用户删除会话是**软删除**——立即对用户不可见并清空消息内容，
   但保留消息行上的 token 用量，保证概览页的用量与成本不因删除会话而减少；行数据由保留清理任务到期物理删除。
-- `assistant_actions` 属于 P2，尚未创建。
+- `assistant_actions` 属于 P2，见下方 P2 说明。
 - 配置项：`app.assistant.rate-limit-per-minute`（默认 20）、`app.assistant.max-concurrent`（默认 16）、`app.assistant.retention-days`（默认 90）。
+
+**P2 实际落地（V16）与上面草案的差异**：
+
+- `assistant_actions` 增加 `message_id`（生成该操作的助手回复，回复落库后回填，用于历史会话中把卡片放回对应回复）、`title`、`preview`（卡片展示内容：字段、修改前后对比、提示）；
+  状态增加中间态 `EXECUTING`（确认时条件更新抢占执行权，保证只执行一次）。
+- `assistant_messages` 增加 `feedback`（UP / DOWN）与 `feedback_at`。
+- 删除会话时，会话中的操作一并作废：未处理的置为 CANCELLED，并清空 `payload` 与 `preview`（其中可能包含用户输入的提示词）。
+- 操作记录与会话一样按 `app.assistant.retention-days` 清理。
 
 ---
 
@@ -297,6 +305,10 @@ CREATE INDEX idx_asst_action_user ON assistant_actions (user_id, created_at DESC
 | DELETE | `/api/assistant/conversations/{id}` | 删除自己的会话 | P1 |
 | POST | `/api/assistant/actions/{id}/confirm` | 确认执行待确认操作 | P2 |
 | POST | `/api/assistant/actions/{id}/cancel` | 取消待确认操作 | P2 |
+| POST | `/api/assistant/messages/{id}/feedback` | 回复反馈，`{"rating": "UP" \| "DOWN" \| null}`，null 表示撤销 | P2 |
+
+确认与取消接口无论成功失败都返回最新的卡片数据（`status` 为 EXECUTED / FAILED / CANCELLED / EXPIRED），前端据此刷新卡片；
+会话详情接口额外返回 `actions`（会话中的全部卡片，按 `messageId` 归属到对应回复）。
 
 请求体（流式对话）：
 
@@ -311,15 +323,16 @@ CREATE INDEX idx_asst_action_user ON assistant_actions (user_id, created_at DESC
 
 所有接口位于 `/api/**` 下，由现有会话拦截器保证仅登录用户可用；写接口需带 CSRF Token（与现有前端请求一致）。
 
-**SSE 事件（P1 实际实现）**：参数校验与限流在建立流之前完成，失败时返回普通 JSON（400 / 429）。
+**SSE 事件（P1 / P2 实际实现）**：参数校验与限流在建立流之前完成，失败时返回普通 JSON（400 / 429）。
 
 | 事件 | 数据 | 说明 |
 |---|---|---|
 | `start` | `{conversationId}` | 会话已建立（新会话此时拿到 ID） |
 | `tool` | `{id, name, label, status}` | 工具调用进度，status 为 running / done / failed |
+| `action` | 卡片数据 `{id, messageId, toolName, title, riskLevel, status, preview, result, expiresAt}` | 写工具生成了待确认操作（P2） |
 | `message` | `{delta}` | 回复的增量文本（已经过输出护栏） |
 | `guardrail` | `{message}` | 输出命中内容安全策略（拦截模式），流式输出中断 |
-| `done` | `{conversationId, messageId, content, model, latencyMs, promptTokens, completionTokens, tools, mode, degraded, notice}` | 结束；`content` 为清理后的完整回复，前端以此为准 |
+| `done` | `{conversationId, messageId, content, model, latencyMs, promptTokens, completionTokens, tools, mode, degraded, notice, actionIds}` | 结束；`content` 为清理后的完整回复，前端以此为准 |
 | `error` | `{message}` | 无法处理（输入被护栏拦截、会话不存在等） |
 
 ---
@@ -402,7 +415,7 @@ CREATE INDEX idx_asst_action_user ON assistant_actions (user_id, created_at DESC
   - 流式请求返回后，会话拦截器在 `afterConcurrentHandlingStarted` 中清理 `CurrentActor`，避免残留在容器线程。
 - 未做：前端资源名称点击跳转（留待 P3 与页面上下文一起做）；评测集（第 12 节）尚未建立。
 
-### P2：引导式创建（写操作 + 确认）
+### P2：引导式创建（写操作 + 确认，已完成）
 
 **目标**：一句话创建和调整资源，这是最有卖点的能力。
 
@@ -419,6 +432,25 @@ CREATE INDEX idx_asst_action_user ON assistant_actions (user_id, created_at DESC
 - 未确认的操作不会产生任何数据变更；
 - 只读观察员请求创建时，助手明确拒绝且不生成卡片；
 - 每个已执行的操作在审计日志中可查到。
+
+**完成情况（2026-09-28，47 环境 DeepSeek deepseek-flash 通道 + DashScope 向量模型实测）**：
+
+- 以上验收标准全部通过：一句话生成创建卡片，确认前智能体数量不变；确认后配置（编码、分类、温度、提示词、跟随默认通道）与卡片一致；
+  重复点击确认只执行一次；每次执行在审计日志中记录 `assistant.action.<工具名>`，详情含 `via=assistant`、会话 ID 与操作 ID；
+  只读观察员请求创建时明确拒绝，不生成卡片（写工具根本不下发给观察员，按名称调用也会被注册表拦截）。
+- 多步编排在同一会话内可用：创建智能体 → 创建知识库 → 绑定 → 添加 FAQ → 修改提示词 → 停用（取消）。
+  用户确认后，会话中操作的最新状态（含新资源 ID）会作为上下文交给模型，模型据此继续下一步；知识库尚未创建时绑定会失败并提示先确认建库。
+- 实现要点：
+  - 写工具只校验参数与权限并生成 PENDING 记录；确认时只使用保存的参数，并以当前用户身份调用各 Service（Service 内部重新做权限校验）。
+    抢占、执行、记录结果分开提交，业务执行失败不会回滚"已抢占"的状态；审计写入失败只记日志，不影响结果记录。
+  - 修改类操作（W2）卡片展示修改前后对比；修改提示词会记录生成卡片时的提示词摘要，确认时若已被他人修改则拒绝执行，避免覆盖。
+  - 修改智能体时以当前配置为基础只改目标字段（`AgentService.update` 会写回所有非空字段，而 `Agent` 构造器带默认值，直接用新对象当补丁会清空知识库绑定、重置状态与温度）。
+  - 创建智能体未指定编码时自动生成；分类限定为界面上的 7 个分类；知识库绑定要求当前用户有使用权限；系统公共智能体只有超级管理员可以修改。
+  - 创建知识库固定使用平台内置引擎；未激活向量模型时卡片中给出提示。
+  - 平台使用文档：`assistant/platform-guide.md` 随 jar 发布，启动后在后台导入系统知识库「平台使用文档」（平台内置引擎），内容变化时按 SHA-256 自动替换；
+    超级管理员可在该知识库追加文档，同样可被检索。执行模式通过 `search_platform_docs` 检索；问答模式自动检索并注入系统提示词。
+    未激活向量模型时跳过导入，退回静态功能介绍，并在之后首次检索时重试。
+- 待决策事项的处理：第 4 条按界面权限规则（`canManageAgent`）执行；第 5 条由超级管理员在「平台使用文档」知识库中维护，内置手册随版本更新。
 
 ### P3：上下文感知与多步编排
 
@@ -494,15 +526,18 @@ CREATE INDEX idx_asst_action_user ON assistant_actions (user_id, created_at DESC
 - 页面：{context.page}，资源：{context.resource}
 ```
 
-## 附录 B：现状代码位置（P0 / P1）
+## 附录 B：现状代码位置（P0 / P1 / P2）
 
 | 模块 | 位置 |
 |---|---|
-| 前端助手面板 | `spring-ai-agent-platform-ui/src/components/AssistantDock.vue`（流式渲染、工具提示、模式切换、停止生成、历史对话） |
+| 前端助手面板 | `spring-ai-agent-platform-ui/src/components/AssistantDock.vue`（流式渲染、工具提示、模式切换、停止生成、历史对话、操作卡片、回复反馈） |
 | 前端 SSE 读取 | `spring-ai-agent-platform-ui/src/api/http.js` 的 `http.stream()` |
 | 前端挂载 | `spring-ai-agent-platform-ui/src/views/DashboardView.vue` |
 | 助手接口 | `controller/AssistantController.java`（`/chat`、`/chat/stream`、`/conversations`） |
 | 流式对话与工具循环（P1） | `assistant/AssistantService.java` |
+| 写工具与确认后执行（P2） | `assistant/AssistantWriteTools.java` |
+| 待确认操作的确认、取消、卡片数据（P2） | `assistant/AssistantActionService.java`，迁移 `V16__assistant_actions_and_feedback.sql` |
+| 平台使用文档导入与检索（P2） | `assistant/PlatformDocsService.java`，文档 `resources/assistant/platform-guide.md` |
 | 工具注册表与只读工具（P1） | `assistant/AssistantToolRegistry.java`、`assistant/AssistantQueryTools.java` |
 | 会话持久化（P1） | `assistant/AssistantConversationService.java`，迁移 `V14__assistant_conversations.sql`、`V15__assistant_conversation_soft_delete.sql` |
 | 系统提示词 | `assistant/AssistantPrompts.java`（问答模式与 P0 共用） |
