@@ -14,7 +14,6 @@ import com.example.agentplatform.rag.dto.RetrievalTestRequest;
 import com.example.agentplatform.rag.dto.UpdateFaqRequest;
 import com.example.agentplatform.rag.dto.UpdateKnowledgeBaseRequest;
 import com.example.agentplatform.rag.engine.RetrievalResult;
-import com.example.agentplatform.rag.engine.ShadowEvaluationResult;
 import com.example.agentplatform.rag.cache.SemanticCacheService;
 import com.example.agentplatform.rag.graph.GraphRagService;
 import com.example.agentplatform.rag.offline.OfflineRagGovernanceService;
@@ -321,23 +320,7 @@ public class KnowledgeBaseController {
         }
     }
 
-    // ==================== 影子流量评测与成本治理 (Phase P3) ====================
-
-    @PostMapping("/{id}/shadow-test")
-    public ResponseEntity<ApiResponse<ShadowEvaluationResult>> testShadowRetrieval(
-            @PathVariable String id,
-            @RequestBody RetrievalTestRequest req) {
-        try {
-            ShadowEvaluationResult result = knowledgeBaseService.evaluateShadowRetrieval(id, req);
-            return ResponseEntity.ok(ApiResponse.ok("影子双引擎对比评测完成", result));
-        } catch (IllegalStateException e) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("影子对比评测失败: " + e.getMessage()));
-        }
-    }
+    // ==================== 成本治理 ====================
 
     @GetMapping("/{id}/cost-stats")
     public ResponseEntity<ApiResponse<KnowledgeCostStatsDto>> getCostStats(@PathVariable String id) {
@@ -427,11 +410,9 @@ public class KnowledgeBaseController {
     }
 
     @PostMapping("/{id}/eval-runs")
-    public ResponseEntity<ApiResponse<RagEvalRun>> runEval(
-            @PathVariable String id,
-            @RequestParam(defaultValue = "SPRING_AI") String engine) {
+    public ResponseEntity<ApiResponse<RagEvalRun>> runEval(@PathVariable String id) {
         try {
-            RagEvalRun run = ragEvaluationService.run(id, engine, CurrentActor.get());
+            RagEvalRun run = ragEvaluationService.run(id, CurrentActor.get());
             return ResponseEntity.ok(ApiResponse.ok("评测跑分完成", run));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
