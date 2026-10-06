@@ -1,6 +1,8 @@
 package com.example.agentplatform.service;
 
 import com.example.agentplatform.model.RagEvalCase;
+import com.example.agentplatform.model.KnowledgeBase;
+import com.example.agentplatform.rag.KnowledgeSourcePolicy;
 import com.example.agentplatform.model.RagEvalRun;
 import com.example.agentplatform.model.RagEvalSet;
 import com.example.agentplatform.rag.RetrievedChunk;
@@ -89,15 +91,16 @@ public class RagEvaluationService {
     }
 
     @Transactional
-    public RagEvalRun run(String kbId, String engine, CurrentActor actor) {
-        knowledgeBaseService.getKnowledgeBaseById(kbId, actor);
+    public RagEvalRun run(String kbId, CurrentActor actor) {
+        KnowledgeBase kb = knowledgeBaseService.getKnowledgeBaseById(kbId, actor);
         RagEvalSet set = setRepository.findFirstByKnowledgeBaseIdAndName(kbId, DEFAULT_SET_NAME)
                 .orElseThrow(() -> new IllegalArgumentException("尚未创建评测集，请先保存评测用例"));
         List<RagEvalCase> cases = caseRepository.findBySetIdOrderByCreatedAtAsc(set.getId());
         if (cases.isEmpty()) {
             throw new IllegalArgumentException("评测集为空");
         }
-        String engineName = engine == null || engine.isBlank() ? "SPRING_AI" : engine.trim().toUpperCase();
+        // 评测始终使用知识库所属引擎
+        String engineName = KnowledgeSourcePolicy.engineOf(kb).name();
 
         double hitSum = 0;
         double recallSum = 0;
@@ -110,7 +113,6 @@ public class RagEvaluationService {
             req.setQuery(evalCase.getQuery());
             req.setTopK(10);
             req.setScoreThreshold(0.0);
-            req.setEngineOverride(engineName);
             req.setCacheEnabled(false);
             req.setRerankEnabled(false);
             long started = System.currentTimeMillis();

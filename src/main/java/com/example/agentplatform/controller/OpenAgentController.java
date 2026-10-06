@@ -4,6 +4,7 @@ import com.example.agentplatform.model.Agent;
 import com.example.agentplatform.model.AgentStatus;
 import com.example.agentplatform.model.ApiResponse;
 import com.example.agentplatform.model.KnowledgeBase;
+import com.example.agentplatform.rag.KnowledgeSourcePolicy;
 import com.example.agentplatform.model.OpenAgentDto;
 import com.example.agentplatform.repository.AgentRepository;
 import com.example.agentplatform.repository.KnowledgeBaseRepository;
@@ -219,6 +220,11 @@ public class OpenAgentController {
         List<String> newIds = (List<String>) body.get("knowledge_base_ids");
         if (newIds == null) {
             newIds = new ArrayList<>();
+        }
+        try {
+            KnowledgeSourcePolicy.requireSingleSource(knowledgeBaseRepository.findAllById(newIds));
+        } catch (IllegalArgumentException e) {
+            return error(HttpStatus.BAD_REQUEST, "mixed_knowledge_sources", e.getMessage());
         }
         agent.setKnowledgeBaseIds(newIds);
         try {

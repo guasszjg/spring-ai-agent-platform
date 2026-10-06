@@ -8,6 +8,7 @@ import com.example.agentplatform.model.AgentStatus;
 import com.example.agentplatform.model.DashboardStats;
 import com.example.agentplatform.model.PageResult;
 import com.example.agentplatform.config.ToolConfigSanitizer;
+import com.example.agentplatform.rag.KnowledgeSourcePolicy;
 import com.example.agentplatform.repository.AgentDailyStatRepository;
 import com.example.agentplatform.repository.AgentRepository;
 import com.example.agentplatform.security.CurrentActor;
@@ -175,7 +176,7 @@ public class AgentService {
         if (actor != null && actor.isViewer()) {
             throw new IllegalStateException("只读观察员无权创建智能体资产");
         }
-        if (actor != null && agent.getKnowledgeBaseIds() != null) {
+        if (agent.getKnowledgeBaseIds() != null) {
             validateKnowledgeBaseBindings(actor, agent.getKnowledgeBaseIds());
         }
         agent.setId(null);
@@ -207,7 +208,7 @@ public class AgentService {
             throw new IllegalStateException("权限不足：无法修改其他开发者的个人智能体");
         }
 
-        if (actor != null && agentUpdate.getKnowledgeBaseIds() != null) {
+        if (agentUpdate.getKnowledgeBaseIds() != null) {
             validateKnowledgeBaseBindings(actor, agentUpdate.getKnowledgeBaseIds());
         }
 
@@ -347,17 +348,26 @@ public class AgentService {
     }
 
     private void validateKnowledgeBaseBindings(CurrentActor actor, List<String> kbIds) {
-        if (kbIds == null || kbIds.isEmpty() || actor == null || actor.isSuperAdmin()) {
+        if (kbIds == null || kbIds.isEmpty()) {
             return;
         }
+        List<com.example.agentplatform.model.KnowledgeBase> kbs = new ArrayList<>();
         for (String kbId : kbIds) {
             if (kbId == null || kbId.isBlank()) continue;
-            com.example.agentplatform.model.KnowledgeBase kb = knowledgeBaseRepository.findById(kbId)
-                    .orElseThrow(() -> new IllegalArgumentException("绑定的知识库不存在: " + kbId));
-            if (!resourceAuthService.canUseKnowledgeBase(actor, kb)) {
+            boolean checkUse = actor != null && !actor.isSuperAdmin();
+            com.example.agentplatform.model.KnowledgeBase kb = knowledgeBaseRepository.findById(kbId).orElse(null);
+            if (kb == null) {
+                if (checkUse) {
+                    throw new IllegalArgumentException("绑定的知识库不存在: " + kbId);
+                }
+                continue;
+            }
+            if (checkUse && !resourceAuthService.canUseKnowledgeBase(actor, kb)) {
                 throw new IllegalStateException("权限不足：无权绑定未获得 USE 授权的知识库 [" + kb.getName() + "]");
             }
+            kbs.add(kb);
         }
+        KnowledgeSourcePolicy.requireSingleSource(kbs);
     }
 
     private String generateUniqueCopyCode(String sourceCode) {

@@ -30,10 +30,10 @@ public class KnowledgeBase {
     private String avatar = "📚";
 
     /**
-     * RAG 提供方：DIFY (当前外挂), SPRING_AI_NATIVE (未来原生拓展)
+     * 知识来源：SPRING_AI 自建知识库，DIFY 外部 Dify 知识库。创建后不可更改
      */
     @Column(length = 32, nullable = false)
-    private String provider = "DIFY";
+    private String provider = "SPRING_AI";
 
     /**
      * 外部 Dify Dataset ID (1对1映射)
@@ -124,7 +124,7 @@ public class KnowledgeBase {
             this.avatar = "📚";
         }
         if (this.provider == null || this.provider.isBlank()) {
-            this.provider = "DIFY";
+            this.provider = "SPRING_AI";
         }
         if (this.indexingTechnique == null) {
             this.indexingTechnique = "high_quality";

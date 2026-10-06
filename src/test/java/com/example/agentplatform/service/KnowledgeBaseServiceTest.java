@@ -247,7 +247,7 @@ class KnowledgeBaseServiceTest {
 
         assertThatThrownBy(() -> knowledgeBaseService.createKnowledgeBase(req))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("未找到支持的 RAG 知识库服务提供方");
+                .hasMessageContaining("未知的知识库类型");
     }
 
     @Test
@@ -431,50 +431,6 @@ class KnowledgeBaseServiceTest {
         assertThat(v1.getEngineType()).isEqualTo("DIFY");
         verify(knowledgeBaseRepository).save(kb);
         assertThat(kb.getActiveIndexVersionId()).isEqualTo("kiv-v1");
-    }
-
-    @Test
-    void evaluateShadowRetrieval_executesDualEngineQueriesAndReturnsEvaluationResult() {
-        KnowledgeBase kb = new KnowledgeBase();
-        kb.setId("kb-shadow-1");
-        kb.setName("影子评测库");
-        kb.setProvider("SPRING_AI");
-        kb.setExternalDatasetId("ds-shadow-1");
-        when(knowledgeBaseRepository.findById("kb-shadow-1")).thenReturn(Optional.of(kb));
-
-        RetrievedChunk primChunk = RetrievedChunk.builder()
-                .chunkId("p1")
-                .content("Spring AI 原生自研 RAG 架构")
-                .tokenCount(30)
-                .score(0.92)
-                .build();
-        RetrievedChunk secChunk = RetrievedChunk.builder()
-                .chunkId("s1")
-                .content("Dify 托管向量召回")
-                .tokenCount(35)
-                .score(0.85)
-                .build();
-
-        when(springAiProvider.retrieve(eq("ds-shadow-1"), any(RetrievalRequest.class)))
-                .thenReturn(List.of(primChunk));
-        when(difyProvider.retrieve(eq("ds-shadow-1"), any(RetrievalRequest.class)))
-                .thenReturn(List.of(secChunk));
-
-        RetrievalTestRequest req = new RetrievalTestRequest();
-        req.setQuery("双引擎架构评测");
-        req.setTopK(3);
-
-        com.example.agentplatform.rag.engine.ShadowEvaluationResult result =
-                knowledgeBaseService.evaluateShadowRetrieval("kb-shadow-1", req);
-
-        assertThat(result).isNotNull();
-        assertThat(result.query()).isEqualTo("双引擎架构评测");
-        assertThat(result.primaryEngine()).isEqualTo("SPRING_AI");
-        assertThat(result.secondaryEngine()).isEqualTo("DIFY");
-        assertThat(result.primaryChunks()).hasSize(1);
-        assertThat(result.secondaryChunks()).hasSize(1);
-        assertThat(result.primaryTokens()).isEqualTo(30);
-        assertThat(result.secondaryTokens()).isEqualTo(35);
     }
 
     @Test

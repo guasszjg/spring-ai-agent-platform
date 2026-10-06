@@ -6,6 +6,7 @@ import com.example.agentplatform.model.KnowledgeDocument;
 import com.example.agentplatform.model.KnowledgeFaq;
 import com.example.agentplatform.model.PageResult;
 import com.example.agentplatform.rag.KnowledgeBaseProvider;
+import com.example.agentplatform.rag.KnowledgeSourcePolicy;
 import com.example.agentplatform.rag.RetrievedChunk;
 import com.example.agentplatform.rag.dto.CreateFaqRequest;
 import com.example.agentplatform.rag.dto.CreateKnowledgeBaseRequest;
@@ -26,7 +27,6 @@ import com.example.agentplatform.rag.engine.EngineResolution;
 import com.example.agentplatform.rag.engine.EngineType;
 import com.example.agentplatform.rag.engine.RetrievalRequest;
 import com.example.agentplatform.rag.engine.RetrievalResult;
-import com.example.agentplatform.rag.engine.ShadowEvaluationResult;
 import com.example.agentplatform.rag.parser.OcrService;
 import com.example.agentplatform.repository.KnowledgeIndexVersionRepository;
 import com.example.agentplatform.repository.KnowledgeSourceRevisionRepository;
@@ -423,32 +423,11 @@ public class KnowledgeBaseService {
         }
         String query = req.getQuery().trim();
 
-        // 1. 三级引擎决议 (L1 系统默认 -> L2 知识库绑定 -> L3 调试覆盖)
-        EngineType l1Default = EngineType.DIFY;
-        String kbProviderStr = kb.getProvider() != null && !kb.getProvider().isBlank() ? kb.getProvider().toUpperCase() : "DIFY";
-        EngineType l2Binding;
-        try {
-            l2Binding = EngineType.valueOf(kbProviderStr);
-        } catch (IllegalArgumentException e) {
-            l2Binding = EngineType.DIFY;
-        }
-
-        EngineType effectiveEngine = l2Binding;
+        // 1. 引擎固定为知识库所属来源（自建 / Dify 分开管理，不支持跨引擎检索）
+        EngineType effectiveEngine = KnowledgeSourcePolicy.engineOf(kb);
         String resolutionSource = "L2_KB_BINDING";
         List<EngineResolution.ResolutionStep> steps = new ArrayList<>();
-        steps.add(new EngineResolution.ResolutionStep("L1", l1Default.name(), !l1Default.equals(l2Binding)));
-        steps.add(new EngineResolution.ResolutionStep("L2", l2Binding.name(), false));
-
-        if (req.getEngineOverride() != null && !req.getEngineOverride().isBlank()) {
-            try {
-                EngineType l3 = EngineType.valueOf(req.getEngineOverride().toUpperCase().trim());
-                steps.add(new EngineResolution.ResolutionStep("L3", l3.name(), false));
-                effectiveEngine = l3;
-                resolutionSource = "L3_DEBUG_OVERRIDE";
-            } catch (IllegalArgumentException e) {
-                log.warn("无效的引擎覆盖参数: {}", req.getEngineOverride());
-            }
-        }
+        steps.add(new EngineResolution.ResolutionStep("L2", effectiveEngine.name(), false));
 
         // 2. 物理索引版本获取/保障
         KnowledgeIndexVersion activeVersion = null;
@@ -496,7 +475,6 @@ public class KnowledgeBaseService {
                 .rerankModel(req.getRerankModel() != null ? req.getRerankModel() : kb.getRerankModel())
                 .vectorWeight(effectiveVectorWeight)
                 .keywordWeight(effectiveKeywordWeight)
-                .engineOverride(req.getEngineOverride() != null && !req.getEngineOverride().isBlank() ? effectiveEngine : null)
                 .indexVersionId(activeVersion != null ? activeVersion.getId() : null)
                 .rewriteEnabled(req.getRewriteEnabled() != null ? req.getRewriteEnabled() : false)
                 .expandParent(req.getExpandParent() != null ? req.getExpandParent() : true)
@@ -566,135 +544,6 @@ public class KnowledgeBaseService {
         }
 
         return RetrievalResult.of(query, chunks, resolution, latencyMs, metrics);
-    }
-
-    // ==================== 影子流量与双引擎对比评测 (Phase P3) ====================
-
-    @Transactional
-    public ShadowEvaluationResult evaluateShadowRetrieval(String kbId, RetrievalTestRequest req) {
-        return evaluateShadowRetrieval(kbId, req, CurrentActor.get());
-    }
-
-    @Transactional
-    public ShadowEvaluationResult evaluateShadowRetrieval(String kbId, RetrievalTestRequest req, CurrentActor actor) {
-        KnowledgeBase kb = getKnowledgeBaseById(kbId, actor);
-        if (req == null || req.getQuery() == null || req.getQuery().trim().isBlank()) {
-            throw new IllegalArgumentException("影子测试 Query 不能为空");
-        }
-        String query = req.getQuery().trim();
-
-        // 确定 Primary（主测）和 Secondary（对照）引擎
-        String primaryEngine = "SPRING_AI";
-        String secondaryEngine = "DIFY";
-        if (req.getEngineOverride() != null && !req.getEngineOverride().isBlank()) {
-            if ("DIFY".equalsIgnoreCase(req.getEngineOverride().trim())) {
-                primaryEngine = "DIFY";
-                secondaryEngine = "SPRING_AI";
-            }
-        } else if ("DIFY".equalsIgnoreCase(kb.getProvider())) {
-            primaryEngine = "DIFY";
-            secondaryEngine = "SPRING_AI";
-        }
-
-        int effectiveTopK = req.getTopK() != null && req.getTopK() > 0 ? req.getTopK()
-                : (kb.getTopK() != null && kb.getTopK() > 0 ? kb.getTopK() : 5);
-        Double effectiveScoreThreshold = req.getScoreThreshold() != null ? req.getScoreThreshold() : kb.getScoreThreshold();
-        String effectiveSearchMethod = req.getSearchMethod() != null && !req.getSearchMethod().isBlank()
-                ? req.getSearchMethod() : (kb.getSearchMethod() != null ? kb.getSearchMethod() : "hybrid_search");
-        Boolean effectiveRerankEnabled = req.getRerankEnabled() != null ? req.getRerankEnabled()
-                : Boolean.TRUE.equals(kb.getRerankEnabled());
-        Double effectiveVectorWeight = req.getVectorWeight() != null ? req.getVectorWeight()
-                : (kb.getVectorWeight() != null ? kb.getVectorWeight() : 0.7);
-        Double effectiveKeywordWeight = req.getKeywordWeight() != null ? req.getKeywordWeight()
-                : (kb.getKeywordWeight() != null ? kb.getKeywordWeight() : 0.3);
-
-        RetrievalRequest primaryReq = RetrievalRequest.builder()
-                .knowledgeBaseId(kb.getId())
-                .query(query)
-                .topK(effectiveTopK)
-                .scoreThreshold(effectiveScoreThreshold)
-                .searchMethod(effectiveSearchMethod)
-                .rerankEnabled(effectiveRerankEnabled)
-                .rerankModel(req.getRerankModel() != null ? req.getRerankModel() : kb.getRerankModel())
-                .vectorWeight(effectiveVectorWeight)
-                .keywordWeight(effectiveKeywordWeight)
-                .rewriteEnabled(req.getRewriteEnabled() != null ? req.getRewriteEnabled() : false)
-                .expandParent(req.getExpandParent() != null ? req.getExpandParent() : true)
-                .maxContextTokens(req.getMaxContextTokens() != null ? req.getMaxContextTokens() : 3000)
-                .build();
-
-        RetrievalRequest secondaryReq = RetrievalRequest.builder()
-                .knowledgeBaseId(kb.getId())
-                .query(query)
-                .topK(effectiveTopK)
-                .scoreThreshold(effectiveScoreThreshold)
-                .searchMethod(effectiveSearchMethod)
-                .rerankEnabled(effectiveRerankEnabled)
-                .rerankModel(req.getRerankModel() != null ? req.getRerankModel() : kb.getRerankModel())
-                .vectorWeight(effectiveVectorWeight)
-                .keywordWeight(effectiveKeywordWeight)
-                .rewriteEnabled(false)
-                .expandParent(false)
-                .maxContextTokens(req.getMaxContextTokens() != null ? req.getMaxContextTokens() : 3000)
-                .build();
-
-        // 1. Primary 引擎召回
-        List<RetrievedChunk> primaryChunks = Collections.emptyList();
-        long primaryLatency = 0;
-        try {
-            KnowledgeBaseProvider pProvider = resolveProvider(primaryEngine);
-            long pStart = System.currentTimeMillis();
-            primaryChunks = pProvider.retrieve(kb.getExternalDatasetId(), primaryReq);
-            primaryLatency = System.currentTimeMillis() - pStart;
-        } catch (Exception e) {
-            log.warn("影子测试 Primary 引擎 [{}] 召回异常: {}", primaryEngine, e.getMessage());
-        }
-
-        // 2. Secondary 引擎召回
-        List<RetrievedChunk> secondaryChunks = Collections.emptyList();
-        long secondaryLatency = 0;
-        try {
-            KnowledgeBaseProvider sProvider = resolveProvider(secondaryEngine);
-            long sStart = System.currentTimeMillis();
-            secondaryChunks = sProvider.retrieve(kb.getExternalDatasetId(), secondaryReq);
-            secondaryLatency = System.currentTimeMillis() - sStart;
-        } catch (Exception e) {
-            log.warn("影子测试 Secondary 引擎 [{}] 召回异常: {}", secondaryEngine, e.getMessage());
-        }
-
-        Map<String, Object> metrics = new LinkedHashMap<>();
-        metrics.put("topK", effectiveTopK);
-        metrics.put("searchMethod", effectiveSearchMethod);
-        metrics.put("rerankEnabled", effectiveRerankEnabled);
-        metrics.put("rewriteEnabled", req.getRewriteEnabled() != null ? req.getRewriteEnabled() : false);
-        metrics.put("expandParent", req.getExpandParent() != null ? req.getExpandParent() : true);
-        metrics.put("shadowMode", "DUAL_ENGINE_AB_TEST");
-
-        ShadowEvaluationResult result = ShadowEvaluationResult.of(
-                query,
-                primaryEngine,
-                secondaryEngine,
-                primaryChunks,
-                secondaryChunks,
-                primaryLatency,
-                secondaryLatency,
-                metrics
-        );
-
-        // 累加影子测试耗费的检索 Token 统计
-        try {
-            int retTokens = result.primaryTokens() + result.secondaryTokens();
-            long curRet = kb.getRetrievalTokens() != null ? kb.getRetrievalTokens() : 0L;
-            kb.setRetrievalTokens(curRet + retTokens);
-            double embedCost = (kb.getEmbeddingTokens() != null ? kb.getEmbeddingTokens() : 0L) * 0.0000005;
-            double rkCost = (kb.getRerankCalls() != null ? kb.getRerankCalls() : 0L) * 0.003;
-            kb.setEstimatedCost(Math.round((embedCost + rkCost) * 10000.0) / 10000.0);
-            knowledgeBaseRepository.save(kb);
-        } catch (Exception e) {
-            log.warn("更新影子测试 token 成本统计失败: {}", e.getMessage());
-        }
-
-        return result;
     }
 
     // ==================== 成本看板与可观测性 (Phase P3) ====================
@@ -775,10 +624,18 @@ public class KnowledgeBaseService {
             throw new IllegalArgumentException("知识库名称不能为空");
         }
 
-        String providerType = (req.getProvider() != null && !req.getProvider().isBlank()) ? req.getProvider() : "DIFY";
+        EngineType engine;
+        try {
+            engine = (req.getProvider() != null && !req.getProvider().isBlank())
+                    ? EngineType.valueOf(req.getProvider().trim().toUpperCase())
+                    : EngineType.SPRING_AI;
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("未知的知识库类型: " + req.getProvider());
+        }
+        String providerType = engine.name();
         KnowledgeBaseProvider provider = resolveProvider(providerType);
 
-        boolean isSpringAi = "SPRING_AI".equalsIgnoreCase(providerType);
+        boolean isSpringAi = engine == EngineType.SPRING_AI;
         if (!isSpringAi && !getEngineInfo().isConfigured()) {
             throw new IllegalArgumentException("Dify 引擎未配置，无法创建 Dify 外挂知识库，请先在「模型网关 → Dify 知识引擎」中配置");
         }
@@ -791,7 +648,8 @@ public class KnowledgeBaseService {
         Boolean rerankEnabled = req.getRerankEnabled() != null ? req.getRerankEnabled() : true;
         String rerankMode = (req.getRerankMode() != null && !req.getRerankMode().isBlank()) ? req.getRerankMode() : "weighted_score";
         String rerankModel = (req.getRerankModel() != null && !req.getRerankModel().isBlank()) ? req.getRerankModel() : "qwen3-rerank";
-        String rerankModelProvider = (req.getRerankModelProvider() != null && !req.getRerankModelProvider().isBlank()) ? req.getRerankModelProvider() : "langgenius/tongyi/tongyi";
+        String rerankModelProvider = (req.getRerankModelProvider() != null && !req.getRerankModelProvider().isBlank()) ? req.getRerankModelProvider()
+                : (isSpringAi ? "spring_ai" : "langgenius/tongyi/tongyi");
         Double vectorWeight = req.getVectorWeight() != null ? req.getVectorWeight() : 0.7;
         Double keywordWeight = req.getKeywordWeight() != null ? req.getKeywordWeight() : 0.3;
 

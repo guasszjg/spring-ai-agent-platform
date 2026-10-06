@@ -195,7 +195,8 @@ public class AssistantQueryTools {
 
     private static final Map<String, String> PAGE_NAMES = Map.ofEntries(
             Map.entry("overview", "概览"), Map.entry("agents", "智能体列表"), Map.entry("templates", "场景模板"),
-            Map.entry("tools", "工具"), Map.entry("knowledge", "知识库"), Map.entry("gateway", "模型网关"),
+            Map.entry("tools", "工具"), Map.entry("knowledge", "自建知识库"), Map.entry("knowledge-dify", "Dify 知识库"),
+            Map.entry("gateway", "模型网关"),
             Map.entry("users", "用户"), Map.entry("roles", "角色与权限"), Map.entry("security", "开放与安全"),
             Map.entry("assistant-eval", "助手评测"), Map.entry("debug", "智能体编排与调试"));
 
