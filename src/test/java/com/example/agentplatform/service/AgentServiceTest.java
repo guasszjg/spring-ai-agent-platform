@@ -206,4 +206,27 @@ class AgentServiceTest {
         assertThat(asAdmin.getTotalAgents()).isEqualTo(2);
         assertThat(asAdmin.getTotalCalls()).isEqualTo(1009L);
     }
+
+    @Test
+    void updateRecordsPromptVersionWithClientSourceFilteredAndNote() {
+        AgentPromptVersionService versions = org.mockito.Mockito.mock(AgentPromptVersionService.class);
+        agentService.setPromptVersionService(versions);
+        com.example.agentplatform.security.CurrentActor dev =
+                new com.example.agentplatform.security.CurrentActor("u-dev", "dev", com.example.agentplatform.model.UserRole.DEVELOPER);
+        Agent existing = new Agent();
+        existing.setId("a-1");
+        existing.setOwnerId("u-dev");
+        existing.setSystemPrompt("旧提示词");
+        when(agentRepository.findById("a-1")).thenReturn(Optional.of(existing));
+        when(resourceAuthService.canManageAgent(dev, existing)).thenReturn(true);
+        when(agentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        Agent patch = new Agent();
+        patch.setSystemPrompt("新提示词");
+        patch.setPromptChangeNote("补充退货规则");
+        patch.setPromptChangeSource("ASSISTANT"); // 前端不能冒充服务端来源
+        agentService.update("a-1", patch, dev);
+
+        verify(versions).recordChange("a-1", "旧提示词", "新提示词", AgentPromptVersionService.SOURCE_EDIT, "补充退货规则", dev);
+    }
 }
