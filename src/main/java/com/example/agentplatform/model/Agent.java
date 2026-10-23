@@ -3,6 +3,7 @@ package com.example.agentplatform.model;
 import com.example.agentplatform.config.StringListJsonConverter;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.CollectionTable;
 import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
@@ -16,6 +17,7 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -70,6 +72,32 @@ public class Agent {
     private String ownerUsername;
     @Column(name = "is_system")
     private Boolean isSystem = false;
+
+    /** 更新请求中可选的提示词版本说明（只写入版本记录，不入库到智能体表，也不出现在响应中） */
+    @Transient
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+    private String promptChangeNote;
+
+    /** 更新请求中可选的提示词变更来源：PUBLISH 调试台发布 / EDIT 编辑 / ROLLBACK 回滚 */
+    @Transient
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+    private String promptChangeSource;
+
+    public String getPromptChangeNote() {
+        return promptChangeNote;
+    }
+
+    public void setPromptChangeNote(String promptChangeNote) {
+        this.promptChangeNote = promptChangeNote;
+    }
+
+    public String getPromptChangeSource() {
+        return promptChangeSource;
+    }
+
+    public void setPromptChangeSource(String promptChangeSource) {
+        this.promptChangeSource = promptChangeSource;
+    }
 
     public Agent() {
         this.createdAt = LocalDateTime.now();

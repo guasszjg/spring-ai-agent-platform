@@ -197,7 +197,9 @@ class AssistantWriteToolsTest {
         var result = tools.execute(AssistantWriteTools.UPDATE_AGENT_PROMPT, payload, developer);
 
         ArgumentCaptor<Agent> patch = ArgumentCaptor.forClass(Agent.class);
-        verify(agentService).update(eq("agent-1"), patch.capture(), eq(developer));
+        // 提示词版本来源记为 AI 助手
+        verify(agentService).update(eq("agent-1"), patch.capture(), eq(developer),
+                eq(com.example.agentplatform.service.AgentPromptVersionService.SOURCE_ASSISTANT));
         assertEquals("新提示词", patch.getValue().getSystemPrompt());
         assertEquals(List.of("kb-old"), patch.getValue().getKnowledgeBaseIds());
         assertEquals(AgentStatus.RUNNING, patch.getValue().getStatus());

@@ -59,6 +59,14 @@ public class AgentService {
 
     private com.example.agentplatform.assistant.AssistantUsageService assistantUsageService;
 
+    private AgentPromptVersionService promptVersionService;
+
+    /** 可选注入（setter 方式，避免改动已有构造器签名）：系统提示词版本管理。 */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setPromptVersionService(AgentPromptVersionService promptVersionService) {
+        this.promptVersionService = promptVersionService;
+    }
+
     /** 可选注入（setter 方式，避免改动已有构造器签名）：概览页用量计入平台 AI 助手的 token。 */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setAssistantUsageService(com.example.agentplatform.assistant.AssistantUsageService assistantUsageService) {
@@ -190,7 +198,11 @@ public class AgentService {
             agent.setIsSystem(false);
         }
         agent.setToolsConfig(toolConfigSanitizer.sanitize(agent.getToolsConfig()));
-        return agentRepository.save(agent);
+        Agent saved = agentRepository.save(agent);
+        if (promptVersionService != null) {
+            promptVersionService.recordCreated(saved, AgentPromptVersionService.SOURCE_CREATE, agent.getPromptChangeNote(), actor);
+        }
+        return saved;
     }
 
     public Agent update(String id, Agent agentUpdate) {
@@ -198,6 +210,14 @@ public class AgentService {
     }
 
     public Agent update(String id, Agent agentUpdate, CurrentActor actor) {
+        return update(id, agentUpdate, actor, AgentPromptVersionService.clientSource(agentUpdate.getPromptChangeSource()));
+    }
+
+    /**
+     * @param promptSource 系统提示词变化时记录到版本中的来源；由服务端调用方决定（例如 AI 助手），
+     *                     前端请求经 {@link AgentPromptVersionService#clientSource} 过滤后传入
+     */
+    public Agent update(String id, Agent agentUpdate, CurrentActor actor, String promptSource) {
         Agent existing = agentRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("智能体不存在: " + id));
 
@@ -218,6 +238,7 @@ public class AgentService {
         if (agentUpdate.getCategory() != null) existing.setCategory(agentUpdate.getCategory());
         if (agentUpdate.getDescription() != null) existing.setDescription(agentUpdate.getDescription());
         if (agentUpdate.getModelName() != null) existing.setModelName(agentUpdate.getModelName());
+        String promptBefore = existing.getSystemPrompt();
         if (agentUpdate.getSystemPrompt() != null) existing.setSystemPrompt(agentUpdate.getSystemPrompt());
         if (agentUpdate.getTemperature() != null) existing.setTemperature(agentUpdate.getTemperature());
         if (agentUpdate.getTopP() != null) existing.setTopP(agentUpdate.getTopP());
@@ -237,7 +258,12 @@ public class AgentService {
             existing.setIsSystem(agentUpdate.getIsSystem());
         }
 
-        return agentRepository.save(existing);
+        Agent saved = agentRepository.save(existing);
+        if (promptVersionService != null && agentUpdate.getSystemPrompt() != null) {
+            promptVersionService.recordChange(saved.getId(), promptBefore, saved.getSystemPrompt(), promptSource,
+                    agentUpdate.getPromptChangeNote(), actor);
+        }
+        return saved;
     }
 
     public boolean delete(String id) {
@@ -260,6 +286,9 @@ public class AgentService {
         toolSecretService.clearForDeletedAgent(id);
         resourceGrantRepository.deleteByResourceTypeAndResourceId(ResourceAuthorizationService.TYPE_AGENT, id);
         agentRepository.deleteById(id);
+        if (promptVersionService != null) {
+            promptVersionService.deleteForAgent(id);
+        }
         return true;
     }
 
@@ -340,6 +369,10 @@ public class AgentService {
         clone.setIsSystem(false);
 
         Agent saved = agentRepository.save(clone);
+        if (promptVersionService != null) {
+            promptVersionService.recordCreated(saved, AgentPromptVersionService.SOURCE_COPY,
+                    "复制自「" + source.getName() + "」", actor);
+        }
 
         // 关键安全修复：复制智能体绝不携带工具密钥！避免跨智能体密钥泄露
         // （已彻底移除 toolSecretService.copyForClonedAgent 调用）

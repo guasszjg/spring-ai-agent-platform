@@ -561,7 +561,8 @@ public class AssistantWriteTools {
         }
         Agent patch = patchFrom(agent);
         patch.setSystemPrompt(p.path("systemPrompt").asText());
-        agentService.update(agent.getId(), patch, actor);
+        patch.setPromptChangeNote("AI 助手修改");
+        agentService.update(agent.getId(), patch, actor, com.example.agentplatform.service.AgentPromptVersionService.SOURCE_ASSISTANT);
         return new ExecutionResult("AGENT", agent.getId(), "已更新「" + agent.getName() + "」的系统提示词",
                 "去调试", AssistantQueryTools.agentLink(agent.getId()));
     }
