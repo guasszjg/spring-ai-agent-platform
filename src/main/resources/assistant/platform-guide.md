@@ -112,7 +112,7 @@ AI 助手自身消耗的 token 也计入概览的用量与成本。
 
 ### 向量模型、OCR 与 Dify 知识引擎
 
-- **向量模型（Embedding）**：平台内置引擎知识库的向量化依赖它，添加后需要激活，并建议先测试连接；
+- **向量模型（Embedding）**：平台内置引擎知识库的向量化依赖它，添加后需要激活，并建议先测试连接。接口地址填 OpenAI 兼容的 Base URL 时自动拼接 `/embeddings`；地址最后一段以 embeddings 结尾时（如 `/api/modelConfig/textEmbeddings`）按完整地址调用。不使用 API Key 的中转服务可以配置自定义请求头鉴权（如 `app_id`、`device_mac`），请求头加密保存，编辑时留空即保持不变；
 - **OCR**：支持本地识别与在线识别两种方式，用于扫描件和图片文档；
 - **Dify 知识引擎**：配置 Dify 服务地址与 API Key，用于 Dify 外部引擎知识库。
 

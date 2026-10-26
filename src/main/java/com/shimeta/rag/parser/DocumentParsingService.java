@@ -1,5 +1,9 @@
 package com.shimeta.rag.parser;
 
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException;
+import org.apache.pdfbox.text.PDFTextStripper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +31,11 @@ import java.util.zip.ZipInputStream;
  */
 @Service
 public class DocumentParsingService {
+
+    /** 平均每页可提取字符少于该值时视为扫描件 */
+    static final int SCANNED_CHARS_PER_PAGE = 50;
+    /** 一页至少有这么多字符才算"有文字的页" */
+    private static final int MIN_PAGE_TEXT = 20;
 
     private static final Logger log = LoggerFactory.getLogger(DocumentParsingService.class);
 
@@ -181,39 +190,52 @@ public class DocumentParsingService {
 
     /**
      * 3. PDF 解析与扫描件检测 (PDF + Scan Detector):
-     * 提取字符流，统计字符数/页数比例；若平均页字符 < 50 字符，判定为扫描件并尝试 OCR
+     * 用 PDFBox 逐页提取文本层（解压内容流，并按字体的 ToUnicode 映射还原中文）；
+     * 只有平均每页可提取字符少于 {@value #SCANNED_CHARS_PER_PAGE} 个时才判定为扫描件并尝试 OCR。
      */
     private ParseResult parsePdf(byte[] bytes, String filename) {
-        String raw = new String(bytes, StandardCharsets.ISO_8859_1);
-        int pageCount = Math.max(1, countMatches(raw, "/Page\n") + countMatches(raw, "/Page/"));
-
-        // 提取常规文本流
-        StringBuilder extracted = new StringBuilder();
-        Pattern streamPattern = Pattern.compile("stream[\r\n]+(.*?)[\r\n]+endstream", Pattern.DOTALL);
-        Matcher streamMatcher = streamPattern.matcher(raw);
-
-        while (streamMatcher.find()) {
-            String streamContent = streamMatcher.group(1);
-            // 提取 Tj 或 TJ 文本操作指令
-            Pattern tjPattern = Pattern.compile("\\((.*?)\\)\\s*Tj");
-            Matcher tjMatcher = tjPattern.matcher(streamContent);
-            while (tjMatcher.find()) {
-                extracted.append(tjMatcher.group(1)).append(" ");
+        int pageCount;
+        int pagesWithText = 0;
+        StringBuilder text = new StringBuilder();
+        try (PDDocument document = Loader.loadPDF(bytes)) {
+            pageCount = Math.max(1, document.getNumberOfPages());
+            PDFTextStripper stripper = new PDFTextStripper();
+            stripper.setSortByPosition(true);
+            for (int page = 1; page <= document.getNumberOfPages(); page++) {
+                stripper.setStartPage(page);
+                stripper.setEndPage(page);
+                String pageText = tidyPdfText(cleanExtractedText(stripper.getText(document)));
+                if (pageText.length() >= MIN_PAGE_TEXT) {
+                    pagesWithText++;
+                }
+                if (!pageText.isEmpty()) {
+                    text.append(pageText).append("\n\n");
+                }
             }
+        } catch (InvalidPasswordException e) {
+            log.warn("PDF 已加密，无法提取文本: filename={}", filename);
+            return pdfUnreadable(filename, "文件已设置打开密码，请解除加密后重新上传。");
+        } catch (Exception e) {
+            log.warn("PDF 解析失败: filename={}, error={}", filename, e.getMessage());
+            return pdfUnreadable(filename, "文件已损坏或格式不受支持（" + e.getMessage() + "），请重新导出 PDF 后上传。");
         }
 
-        String plainText = cleanExtractedText(extracted.toString());
+        String plainText = text.toString().trim();
         int charCount = plainText.length();
         int charsPerPage = charCount / pageCount;
-
-        boolean isScanned = (charsPerPage < 50);
+        boolean isScanned = charsPerPage < SCANNED_CHARS_PER_PAGE;
 
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("pageCount", pageCount);
+        meta.put("pagesWithText", pagesWithText);
         meta.put("charsPerPage", charsPerPage);
         meta.put("isScanned", isScanned);
 
-        if (isScanned && ocrService != null && ocrService.isAvailable()) {
+        if (!isScanned) {
+            return new ParseResult(plainText, "PDF", "PDF_TEXT_PARSER", false, charCount, pageCount, meta);
+        }
+
+        if (ocrService != null && ocrService.isAvailable()) {
             OcrService.OcrResult ocrRes = ocrService.parseImage(bytes, filename);
             if (ocrRes.success() && !ocrRes.text().isBlank()) {
                 meta.put("ocrConfidence", ocrRes.confidence());
@@ -223,13 +245,30 @@ public class DocumentParsingService {
         }
 
         if (charCount > 0) {
-            return ParseResult.ofText(plainText, "PDF", "PDF_STREAM_PARSER", meta);
+            // 文字很少但不为空（例如只有封面标题的扫描件）：保留已提取的文字，同时标记为扫描件
+            return ParseResult.ofScanned(plainText, "PDF", "PDF_TEXT_PARSER", pageCount, meta);
         }
 
         // 纯图片扫描件兜底提示
         String fallbackDesc = "【扫描件 PDF 文档】" + filename + "（共 " + pageCount + " 页）。\n"
                 + "提示：该文件为影印扫描件，无内置文本层。已自动标注为扫描件，待 OCR 服务部署就绪后即可执行全量图像字符转写。";
         return ParseResult.ofScanned(fallbackDesc, "PDF", "PDF_SCAN_PENDING_OCR", pageCount, meta);
+    }
+
+    private static final Pattern PDF_DOT_LEADER = Pattern.compile("[.·…]{5,}");
+    private static final Pattern PDF_SPACES = Pattern.compile("[ \t\u00A0\u3000]{2,}");
+
+    /** 整理 PDF 版面文本：目录引导线缩为省略号、连续空白合并、去掉行尾空白与多余空行，避免浪费切片长度 */
+    static String tidyPdfText(String text) {
+        String tidied = PDF_DOT_LEADER.matcher(text).replaceAll(" … ");
+        tidied = PDF_SPACES.matcher(tidied).replaceAll(" ");
+        return tidied.replaceAll("(?m)[ \t]+$", "").replaceAll("\n{3,}", "\n\n").trim();
+    }
+
+    /** PDF 无法打开时的说明切片（不把二进制内容当文本入库） */
+    private ParseResult pdfUnreadable(String filename, String reason) {
+        String desc = "【PDF 无法读取】" + filename + "。" + reason;
+        return new ParseResult(desc, "PDF", "PDF_UNREADABLE", false, desc.length(), 0, Map.of("unreadable", true));
     }
 
     /**
@@ -314,17 +353,6 @@ public class DocumentParsingService {
                 .replaceAll("\\\\[rnftb]", " ")
                 .replaceAll("[\\p{Cntrl}&&[^\r\n\t]]", "")
                 .trim();
-    }
-
-    private int countMatches(String source, String target) {
-        if (source == null || target == null || target.isEmpty()) return 0;
-        int count = 0;
-        int idx = 0;
-        while ((idx = source.indexOf(target, idx)) != -1) {
-            count++;
-            idx += target.length();
-        }
-        return count;
     }
 
     private String extractExtension(String filename) {

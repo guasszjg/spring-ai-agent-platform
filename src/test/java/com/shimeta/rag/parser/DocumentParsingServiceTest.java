@@ -1,5 +1,12 @@
 package com.shimeta.rag.parser;
 
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.encryption.AccessPermission;
+import org.apache.pdfbox.pdmodel.encryption.StandardProtectionPolicy;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
+import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -7,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -81,25 +89,86 @@ class DocumentParsingServiceTest {
         assertThat(result.metadata().get("paragraphCount")).isEqualTo(2);
     }
 
+    /** 生成真实 PDF：每页若干行文字（PDFBox 默认压缩内容流，与 Word/WPS 导出的 PDF 一致）；lines 为空则生成空白页 */
+    private static byte[] pdf(int pages, List<String> lines, String userPassword) throws IOException {
+        try (PDDocument doc = new PDDocument(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            PDType1Font font = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
+            for (int i = 1; i <= pages; i++) {
+                PDPage page = new PDPage();
+                doc.addPage(page);
+                if (lines.isEmpty()) {
+                    continue;
+                }
+                try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                    cs.beginText();
+                    cs.setFont(font, 11);
+                    cs.newLineAtOffset(50, 720);
+                    for (String line : lines) {
+                        cs.showText(line + " (page " + i + ")");
+                        cs.newLineAtOffset(0, -16);
+                    }
+                    cs.endText();
+                }
+            }
+            if (userPassword != null) {
+                StandardProtectionPolicy policy = new StandardProtectionPolicy("owner", userPassword, new AccessPermission());
+                policy.setEncryptionKeyLength(128);
+                doc.protect(policy);
+            }
+            doc.save(out);
+            return out.toByteArray();
+        }
+    }
+
     @Test
-    @DisplayName("测试 PDF 流式提取与扫描件判定")
-    void testPdfStreamAndScanDetection() {
-        // 模拟无字符流的扫描件 PDF
-        String scannedPdf = "%PDF-1.4\n1 0 obj\n<< /Type /Page >>\nendobj\nstream\nendstream\n%%EOF";
-        byte[] scannedBytes = scannedPdf.getBytes(StandardCharsets.ISO_8859_1);
+    @DisplayName("PDF：压缩内容流中的文字能正常提取，按真实页数统计")
+    void testPdfTextLayerExtraction() throws IOException {
+        byte[] bytes = pdf(3, List.of("Spring AI RAG Knowledge Base Architecture",
+                "Second line of high quality context for retrieval"), null);
+        // 内容流已压缩：原始字节里看不到明文（旧实现正是因此把这类 PDF 误判为扫描件）
+        assertThat(new String(bytes, StandardCharsets.ISO_8859_1)).doesNotContain("Knowledge Base Architecture");
 
-        DocumentParsingService.ParseResult scanResult = service.parse(scannedBytes, "scanned_doc.pdf");
-        assertThat(scanResult.format()).isEqualTo("PDF");
-        assertThat(scanResult.isScanned()).isTrue();
-        assertThat(scanResult.parserType()).contains("PDF_SCAN");
+        DocumentParsingService.ParseResult result = service.parse(bytes, "spec.pdf");
 
-        // 模拟含文字层的数据 PDF
-        String textPdf = "%PDF-1.4\n/Page\nstream\n(Spring AI RAG Knowledge Base Architecture) Tj\n(Second line of high quality context) Tj\nendstream\n%%EOF";
-        byte[] textBytes = textPdf.getBytes(StandardCharsets.ISO_8859_1);
+        assertThat(result.format()).isEqualTo("PDF");
+        assertThat(result.isScanned()).isFalse();
+        assertThat(result.parserType()).isEqualTo("PDF_TEXT_PARSER");
+        assertThat(result.pageCount()).isEqualTo(3);
+        assertThat(result.text()).contains("Spring AI RAG Knowledge Base Architecture (page 1)")
+                .contains("Second line of high quality context for retrieval (page 3)");
+        assertThat(result.metadata()).containsEntry("pagesWithText", 3);
+    }
 
-        DocumentParsingService.ParseResult textResult = service.parse(textBytes, "spec.pdf");
-        assertThat(textResult.format()).isEqualTo("PDF");
-        assertThat(textResult.text()).contains("Spring AI RAG Knowledge Base Architecture");
+    @Test
+    @DisplayName("PDF：没有文字层时判定为扫描件，未配置 OCR 时生成提示切片")
+    void testPdfWithoutTextLayerIsScanned() throws IOException {
+        DocumentParsingService.ParseResult result = service.parse(pdf(2, List.of(), null), "scanned_doc.pdf");
+
+        assertThat(result.isScanned()).isTrue();
+        assertThat(result.parserType()).isEqualTo("PDF_SCAN_PENDING_OCR");
+        assertThat(result.pageCount()).isEqualTo(2);
+        assertThat(result.text()).contains("扫描件").contains("共 2 页");
+    }
+
+    @Test
+    @DisplayName("PDF：加密或损坏的文件给出说明，而不是把二进制内容当文本入库")
+    void testUnreadablePdf() throws IOException {
+        DocumentParsingService.ParseResult encrypted = service.parse(pdf(1, List.of("secret"), "pwd"), "locked.pdf");
+        assertThat(encrypted.parserType()).isEqualTo("PDF_UNREADABLE");
+        assertThat(encrypted.text()).contains("打开密码");
+
+        byte[] broken = "%PDF-1.4\nnot really a pdf".getBytes(StandardCharsets.ISO_8859_1);
+        DocumentParsingService.ParseResult corrupted = service.parse(broken, "broken.pdf");
+        assertThat(corrupted.parserType()).isEqualTo("PDF_UNREADABLE");
+        assertThat(corrupted.text()).startsWith("【PDF 无法读取】");
+    }
+
+    @Test
+    @DisplayName("PDF：目录引导线与版面空白被整理")
+    void testTidyPdfText() {
+        String tidied = DocumentParsingService.tidyPdfText(
+                "1 系统概述 ........................ 4   \n2.1   系统登录 ·········· 5\n\n\n\n下一段");
+        assertThat(tidied).isEqualTo("1 系统概述 … 4\n2.1 系统登录 … 5\n\n下一段");
     }
 
     @Test
