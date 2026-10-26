@@ -1,0 +1,13 @@
+package com.shimeta.repository;
+
+import com.shimeta.model.LlmProvider;
+import com.shimeta.model.LlmProviderType;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+
+public interface LlmProviderRepository extends JpaRepository<LlmProvider, String> {
+    List<LlmProvider> findAllByOrderByBuiltinDescCreatedAtAsc();
+
+    long countByVendor(LlmProviderType vendor);
+}
