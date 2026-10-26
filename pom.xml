@@ -70,6 +70,18 @@
             <artifactId>pdfbox</artifactId>
             <version>3.0.6</version>
         </dependency>
+        <!-- 知识库 Word / Excel 解析（DOCX、XLSX、XLS） -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.5.1</version>
+        </dependency>
+        <!-- 知识库 HTML 正文提取 -->
+        <dependency>
+            <groupId>org.jsoup</groupId>
+            <artifactId>jsoup</artifactId>
+            <version>1.21.2</version>
+        </dependency>
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
