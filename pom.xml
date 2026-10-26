@@ -11,7 +11,7 @@
         <relativePath/>
     </parent>
 
-    <groupId>com.example</groupId>
+    <groupId>com.shimeta</groupId>
     <artifactId>spring-ai-agent-platform</artifactId>
     <version>1.0.9</version>
     <name>spring-ai-agent-platform</name>

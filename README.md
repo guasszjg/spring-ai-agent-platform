@@ -49,7 +49,7 @@ spring_ai/
   ├── pom.xml                                      # Maven 依赖（Spring Boot 4.0.0 + Spring AI 2.0.1 BOM）
   ├── README.md                                    # 项目详细说明文档
   └── src/main/
-      ├── java/com/example/agentplatform/
+      ├── java/com/shimeta/
       │   ├── AgentPlatformApplication.java        # Spring Boot 启动入口类
       │   ├── config/
       │   │   └── WebMvcConfig.java                # WebMVC 路由与静态资源配置

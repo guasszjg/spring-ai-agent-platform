@@ -1,0 +1,465 @@
+package com.shimeta.controller;
+
+import com.shimeta.model.ApiResponse;
+import com.shimeta.model.KnowledgeBase;
+import com.shimeta.model.KnowledgeDocument;
+import com.shimeta.model.KnowledgeFaq;
+import com.shimeta.model.KnowledgeIndexVersion;
+import com.shimeta.model.PageResult;
+import com.shimeta.rag.dto.CreateFaqRequest;
+import com.shimeta.rag.dto.CreateKnowledgeBaseRequest;
+import com.shimeta.rag.dto.KnowledgeCostStatsDto;
+import com.shimeta.rag.dto.KnowledgeEngineInfo;
+import com.shimeta.rag.dto.RetrievalTestRequest;
+import com.shimeta.rag.dto.UpdateFaqRequest;
+import com.shimeta.rag.dto.UpdateKnowledgeBaseRequest;
+import com.shimeta.rag.engine.RetrievalResult;
+import com.shimeta.rag.cache.SemanticCacheService;
+import com.shimeta.rag.graph.GraphRagService;
+import com.shimeta.rag.offline.OfflineRagGovernanceService;
+import com.shimeta.model.RagEvalCase;
+import com.shimeta.model.RagEvalRun;
+import com.shimeta.model.RagEvalSet;
+import com.shimeta.service.KnowledgeBaseService;
+import com.shimeta.service.RagEvaluationService;
+import com.shimeta.security.CurrentActor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.util.List;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/knowledge-bases")
+public class KnowledgeBaseController {
+
+    private final KnowledgeBaseService knowledgeBaseService;
+    private final RagEvaluationService ragEvaluationService;
+
+    public KnowledgeBaseController(KnowledgeBaseService knowledgeBaseService,
+                                   RagEvaluationService ragEvaluationService) {
+        this.knowledgeBaseService = knowledgeBaseService;
+        this.ragEvaluationService = ragEvaluationService;
+    }
+
+    private boolean checkAdmin() {
+        CurrentActor actor = CurrentActor.get();
+        return actor != null && actor.isSuperAdmin();
+    }
+
+    // ==================== 知识库基础 CRUD ====================
+
+    @GetMapping
+    public ResponseEntity<ApiResponse<PageResult<KnowledgeBase>>> list(
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String provider,
+            @RequestParam(required = false) String ownerId,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "12") int size) {
+        PageResult<KnowledgeBase> result = knowledgeBaseService.searchKnowledgeBases(
+                keyword, provider, page, size, CurrentActor.get(), ownerId);
+        return ResponseEntity.ok(ApiResponse.ok(result));
+    }
+
+    @GetMapping("/engine")
+    public ResponseEntity<ApiResponse<KnowledgeEngineInfo>> engine() {
+        return ResponseEntity.ok(ApiResponse.ok(knowledgeBaseService.getEngineInfo()));
+    }
+
+    @GetMapping("/{id:^(?!engine$).+}")
+    public ResponseEntity<ApiResponse<KnowledgeBase>> getById(@PathVariable String id) {
+        try {
+            KnowledgeBase kb = knowledgeBaseService.getKnowledgeBaseById(id);
+            return ResponseEntity.ok(ApiResponse.ok(kb));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping
+    public ResponseEntity<ApiResponse<KnowledgeBase>> create(@RequestBody CreateKnowledgeBaseRequest req) {
+        try {
+            KnowledgeBase kb = knowledgeBaseService.createKnowledgeBase(req);
+            String msg = "DIFY".equalsIgnoreCase(kb.getProvider())
+                    ? "知识库创建成功并已同步至 Dify RAG 引擎"
+                    : "知识库创建成功";
+            return ResponseEntity.ok(ApiResponse.ok(msg, kb));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PutMapping("/{id}")
+    public ResponseEntity<ApiResponse<KnowledgeBase>> update(
+            @PathVariable String id,
+            @RequestBody UpdateKnowledgeBaseRequest req) {
+        try {
+            KnowledgeBase kb = knowledgeBaseService.updateKnowledgeBase(id, req);
+            return ResponseEntity.ok(ApiResponse.ok("知识库信息更新成功", kb));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<ApiResponse<Void>> delete(@PathVariable String id) {
+        try {
+            knowledgeBaseService.deleteKnowledgeBase(id);
+            return ResponseEntity.ok(ApiResponse.ok("知识库已彻底删除", null));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/sync-from-dify")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> syncFromDify() {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可全量同步外部知识库"));
+        }
+        try {
+            Map<String, Object> result = knowledgeBaseService.syncFromDify();
+            return ResponseEntity.ok(ApiResponse.ok("Dify 知识库数据同步完成", result));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    // ==================== 文档库文件管理 ====================
+
+    @PostMapping("/{id}/documents/upload")
+    public ResponseEntity<ApiResponse<List<KnowledgeDocument>>> uploadDocuments(
+            @PathVariable String id,
+            @RequestParam("files") List<MultipartFile> files) {
+        try {
+            List<KnowledgeDocument> uploaded = knowledgeBaseService.uploadDocuments(id, files);
+            return ResponseEntity.ok(ApiResponse.ok("已成功上传 " + uploaded.size() + " 个文档至知识库", uploaded));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @GetMapping("/{id}/documents")
+    public ResponseEntity<ApiResponse<PageResult<KnowledgeDocument>>> listDocuments(
+            @PathVariable String id,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        try {
+            PageResult<KnowledgeDocument> result = knowledgeBaseService.searchDocuments(id, keyword, status, page, size);
+            return ResponseEntity.ok(ApiResponse.ok(result));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/{id}/documents/{docId}")
+    public ResponseEntity<ApiResponse<Void>> deleteDocument(
+            @PathVariable String id,
+            @PathVariable String docId) {
+        try {
+            knowledgeBaseService.deleteDocument(id, docId);
+            return ResponseEntity.ok(ApiResponse.ok("文档已成功删除", null));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{id}/documents/{docId}/refresh")
+    public ResponseEntity<ApiResponse<KnowledgeDocument>> refreshDocument(
+            @PathVariable String id,
+            @PathVariable String docId) {
+        try {
+            KnowledgeDocument doc = knowledgeBaseService.refreshDocumentStatus(id, docId);
+            return ResponseEntity.ok(ApiResponse.ok("文档状态刷新成功", doc));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    // ==================== 问答对 (FAQ) 管理 ====================
+
+    @GetMapping("/{id}/faqs")
+    public ResponseEntity<ApiResponse<PageResult<KnowledgeFaq>>> listFaqs(
+            @PathVariable String id,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String category,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        try {
+            PageResult<KnowledgeFaq> result = knowledgeBaseService.searchFaqs(id, keyword, category, page, size);
+            return ResponseEntity.ok(ApiResponse.ok(result));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @GetMapping("/{id}/faqs/categories")
+    public ResponseEntity<ApiResponse<List<String>>> listFaqCategories(@PathVariable String id) {
+        try {
+            List<String> categories = knowledgeBaseService.getFaqCategories(id);
+            return ResponseEntity.ok(ApiResponse.ok(categories));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{id}/faqs")
+    public ResponseEntity<ApiResponse<KnowledgeFaq>> createFaq(
+            @PathVariable String id,
+            @RequestBody CreateFaqRequest req) {
+        try {
+            KnowledgeFaq faq = knowledgeBaseService.createFaq(id, req);
+            return ResponseEntity.ok(ApiResponse.ok("FAQ 问答创建成功并已向量化", faq));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PutMapping("/{id}/faqs/{faqId}")
+    public ResponseEntity<ApiResponse<KnowledgeFaq>> updateFaq(
+            @PathVariable String id,
+            @PathVariable String faqId,
+            @RequestBody UpdateFaqRequest req) {
+        try {
+            KnowledgeFaq faq = knowledgeBaseService.updateFaq(id, faqId, req);
+            return ResponseEntity.ok(ApiResponse.ok("FAQ 问答更新成功", faq));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/{id}/faqs/{faqId}")
+    public ResponseEntity<ApiResponse<Void>> deleteFaq(
+            @PathVariable String id,
+            @PathVariable String faqId) {
+        try {
+            knowledgeBaseService.deleteFaq(id, faqId);
+            return ResponseEntity.ok(ApiResponse.ok("FAQ 问答已删除", null));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    // ==================== 图片上传辅助 ====================
+
+    @PostMapping("/upload-image")
+    public ResponseEntity<ApiResponse<Map<String, String>>> uploadImage(@RequestParam("file") MultipartFile file) {
+        try {
+            String url = knowledgeBaseService.saveFaqImage(file);
+            return ResponseEntity.ok(ApiResponse.ok("图片上传成功", Map.of("url", url)));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    // ==================== 召回测试与索引版本 (Phase P1) ====================
+
+    @PostMapping("/{id}/retrieval-test")
+    public ResponseEntity<ApiResponse<RetrievalResult>> testRetrieval(
+            @PathVariable String id,
+            @RequestBody RetrievalTestRequest req) {
+        try {
+            RetrievalResult result = knowledgeBaseService.testRetrieval(id, req);
+            return ResponseEntity.ok(ApiResponse.ok("召回测试完成", result));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("召回测试失败: " + e.getMessage()));
+        }
+    }
+
+    @GetMapping("/{id}/index-versions")
+    public ResponseEntity<ApiResponse<List<KnowledgeIndexVersion>>> listIndexVersions(@PathVariable String id) {
+        try {
+            List<KnowledgeIndexVersion> versions = knowledgeBaseService.getIndexVersions(id);
+            return ResponseEntity.ok(ApiResponse.ok(versions));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("获取索引版本失败: " + e.getMessage()));
+        }
+    }
+
+    // ==================== 成本治理 ====================
+
+    @GetMapping("/{id}/cost-stats")
+    public ResponseEntity<ApiResponse<KnowledgeCostStatsDto>> getCostStats(@PathVariable String id) {
+        try {
+            KnowledgeCostStatsDto stats = knowledgeBaseService.getCostStats(id);
+            return ResponseEntity.ok(ApiResponse.ok("获取知识库成本与治理指标成功", stats));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("获取成本指标失败: " + e.getMessage()));
+        }
+    }
+
+    // ==================== P4 语义缓存、多模态与 GraphRAG 端点 ====================
+
+    @GetMapping("/{id}/cache/stats")
+    public ResponseEntity<ApiResponse<SemanticCacheService.CacheStats>> getCacheStats(@PathVariable String id) {
+        try {
+            SemanticCacheService.CacheStats stats = knowledgeBaseService.getCacheStats(id);
+            return ResponseEntity.ok(ApiResponse.ok("获取语义缓存统计成功", stats));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("获取缓存统计失败: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{id}/cache/clear")
+    public ResponseEntity<ApiResponse<String>> clearCache(@PathVariable String id) {
+        try {
+            knowledgeBaseService.clearCache(id);
+            return ResponseEntity.ok(ApiResponse.ok("语义缓存已清空", "SUCCESS"));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("清空缓存失败: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{id}/images/reembed")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> reembedImages(@PathVariable String id) {
+        try {
+            int count = knowledgeBaseService.reembedImages(id);
+            return ResponseEntity.ok(ApiResponse.ok("图片多模态向量回填重计算完成", Map.of("reembeddedCount", count)));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("图片重向量化失败: " + e.getMessage()));
+        }
+    }
+
+    @GetMapping("/{id}/graph")
+    public ResponseEntity<ApiResponse<GraphRagService.KnowledgeGraphData>> getKnowledgeGraph(@PathVariable String id) {
+        try {
+            GraphRagService.KnowledgeGraphData data = knowledgeBaseService.getKnowledgeGraph(id);
+            return ResponseEntity.ok(ApiResponse.ok("获取知识图谱拓扑数据成功", data));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("获取知识图谱失败: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{id}/eval-cases")
+    public ResponseEntity<ApiResponse<RagEvalCase>> saveEvalCase(
+            @PathVariable String id,
+            @RequestBody Map<String, Object> body) {
+        try {
+            String query = body.get("query") != null ? String.valueOf(body.get("query")) : null;
+            List<String> chunkIds = toStringList(body.get("expectedChunkIds"));
+            List<String> docIds = toStringList(body.get("expectedDocumentIds"));
+            RagEvalCase saved = ragEvaluationService.saveCase(id, query, chunkIds, docIds, CurrentActor.get());
+            return ResponseEntity.ok(ApiResponse.ok("评测用例已保存", saved));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @GetMapping("/{id}/eval-cases")
+    public ResponseEntity<ApiResponse<List<RagEvalCase>>> listEvalCases(@PathVariable String id) {
+        return ResponseEntity.ok(ApiResponse.ok(ragEvaluationService.listCases(id, CurrentActor.get())));
+    }
+
+    @PostMapping("/{id}/eval-sets/freeze")
+    public ResponseEntity<ApiResponse<RagEvalSet>> freezeEvalSet(@PathVariable String id) {
+        try {
+            return ResponseEntity.ok(ApiResponse.ok("评测集已冻结", ragEvaluationService.freeze(id, CurrentActor.get())));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{id}/eval-runs")
+    public ResponseEntity<ApiResponse<RagEvalRun>> runEval(@PathVariable String id) {
+        try {
+            RagEvalRun run = ragEvaluationService.run(id, CurrentActor.get());
+            return ResponseEntity.ok(ApiResponse.ok("评测跑分完成", run));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(ApiResponse.error("评测失败: " + e.getMessage()));
+        }
+    }
+
+    @GetMapping("/{id}/eval-runs")
+    public ResponseEntity<ApiResponse<List<RagEvalRun>>> listEvalRuns(@PathVariable String id) {
+        return ResponseEntity.ok(ApiResponse.ok(ragEvaluationService.listRuns(id, CurrentActor.get())));
+    }
+
+    private static List<String> toStringList(Object raw) {
+        if (raw == null) {
+            return List.of();
+        }
+        if (raw instanceof List<?> list) {
+            List<String> out = new java.util.ArrayList<>();
+            for (Object item : list) {
+                if (item != null && !String.valueOf(item).isBlank()) {
+                    out.add(String.valueOf(item));
+                }
+            }
+            return out;
+        }
+        return List.of(String.valueOf(raw));
+    }
+
+    @GetMapping("/{id}/offline-status")
+    public ResponseEntity<ApiResponse<OfflineRagGovernanceService.OfflineReadinessReport>> getOfflineStatus(@PathVariable String id) {
+        try {
+            OfflineRagGovernanceService.OfflineReadinessReport report = knowledgeBaseService.getOfflineReadinessReport(id);
+            return ResponseEntity.ok(ApiResponse.ok("获取私有化离线闭环状态成功", report));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("获取离线状态失败: " + e.getMessage()));
+        }
+    }
+
+    @GetMapping("/offline-status")
+    public ResponseEntity<ApiResponse<OfflineRagGovernanceService.OfflineReadinessReport>> getGlobalOfflineStatus() {
+        try {
+            OfflineRagGovernanceService.OfflineReadinessReport report = knowledgeBaseService.getOfflineReadinessReport(null);
+            return ResponseEntity.ok(ApiResponse.ok("获取平台全局私有化离线闭环状态成功", report));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error("获取全局离线状态失败: " + e.getMessage()));
+        }
+    }
+}

@@ -1,0 +1,39 @@
+package com.shimeta.repository;
+
+import com.shimeta.model.KnowledgeBase;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+import java.util.Optional;
+
+@Repository
+public interface KnowledgeBaseRepository extends JpaRepository<KnowledgeBase, String> {
+
+    Optional<KnowledgeBase> findByExternalDatasetId(String externalDatasetId);
+
+    List<KnowledgeBase> findByProvider(String provider);
+
+    @Query("SELECT k FROM KnowledgeBase k WHERE (:keyword IS NULL OR :keyword = '' OR " +
+           "LOWER(k.name) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
+           "LOWER(k.description) LIKE LOWER(CONCAT('%', :keyword, '%'))) AND " +
+           "(:provider IS NULL OR :provider = '' OR k.provider = :provider)")
+    Page<KnowledgeBase> searchKnowledgeBases(@Param("keyword") String keyword,
+                                            @Param("provider") String provider,
+                                            Pageable pageable);
+
+    @Query("SELECT k FROM KnowledgeBase k WHERE (:keyword IS NULL OR :keyword = '' OR " +
+           "LOWER(k.name) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
+           "LOWER(k.description) LIKE LOWER(CONCAT('%', :keyword, '%'))) AND " +
+           "(:provider IS NULL OR :provider = '' OR k.provider = :provider) AND " +
+           "(:isSuperAdmin = true OR k.isSystem = true OR (k.ownerId IS NOT NULL AND k.ownerId = :ownerId))")
+    Page<KnowledgeBase> searchKnowledgeBasesAccessible(@Param("keyword") String keyword,
+                                                      @Param("provider") String provider,
+                                                      @Param("isSuperAdmin") boolean isSuperAdmin,
+                                                      @Param("ownerId") String ownerId,
+                                                      Pageable pageable);
+}
