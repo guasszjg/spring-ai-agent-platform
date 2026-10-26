@@ -3,24 +3,18 @@ package com.shimeta.rag.pipeline;
 import com.shimeta.model.EmbeddingConfig;
 import com.shimeta.service.EmbeddingConfigService;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 
 /**
  * 本地 Embedding 向量化与相似度计算服务
@@ -101,54 +95,14 @@ public class LocalEmbeddingService {
 
     private float[] callDynamicEmbedding(EmbeddingConfig cfg, String text) {
         try {
-            String baseUrl = cfg.getBaseUrl();
-            String endpoint = baseUrl != null && !baseUrl.isBlank() ? baseUrl : "https://api.openai.com/v1";
-            if (!endpoint.endsWith("/embeddings")) {
-                while (endpoint.endsWith("/")) {
-                    endpoint = endpoint.substring(0, endpoint.length() - 1);
-                }
-                endpoint = endpoint + "/embeddings";
-            }
-
-            String plainKey = embeddingConfigService.decryptKey(cfg.getApiKeyEncrypted());
-
-            SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-            factory.setConnectTimeout(Duration.ofSeconds(8));
-            factory.setReadTimeout(Duration.ofSeconds(20));
-            RestClient client = RestClient.builder().requestFactory(factory).build();
-
-            var reqSpec = client.post()
-                    .uri(endpoint)
-                    .contentType(MediaType.APPLICATION_JSON);
-
-            if (plainKey != null && !plainKey.isBlank()) {
-                reqSpec.header(HttpHeaders.AUTHORIZATION, "Bearer " + plainKey);
-            }
-
-            var bodyMap = Map.of(
-                    "model", cfg.getModelName(),
-                    "input", text
-            );
-
-            String respBody = reqSpec.body(bodyMap).retrieve().body(String.class);
-            if (respBody == null || respBody.isBlank()) return null;
-
-            JsonNode root = objectMapper.readTree(respBody);
-            if (root.has("data") && root.get("data").isArray() && !root.get("data").isEmpty()) {
-                JsonNode first = root.get("data").get(0);
-                if (first.has("embedding") && first.get("embedding").isArray()) {
-                    JsonNode arr = first.get("embedding");
-                    float[] vec = new float[arr.size()];
-                    for (int i = 0; i < arr.size(); i++) {
-                        vec[i] = (float) arr.get(i).asDouble();
-                    }
-                    return vec;
-                }
-            }
+            List<float[]> vectors = embeddingConfigService.requestEmbeddings(cfg.getBaseUrl(),
+                    embeddingConfigService.decryptKey(cfg.getApiKeyEncrypted()),
+                    embeddingConfigService.decryptHeaders(cfg),
+                    cfg.getModelName(), List.of(text), Duration.ofSeconds(8), Duration.ofSeconds(20));
+            return vectors.isEmpty() ? null : vectors.get(0);
         } catch (Exception e) {
             throw new IllegalStateException("调用动态 Embedding 接口失败: " + e.getMessage(), e);
         }
-        return null;
     }
 
     public float[] embed(String text) {

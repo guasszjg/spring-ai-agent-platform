@@ -35,6 +35,11 @@ public class EmbeddingConfig {
     @Column(name = "api_key_encrypted", columnDefinition = "TEXT")
     private String apiKeyEncrypted;
 
+    /** 自定义请求头（JSON 对象，整体加密存储），用于 app_id / device_mac 这类 Header 鉴权 */
+    @JsonIgnore
+    @Column(name = "custom_headers_encrypted", columnDefinition = "TEXT")
+    private String customHeadersEncrypted;
+
     @Column(nullable = false, length = 120)
     private String modelName;
 
@@ -74,6 +79,9 @@ public class EmbeddingConfig {
     }
 
     // Getters and Setters
+    public String getCustomHeadersEncrypted() { return customHeadersEncrypted; }
+    public void setCustomHeadersEncrypted(String customHeadersEncrypted) { this.customHeadersEncrypted = customHeadersEncrypted; }
+
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
 

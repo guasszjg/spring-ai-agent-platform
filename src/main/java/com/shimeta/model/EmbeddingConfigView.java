@@ -18,6 +18,17 @@ public class EmbeddingConfigView {
     private LocalDateTime lastProbeAt;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+    /** 已保存的自定义请求头名称（值不返回） */
+    private java.util.List<String> customHeaderNames = new java.util.ArrayList<>();
+
+    public java.util.List<String> getCustomHeaderNames() { return customHeaderNames; }
+    public void setCustomHeaderNames(java.util.List<String> customHeaderNames) { this.customHeaderNames = customHeaderNames; }
+
+    public static EmbeddingConfigView from(EmbeddingConfig entity, String plainKey, java.util.Collection<String> headerNames) {
+        EmbeddingConfigView view = from(entity, plainKey);
+        view.setCustomHeaderNames(headerNames == null ? new java.util.ArrayList<>() : new java.util.ArrayList<>(headerNames));
+        return view;
+    }
 
     public static EmbeddingConfigView from(EmbeddingConfig entity, String plainKey) {
         EmbeddingConfigView view = new EmbeddingConfigView();
