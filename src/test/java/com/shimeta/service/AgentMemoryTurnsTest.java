@@ -46,11 +46,13 @@ class AgentMemoryTurnsTest {
     }
 
     @Test
-    @DisplayName("记忆轮数：未设置用默认 3 轮，超出范围截到 0～10")
+    @DisplayName("记忆轮数：默认关闭（0 轮），超出范围截到 0～10")
     void resolveMemoryTurns() {
         Agent agent = new Agent();
-        assertThat(agent.resolveMemoryTurns()).isEqualTo(3);
+        assertThat(agent.resolveMemoryTurns()).isZero();
         agent.setMemoryTurns(null);
+        assertThat(agent.resolveMemoryTurns()).isZero();
+        agent.setMemoryTurns(3);
         assertThat(agent.resolveMemoryTurns()).isEqualTo(3);
         agent.setMemoryTurns(0);
         assertThat(agent.resolveMemoryTurns()).isZero();

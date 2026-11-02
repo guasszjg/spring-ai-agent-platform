@@ -197,7 +197,7 @@ public class Agent {
         return maxTokens;
     }
 
-    public static final int DEFAULT_MEMORY_TURNS = 3;
+    public static final int DEFAULT_MEMORY_TURNS = 0;
     public static final int MAX_MEMORY_TURNS = 10;
 
     public Integer getMemoryTurns() {
