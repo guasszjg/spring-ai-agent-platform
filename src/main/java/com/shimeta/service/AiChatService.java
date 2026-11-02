@@ -65,7 +65,28 @@ public class AiChatService {
         this.chatClient = (chatModel != null) ? ChatClient.builder(chatModel).build() : null;
     }
 
+    /**
+     * 流式输出的接收方：模型生成的文字通过 onDelta 边生成边推送；cancelled 返回 true 时停止生成（调用方断开、输出被拦截）。
+     * 走不了流式的通道（自定义 HTTP、兜底回复）不会调用 onDelta，由调用方在拿到完整回复后自行输出。
+     */
+    public interface StreamSink {
+        void onDelta(String text);
+
+        boolean cancelled();
+    }
+
+    /** 流式输出已经推送了部分内容后通道失败：此时不能再重试或切换降级通道（会与已推送的内容拼在一起） */
+    public static class StreamInterruptedException extends RuntimeException {
+        public StreamInterruptedException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+
     public ChatResponse chat(ChatRequest request) {
+        return chat(request, null);
+    }
+
+    public ChatResponse chat(ChatRequest request, StreamSink sink) {
         long startTime = System.currentTimeMillis();
 
         Agent agent = agentService.getById(request.getAgentId())
@@ -111,7 +132,7 @@ public class AiChatService {
 
         try {
             OpenAiCompatibleClient.ChatResult routed = invokeViaGateway(agent, userMessage, request.getHistory(),
-                    request.getGeneration(), request.getPrompt(), tools, request.getEnabledTools(), routedModel);
+                    request.getGeneration(), request.getPrompt(), tools, request.getEnabledTools(), routedModel, sink);
             if (routed != null && routed.content() != null && !routed.content().isBlank()) {
                 reply = routed.content();
                 executionModel = routedModel[0];
@@ -157,6 +178,8 @@ public class AiChatService {
             } else {
                 reply = fallbackReply(agent, userMessage, request.getHistory(), toolCalledHolder, null);
             }
+        } catch (StreamInterruptedException ex) {
+            throw ex;
         } catch (Exception ex) {
             log.warn("模型调用失败: {}", ex.getMessage());
             reply = fallbackReply(agent, userMessage, request.getHistory(), toolCalledHolder, ex);
@@ -192,7 +215,8 @@ public class AiChatService {
                 reply,
                 executionModel,
                 latencyMs,
-                tokens
+                tokens,
+                request.getNewConversationId()
         );
         response.setConversationId(conversation.getId());
         return response;
@@ -255,12 +279,12 @@ public class AiChatService {
         String instruction = com.shimeta.assistant.AssistantPrompts.chatMode();
         var messages = OpenAiCompatibleClient.toMessages(instruction, userMessage, recent);
         OpenAiCompatibleClient.ChatResult result = callProvider(route.primary(), route.primaryKey(), null, generation,
-                route.timeoutMs(), route.maxRetries(), messages, List.of(), routedModel);
+                route.timeoutMs(), route.maxRetries(), messages, List.of(), routedModel, null);
         if (result == null && route.fallback() != null && gatewayService.hasKey(route.fallback())) {
             log.warn("Assistant primary channel [{}] failed, switching to fallback [{}]",
                     route.primary().getName(), route.fallback().getName());
             result = callProvider(route.fallback(), route.fallbackKey(), null, generation,
-                    route.timeoutMs(), route.maxRetries(), messages, List.of(), routedModel);
+                    route.timeoutMs(), route.maxRetries(), messages, List.of(), routedModel, null);
         }
 
         response.setLatencyMs(System.currentTimeMillis() - start);
@@ -280,7 +304,7 @@ public class AiChatService {
                                                                List<ChatMessage> history, ChatGeneration generation,
                                                                String livePrompt, List<java.util.Map<String, Object>> tools,
                                                                List<String> enabledTools,
-                                                               String[] routedModel) {
+                                                               String[] routedModel, StreamSink sink) {
         ChatGeneration effective = generation != null ? generation : fromAgent(agent);
         final String instruction = buildEffectiveInstruction(livePrompt, agent, userMessage, enabledTools);
         return gatewayService.resolveRoute(agent.getModelName()).map(route -> {
@@ -290,7 +314,7 @@ public class AiChatService {
                     history
             );
             OpenAiCompatibleClient.ChatResult result = callProvider(route.primary(), route.primaryKey(),
-                    agent.getModelName(), effective, route.timeoutMs(), route.maxRetries(), messages, tools, routedModel);
+                    agent.getModelName(), effective, route.timeoutMs(), route.maxRetries(), messages, tools, routedModel, sink);
             if (result != null) {
                 return result;
             }
@@ -298,7 +322,7 @@ public class AiChatService {
                 log.warn("Primary LLM channel [{}] failed, switching to fallback [{}]",
                         route.primary().getName(), route.fallback().getName());
                 return callProvider(route.fallback(), route.fallbackKey(),
-                        agent.getModelName(), effective, route.timeoutMs(), route.maxRetries(), messages, tools, routedModel);
+                        agent.getModelName(), effective, route.timeoutMs(), route.maxRetries(), messages, tools, routedModel, sink);
             }
             return null;
         }).orElse(null);
@@ -384,10 +408,12 @@ public class AiChatService {
                                                            int timeoutMs, int maxRetries,
                                                            List<java.util.Map<String, Object>> messages,
                                                            List<java.util.Map<String, Object>> tools,
-                                                           String[] routedModel) {
+                                                           String[] routedModel, StreamSink sink) {
         String model = pickModel(provider, requestedModel);
         routedModel[0] = model;
         int attempts = Math.max(1, maxRetries + 1);
+        // 记录是否已向调用方推送过内容：推送之后失败就不能再重试或降级，否则两次输出会拼在一起
+        java.util.concurrent.atomic.AtomicBoolean emitted = new java.util.concurrent.atomic.AtomicBoolean(false);
         for (int i = 0; i < attempts; i++) {
             try {
                 if (provider.getProtocol() == com.shimeta.model.LlmProtocolType.CUSTOM_HTTP) {
@@ -397,8 +423,20 @@ public class AiChatService {
                 log.info("Gateway routing agent chat via [{}] model [{}] with {} tools", provider.getName(), model, tools != null ? tools.size() : 0);
                 var customHeaders = LlmGatewayService.parseCustomHeaders(provider.getCustomConfig());
                 boolean defaultWebSearch = LlmGatewayService.isWebSearchEnabled(provider);
+                if (sink != null) {
+                    return openAiClient.chatWithToolsStreaming(provider.getBaseUrl(), apiKey, model, customHeaders,
+                            defaultWebSearch, messages, tools, toolRegistry, generation, timeoutMs,
+                            text -> {
+                                emitted.set(true);
+                                sink.onDelta(text);
+                            },
+                            sink::cancelled);
+                }
                 return openAiClient.chatWithTools(provider.getBaseUrl(), apiKey, model, customHeaders, defaultWebSearch, messages, tools, toolRegistry, generation, timeoutMs);
             } catch (Exception ex) {
+                if (emitted.get()) {
+                    throw new StreamInterruptedException("模型通道在输出过程中中断: " + ex.getMessage(), ex);
+                }
                 log.warn("Gateway channel [{}] attempt {} failed: {}", provider.getName(), i + 1, ex.getMessage());
             }
         }

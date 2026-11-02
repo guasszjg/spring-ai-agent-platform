@@ -53,9 +53,11 @@ public class OpenApiTrafficGuardFilter extends OncePerRequestFilter {
 
         String requestId = ctx.getRequestId();
 
-        // 1. Key 维度 RPM 令牌桶限流
+        // 1. Key 维度 RPM 令牌桶限流：凭证上设置了就用凭证的，否则用护栏策略的默认值，都没有则 120
         int keyRpm = 120;
-        if (ctx.getPolicy() != null && ctx.getPolicy().getDefaultRpm() != null && ctx.getPolicy().getDefaultRpm() > 0) {
+        if (ctx.getKey().getRateLimitRpm() != null && ctx.getKey().getRateLimitRpm() > 0) {
+            keyRpm = ctx.getKey().getRateLimitRpm();
+        } else if (ctx.getPolicy() != null && ctx.getPolicy().getDefaultRpm() != null && ctx.getPolicy().getDefaultRpm() > 0) {
             keyRpm = ctx.getPolicy().getDefaultRpm();
         }
         RateLimiter.Result keyResult = rateLimiter.tryConsume("key:" + ctx.getKey().getId(), 1, keyRpm);

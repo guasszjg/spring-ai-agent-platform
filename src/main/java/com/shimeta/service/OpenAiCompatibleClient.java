@@ -262,6 +262,65 @@ public class OpenAiCompatibleClient {
     }
 
     /**
+     * 流式版的 {@link #chatWithTools}：模型输出的文字边生成边通过 onContent 推送；模型发起工具调用时执行工具、
+     * 把结果交回模型再继续流式生成，最多 3 轮。返回值与 chatWithTools 相同（内容已清理引用角标，Token 为各轮之和）。
+     *
+     * @param cancelled 返回 true 时停止读取（调用方已断开或输出被护栏拦截）
+     */
+    public ChatResult chatWithToolsStreaming(String baseUrl, String apiKey, String model,
+                                             Map<String, String> customHeaders,
+                                             boolean defaultWebSearch,
+                                             List<Map<String, Object>> messages,
+                                             List<Map<String, Object>> tools,
+                                             com.shimeta.tool.AgentToolRegistry toolRegistry,
+                                             ChatGeneration generation, int timeoutMs,
+                                             java.util.function.Consumer<String> onContent,
+                                             java.util.function.BooleanSupplier cancelled) {
+        List<Map<String, Object>> currentMessages = new ArrayList<>(messages);
+        int promptTokens = 0;
+        int completionTokens = 0;
+        String toolCalled = null;
+        for (int turn = 0; turn < 3; turn++) {
+            StreamResult result = streamChat(baseUrl, apiKey, model, customHeaders, defaultWebSearch,
+                    currentMessages, tools, generation, timeoutMs, onContent, cancelled);
+            promptTokens += result.promptTokens();
+            completionTokens += result.completionTokens();
+            boolean stop = cancelled != null && cancelled.getAsBoolean();
+            if (!result.hasToolCalls() || toolRegistry == null || stop) {
+                return new ChatResult(cleanAnswer(result.content()), promptTokens, completionTokens,
+                        promptTokens + completionTokens, toolCalled);
+            }
+            Map<String, Object> assistantMsg = new LinkedHashMap<>();
+            assistantMsg.put("role", "assistant");
+            if (!result.content().isEmpty()) {
+                assistantMsg.put("content", result.content());
+            }
+            List<Map<String, Object>> calls = new ArrayList<>();
+            for (ToolCall call : result.toolCalls()) {
+                calls.add(Map.of("id", call.id(), "type", "function",
+                        "function", Map.of("name", call.name(), "arguments", call.arguments())));
+            }
+            assistantMsg.put("tool_calls", calls);
+            currentMessages.add(assistantMsg);
+            List<String> summaries = new ArrayList<>();
+            for (ToolCall call : result.toolCalls()) {
+                log.info("LLM autonomously selected tool [{}] (streaming), args: {}", call.name(), call.arguments());
+                String toolResult = toolRegistry.execute(call.name(), call.arguments());
+                summaries.add(toolRegistry.formatToolCallSummary(call.name(), call.arguments()));
+                Map<String, Object> toolMsg = new LinkedHashMap<>();
+                toolMsg.put("role", "tool");
+                toolMsg.put("tool_call_id", call.id());
+                toolMsg.put("content", toolResult);
+                currentMessages.add(toolMsg);
+            }
+            if (toolCalled == null) {
+                toolCalled = String.join(" | ", summaries);
+            }
+        }
+        return new ChatResult("工具调用轮次达到上限", promptTokens, completionTokens, promptTokens + completionTokens, toolCalled);
+    }
+
+    /**
      * 流式对话（单轮）：增量内容通过 onContent 回调推送；模型发起的工具调用不执行，拼装后原样返回给调用方决定如何处理。
      * 通道忽略 stream 参数直接返回完整 JSON 时也能正确解析；不支持 stream_options 的通道自动去掉该参数重试一次。
      *

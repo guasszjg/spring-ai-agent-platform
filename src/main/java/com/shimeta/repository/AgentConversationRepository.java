@@ -7,4 +7,6 @@ import java.util.List;
 
 public interface AgentConversationRepository extends JpaRepository<AgentConversation, String> {
     List<AgentConversation> findByAgentIdOrderByUpdatedAtDesc(String agentId);
+
+    List<AgentConversation> findByAgentIdInOrderByUpdatedAtDesc(java.util.Collection<String> agentIds);
 }

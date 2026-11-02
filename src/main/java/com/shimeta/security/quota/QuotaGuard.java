@@ -2,6 +2,7 @@ package com.shimeta.security.quota;
 
 import com.shimeta.model.ClientCredential;
 import com.shimeta.model.GuardrailPolicy;
+import com.shimeta.model.OpenApiKey;
 import com.shimeta.repository.UsageDailyRepository;
 import com.shimeta.security.OpenApiContext;
 import com.github.benmanes.caffeine.cache.Cache;
@@ -51,7 +52,18 @@ public class QuotaGuard {
             }
         }
 
-        // 2. 检查单台终端每日配额
+        // 2. 检查单把凭证每日配额（签发凭证时设置）
+        OpenApiKey key = ctx.getKey();
+        if (key != null && key.getId() != null && key.getDailyTokenQuota() != null && key.getDailyTokenQuota() > 0) {
+            long keyQuota = key.getDailyTokenQuota();
+            String cacheKey = "key:" + key.getId() + ":" + today;
+            long keyUsed = tokenUsageCache.get(cacheKey, k -> usageDailyRepository.getTodayTokensByKey(key.getId(), today));
+            if (keyUsed >= keyQuota) {
+                return Result.deny("quota_exceeded", "已超出该凭证今日 Token 配额上限 (" + keyQuota + ")");
+            }
+        }
+
+        // 3. 检查单台终端每日配额
         ClientCredential client = ctx.getClient();
         if (client != null && client.getDailyTokenQuota() != null && client.getDailyTokenQuota() > 0) {
             long clientQuota = client.getDailyTokenQuota();

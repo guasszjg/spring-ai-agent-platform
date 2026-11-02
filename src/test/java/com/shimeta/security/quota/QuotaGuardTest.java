@@ -94,4 +94,21 @@ class QuotaGuardTest {
         assertThat(res.code()).isEqualTo("quota_exceeded");
         assertThat(res.message()).contains("已超出该接入终端今日 Token 配额上限");
     }
+
+    @Test
+    @DisplayName("凭证上设置的每日 Token 配额生效：达到上限时拒绝，未设置时不检查")
+    void checkQuota_keyExceeded() {
+        OpenApiContext ctx = new OpenApiContext("req-4", key, owner, "127.0.0.1");
+        key.setDailyTokenQuota(3000L);
+        when(usageDailyRepository.getTodayTokensByKey(eq("oak-quota-1"), any(LocalDate.class))).thenReturn(3200L);
+
+        QuotaGuard.Result res = quotaGuard.checkQuota(ctx);
+        assertThat(res.allowed()).isFalse();
+        assertThat(res.code()).isEqualTo("quota_exceeded");
+        assertThat(res.message()).contains("已超出该凭证今日 Token 配额上限 (3000)");
+
+        OpenApiKey unlimited = new OpenApiKey();
+        unlimited.setId("oak-quota-2");
+        assertThat(quotaGuard.checkQuota(new OpenApiContext("req-5", unlimited, owner, "127.0.0.1")).allowed()).isTrue();
+    }
 }

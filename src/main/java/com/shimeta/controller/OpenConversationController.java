@@ -50,12 +50,17 @@ public class OpenConversationController {
         List<AgentConversation> list;
         if (agent_id != null && !agent_id.isBlank()) {
             Agent agent = agentRepository.findById(agent_id).orElse(null);
-            if (agent == null || !authorizationService.canViewAgent(ctx.asActor(), agent)) {
+            if (!canAccess(ctx, agent)) {
                 return error(HttpStatus.FORBIDDEN, "agent_out_of_scope", "无权查看该智能体的会话");
             }
             list = conversationRepository.findByAgentIdOrderByUpdatedAtDesc(agent_id);
         } else {
-            list = conversationRepository.findAll();
+            // 只返回凭证可访问的智能体的会话（凭证所属开发者可见，且在凭证的智能体范围内）
+            List<String> agentIds = agentRepository.findAll().stream()
+                    .filter(a -> canAccess(ctx, a))
+                    .map(Agent::getId)
+                    .toList();
+            list = agentIds.isEmpty() ? List.of() : conversationRepository.findByAgentIdInOrderByUpdatedAtDesc(agentIds);
         }
         if (end_user != null && !end_user.isBlank()) {
             list = list.stream().filter(c -> end_user.equals(c.getAccount())).toList();
@@ -75,7 +80,7 @@ public class OpenConversationController {
             return error(HttpStatus.NOT_FOUND, "conversation_not_found", "会话不存在");
         }
         Agent agent = agentRepository.findById(conv.getAgentId()).orElse(null);
-        if (agent != null && !authorizationService.canViewAgent(ctx.asActor(), agent)) {
+        if (!canAccess(ctx, agent)) {
             return error(HttpStatus.FORBIDDEN, "agent_out_of_scope", "无权查看该会话消息");
         }
         usageRecorder.record("conversations.messages", conv.getAgentId(), id, 200, null, 10, 0, 0, null);
@@ -93,13 +98,25 @@ public class OpenConversationController {
             return error(HttpStatus.NOT_FOUND, "conversation_not_found", "会话不存在");
         }
         Agent agent = agentRepository.findById(conv.getAgentId()).orElse(null);
-        if (agent != null && !authorizationService.canManageAgent(ctx.asActor(), agent)) {
+        if (!canAccess(ctx, agent) || !authorizationService.canManageAgent(ctx.asActor(), agent)) {
             return error(HttpStatus.FORBIDDEN, "agent_out_of_scope", "无权删除该会话");
         }
         messageRepository.deleteByConversationId(id);
         conversationRepository.delete(conv);
         usageRecorder.record("conversations.delete", conv.getAgentId(), id, 200, null, 10, 0, 0, null);
         return ResponseEntity.ok(ApiResponse.ok("会话已删除", Map.of("id", id)));
+    }
+
+    /**
+     * 凭证能否访问该智能体的会话：智能体须存在、凭证所属开发者可见，且在凭证的智能体范围内（范围为空表示不限）。
+     * 智能体已删除的会话一律不可访问。
+     */
+    private boolean canAccess(OpenApiContext ctx, Agent agent) {
+        if (agent == null || !authorizationService.canViewAgent(ctx.asActor(), agent)) {
+            return false;
+        }
+        List<String> keyScope = ctx.getKey() != null ? ctx.getKey().getAgentScope() : null;
+        return keyScope == null || keyScope.isEmpty() || keyScope.contains(agent.getId());
     }
 
     private ResponseEntity<ApiResponse<Map<String, Object>>> error(HttpStatus status, String code, String message) {
