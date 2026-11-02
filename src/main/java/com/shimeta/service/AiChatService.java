@@ -400,6 +400,7 @@ public class AiChatService {
         generation.setTemperature(agent.getTemperature());
         generation.setTopP(agent.getTopP());
         generation.setMaxTokens(agent.getMaxTokens());
+        generation.setThinking(agent.resolveThinking());
         return generation;
     }
 
