@@ -84,6 +84,18 @@ spring_ai/
 
 ---
 
+## 📖 使用文档
+
+| 文档 | 给谁看 |
+|---|---|
+| [开放接口接入指南](docs/开放接口接入指南.md) | 对接方：终端、后台服务——凭证与权限、对话接口、终端管控、多轮对话、错误码 |
+| [平台功能使用说明](docs/平台功能使用说明.md) | 平台管理员、运营——模型网关、知识库、智能体设置、成本参考 |
+| [部署与运维](docs/部署与运维.md) | 部署人员——构建打包、配置、Flyway 规则、首次部署清单 |
+
+接口字段的完整说明见控制台「开放与安全 → 接入文档」。`docs/` 下其余文档为设计文档。
+
+---
+
 ## 🚀 快速启动指南
 
 ### 1. 运行服务
@@ -93,8 +105,9 @@ mvn spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 或者执行编译打包生成的 Jar：
 ```bash
-java -jar target/spring-ai-agent-platform-1.0.0.jar
+java -jar target/spring-ai-agent-platform-1.0.9.jar --spring.profiles.active=dev
 ```
+前端有改动时先在 `spring_ai_ui` 执行 `npm run build`（产物输出到本项目 `static/`），再 `mvn clean package`。详见 [部署与运维](docs/部署与运维.md)。
 
 ### 2. 访问控制台
 * 🌐 **访问地址**：[http://localhost:8080](http://localhost:8080)

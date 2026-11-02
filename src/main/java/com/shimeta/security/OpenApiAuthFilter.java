@@ -104,7 +104,7 @@ public class OpenApiAuthFilter extends OncePerRequestFilter {
             write(response, 401, "key_invalid", "凭证所属开发者不可用", requestId);
             return;
         }
-        if (key.getCreatedBy() != null && !resolved.get().isLegacy()) {
+        if (key.getCreatedBy() != null) {
             AppUser issuer = userRepository.findById(key.getCreatedBy()).orElse(null);
             if (issuer == null || UserStatus.DISABLED.equals(issuer.getStatus())) {
                 write(response, 401, "key_invalid", "签发人账号已失效", requestId);
@@ -211,9 +211,7 @@ public class OpenApiAuthFilter extends OncePerRequestFilter {
         }
 
         try {
-            if (!resolved.get().isLegacy()) {
-                openApiKeyService.touchUsage(key, ip);
-            }
+            openApiKeyService.touchUsage(key, ip);
             filterChain.doFilter(request, response);
         } finally {
             cleanup();

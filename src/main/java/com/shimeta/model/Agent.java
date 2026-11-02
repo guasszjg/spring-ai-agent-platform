@@ -67,6 +67,7 @@ public class Agent {
     @Convert(converter = StringListJsonConverter.class)
     @Column(name = "knowledge_base_ids", columnDefinition = "TEXT")
     private List<String> knowledgeBaseIds = new ArrayList<>();
+    /** 已废弃：早期按智能体生成的明文 Key。V23 起清空且不再生成，开放调用一律使用「开放凭证」（只存哈希）。保留字段仅为兼容旧库结构 */
     @Column(unique = true, length = 128)
     private String apiKey;
     @Column(name = "owner_id", length = 64)
@@ -297,9 +298,6 @@ public class Agent {
     void onCreate() {
         if (id == null || id.isBlank()) {
             id = "agent-" + UUID.randomUUID().toString().substring(0, 8);
-        }
-        if (apiKey == null || apiKey.isBlank()) {
-            apiKey = "sk-agent-" + UUID.randomUUID().toString().replace("-", "");
         }
         LocalDateTime now = LocalDateTime.now();
         if (createdAt == null) {

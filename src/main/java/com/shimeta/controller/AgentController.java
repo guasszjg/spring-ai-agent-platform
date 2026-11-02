@@ -147,13 +147,27 @@ public class AgentController {
                         .<ApiResponse<java.util.Map<String, Object>>>body(ApiResponse.error("权限不足：无法重置他人智能体的 API Key"));
             }
             try {
-                java.util.Map<String, Object> created = openApiKeyService.createChatKeyForAgent(agent, actor);
-                return ResponseEntity.ok(ApiResponse.ok("已签发新的开放凭证，明文仅显示一次", created));
+                java.util.Map<String, Object> result = openApiKeyService.rotateOrIssueForAgent(agent, actor, 24);
+                String message = "ROTATED".equals(result.get("mode"))
+                        ? "已轮换凭证：新 Key 立即生效，旧 Key 24 小时后失效。明文仅显示一次"
+                        : "已签发新的开放凭证，明文仅显示一次";
+                return ResponseEntity.ok(ApiResponse.ok(message, result));
             } catch (IllegalArgumentException | IllegalStateException e) {
                 return ResponseEntity.badRequest().<ApiResponse<java.util.Map<String, Object>>>body(ApiResponse.error(e.getMessage()));
             }
         }).orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(ApiResponse.error("未找到指定的智能体: " + id)));
+    }
+
+    /** 能调用该智能体的开放凭证（专属 + 不限智能体），只含当前用户可见的凭证 */
+    @GetMapping("/{id}/credentials")
+    public ResponseEntity<ApiResponse<java.util.List<java.util.Map<String, Object>>>> credentials(@PathVariable String id) {
+        CurrentActor actor = CurrentActor.get();
+        return agentService.getById(id)
+                .filter(agent -> authService.canViewAgent(actor, agent))
+                .map(agent -> ResponseEntity.ok(ApiResponse.ok(openApiKeyService.credentialsForAgent(agent, actor))))
+                .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(ApiResponse.error("未找到指定的智能体: " + id)));
     }
 
     @PostMapping("/{id}/copy")
