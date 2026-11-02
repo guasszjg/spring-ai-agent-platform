@@ -39,6 +39,22 @@ public class AgentConversationService {
      * 开放接口的上下文记忆：取会话最近 turns 轮问答，按时间正序返回。
      * 会话必须属于该智能体、且属于同一调用方（account），否则返回空，避免拿别人的会话 ID 读到对话内容。
      */
+    /** 会话是否已存在且属于该智能体（与写入对话时沿用已有会话的判断一致） */
+    @Transactional(readOnly = true)
+    public boolean belongsToAgent(String agentId, String conversationId) {
+        if (conversationId == null || conversationId.isBlank()) {
+            return false;
+        }
+        return conversationRepository.findById(conversationId.trim())
+                .map(c -> agentId.equals(c.getAgentId()))
+                .orElse(false);
+    }
+
+    /** 预先分配一个新会话 ID（格式与自动生成的一致），在真正写入对话时才创建会话 */
+    public static String newConversationId() {
+        return "conv-" + java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+    }
+
     @Transactional(readOnly = true)
     public List<ChatMessage> recentHistory(String agentId, String conversationId, String account, int turns) {
         if (turns <= 0 || conversationId == null || conversationId.isBlank()) {
@@ -63,7 +79,14 @@ public class AgentConversationService {
     public AgentConversation appendTurn(String agentId, String conversationId, String account,
                                         String userMessage, String assistantReply, String model,
                                         long latencyMs, int tokensUsed) {
-        AgentConversation conversation = resolveConversation(agentId, conversationId, account, userMessage);
+        return appendTurn(agentId, conversationId, account, userMessage, assistantReply, model, latencyMs, tokensUsed, null);
+    }
+
+    /** @param newConversationId 需要新建会话时使用的 ID（服务端预先分配）；为空则自动生成 */
+    public AgentConversation appendTurn(String agentId, String conversationId, String account,
+                                        String userMessage, String assistantReply, String model,
+                                        long latencyMs, int tokensUsed, String newConversationId) {
+        AgentConversation conversation = resolveConversation(agentId, conversationId, account, userMessage, newConversationId);
         LocalDateTime now = LocalDateTime.now();
 
         AgentConversationMessage user = new AgentConversationMessage();
@@ -258,7 +281,8 @@ public class AgentConversationService {
                 .collect(Collectors.toList());
     }
 
-    private AgentConversation resolveConversation(String agentId, String conversationId, String account, String userMessage) {
+    private AgentConversation resolveConversation(String agentId, String conversationId, String account, String userMessage,
+                                                  String newConversationId) {
         if (conversationId != null && !conversationId.isBlank()) {
             Optional<AgentConversation> existing = conversationRepository.findById(conversationId.trim());
             if (existing.isPresent() && agentId.equals(existing.get().getAgentId())) {
@@ -266,6 +290,9 @@ public class AgentConversationService {
             }
         }
         AgentConversation created = new AgentConversation();
+        if (newConversationId != null && !newConversationId.isBlank() && !conversationRepository.existsById(newConversationId)) {
+            created.setId(newConversationId);
+        }
         created.setAgentId(agentId);
         created.setTitle(truncateTitle(userMessage));
         created.setAccount(account != null && !account.isBlank() ? account.trim() : "debug");

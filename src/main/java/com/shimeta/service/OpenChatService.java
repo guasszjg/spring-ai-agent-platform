@@ -180,103 +180,172 @@ public class OpenChatService {
                 .body(errorBody("not_supported", "停止生成尚未接入上游取消，taskId=" + taskId));
     }
 
+    /**
+     * 流式输出：模型边生成边推送（经引用角标清理与输出护栏的滑动窗口检查）。
+     * 通道不支持流式或走了兜底回复时，拿到完整回复后再一次性输出。
+     */
     private Object stream(ChatRequest chatReq, Agent agent, GuardrailPolicy policy) {
         SseEmitter emitter = new SseEmitter(180_000L);
+        // 流式在后台线程执行：带上本次开放调用的上下文，用量、配额与审计才能记到对应的凭证和终端上
+        OpenApiContext ctx = OpenApiContext.get();
+        // 新会话预先分配 ID，第一段内容里就能带上会话 ID
+        String newConversationId = AgentConversationService.newConversationId();
+        chatReq.setNewConversationId(newConversationId);
+        String convId = conversationService.belongsToAgent(agent.getId(), chatReq.getConversationId())
+                ? chatReq.getConversationId().trim() : newConversationId;
+        SseWriter writer = new SseWriter(emitter, contentGuardService.createStreamingGuard(policy), agent,
+                convId, "msg-" + UUID.randomUUID().toString().substring(0, 8));
+        emitter.onCompletion(writer::markClosed);
+        emitter.onTimeout(writer::markClosed);
+        emitter.onError(e -> writer.markClosed());
+
         CompletableFuture.runAsync(() -> {
+            if (ctx != null) {
+                OpenApiContext.set(ctx);
+                CurrentActor.set(ctx.asActor());
+            }
+            StreamingCitationStripper stripper = new StreamingCitationStripper();
             try {
-                ChatResponse chatResp = aiChatService.chat(chatReq);
-                String reply = chatResp.getReply() != null ? chatResp.getReply() : "";
-                String convId = chatResp.getConversationId() != null ? chatResp.getConversationId() : "conv-" + UUID.randomUUID().toString().substring(0, 8);
-                String msgId = "msg-" + UUID.randomUUID().toString().substring(0, 8);
-                long createdAt = System.currentTimeMillis() / 1000;
-
-                StreamingSlidingWindowGuard slidingGuard = contentGuardService.createStreamingGuard(policy);
-                boolean wasBlocked = false;
-
-                int chunkSize = 3;
-                for (int i = 0; i < reply.length(); i += chunkSize) {
-                    int end = Math.min(reply.length(), i + chunkSize);
-                    String rawChunk = reply.substring(i, end);
-                    List<String> safeChunks = slidingGuard.processChunk(rawChunk);
-                    if (slidingGuard.isViolationDetected()) {
-                        wasBlocked = true;
-                        Map<String, Object> guardPayload = new LinkedHashMap<>();
-                        guardPayload.put("event", "guardrail");
-                        guardPayload.put("action", "blocked");
-                        guardPayload.put("reason", "output_violation");
-                        guardPayload.put("message", "输出命中敏感内容，流式传输已即时中断");
-                        emitter.send(SseEmitter.event().name("guardrail").data(objectMapper.writeValueAsString(guardPayload)));
-                        auditRecorder.record("chat.output_blocked", "AGENT", agent.getId(), "BLOCKED", "streaming_violation", "HIGH", slidingGuard.getViolatedTerm());
-                        break;
+                ChatResponse chatResp = aiChatService.chat(chatReq, new AiChatService.StreamSink() {
+                    @Override
+                    public void onDelta(String text) {
+                        writer.streamed = true;
+                        writer.write(stripper.push(text));
                     }
-                    for (String sc : safeChunks) {
-                        if (!sc.isEmpty()) {
-                            Map<String, Object> chunkPayload = new LinkedHashMap<>();
-                            chunkPayload.put("event", "message");
-                            chunkPayload.put("conversation_id", convId);
-                            chunkPayload.put("message_id", msgId);
-                            chunkPayload.put("answer", sc);
-                            chunkPayload.put("created_at", createdAt);
-                            emitter.send(SseEmitter.event().name("message").data(objectMapper.writeValueAsString(chunkPayload)));
-                        }
-                    }
-                    Thread.sleep(25);
-                }
 
-                if (!wasBlocked) {
-                    String remaining = slidingGuard.flush();
-                    if (slidingGuard.isViolationDetected()) {
-                        wasBlocked = true;
-                        Map<String, Object> guardPayload = new LinkedHashMap<>();
-                        guardPayload.put("event", "guardrail");
-                        guardPayload.put("action", "blocked");
-                        guardPayload.put("reason", "output_violation");
-                        guardPayload.put("message", "输出命中敏感内容，流式传输已即时中断");
-                        emitter.send(SseEmitter.event().name("guardrail").data(objectMapper.writeValueAsString(guardPayload)));
-                        auditRecorder.record("chat.output_blocked", "AGENT", agent.getId(), "BLOCKED", "streaming_violation", "HIGH", slidingGuard.getViolatedTerm());
-                    } else if (!remaining.isEmpty()) {
-                        Map<String, Object> chunkPayload = new LinkedHashMap<>();
-                        chunkPayload.put("event", "message");
-                        chunkPayload.put("conversation_id", convId);
-                        chunkPayload.put("message_id", msgId);
-                        chunkPayload.put("answer", remaining);
-                        chunkPayload.put("created_at", createdAt);
-                        emitter.send(SseEmitter.event().name("message").data(objectMapper.writeValueAsString(chunkPayload)));
+                    @Override
+                    public boolean cancelled() {
+                        return writer.blocked || writer.closed;
                     }
-                }
-
-                Map<String, Object> endPayload = new LinkedHashMap<>();
-                endPayload.put("event", "message_end");
-                endPayload.put("conversation_id", convId);
-                endPayload.put("message_id", msgId);
-                Map<String, Object> metadata = new LinkedHashMap<>();
-                metadata.put("model", chatResp.getModel() != null ? chatResp.getModel() : agent.getModelName());
-                metadata.put("tokens_used", chatResp.getTokensUsed() != null ? chatResp.getTokensUsed() : 0);
-                metadata.put("latency_ms", chatResp.getLatencyMs() != null ? chatResp.getLatencyMs() : 0);
-                metadata.put("tool_called", chatResp.getToolCalled());
-                if (wasBlocked) {
-                    metadata.put("guardrail", "blocked");
-                }
-                endPayload.put("metadata", metadata);
-                emitter.send(SseEmitter.event().name("message_end").data(objectMapper.writeValueAsString(endPayload)));
-                emitter.complete();
-                if (!wasBlocked) {
+                });
+                writer.write(writer.streamed ? stripper.flush() : chatResp.getReply());
+                writer.finish(chatResp);
+                if (!writer.blocked) {
                     auditRecorder.record("chat.invoke", "AGENT", agent.getId(), "SUCCESS", null, "LOW", null);
                 }
-                usageRecorder.record("chat", agent.getId(), convId, wasBlocked ? 422 : 200, null,
+                usageRecorder.record("chat", agent.getId(), chatResp.getConversationId(), writer.blocked ? 422 : 200, null,
                         chatResp.getLatencyMs() != null ? chatResp.getLatencyMs().intValue() : 0,
                         chatResp.getTokensUsed() != null ? chatResp.getTokensUsed() : 0,
                         0, chatResp.getModel() != null ? chatResp.getModel() : agent.getModelName());
             } catch (Exception e) {
                 log.error("Open SSE error: {}", e.getMessage(), e);
-                try {
-                    emitter.send(SseEmitter.event().name("error").data("{\"event\":\"error\",\"message\":\"模型调用失败\"}"));
-                } catch (Exception ignored) {
-                }
-                emitter.completeWithError(e);
+                writer.fail();
+            } finally {
+                OpenApiContext.clear();
+                CurrentActor.clear();
             }
         });
         return emitter;
+    }
+
+    /** 单次流式响应的输出状态：经输出护栏后写出 message 事件，命中拦截时发送 guardrail 事件并停止后续输出 */
+    private class SseWriter {
+        private final SseEmitter emitter;
+        private final StreamingSlidingWindowGuard guard;
+        private final Agent agent;
+        private final String convId;
+        private final String msgId;
+        private final long createdAt = System.currentTimeMillis() / 1000;
+        volatile boolean streamed;
+        volatile boolean blocked;
+        volatile boolean closed;
+
+        SseWriter(SseEmitter emitter, StreamingSlidingWindowGuard guard, Agent agent, String convId, String msgId) {
+            this.emitter = emitter;
+            this.guard = guard;
+            this.agent = agent;
+            this.convId = convId;
+            this.msgId = msgId;
+        }
+
+        void markClosed() {
+            closed = true;
+        }
+
+        synchronized void write(String text) {
+            if (blocked || closed || text == null || text.isEmpty()) {
+                return;
+            }
+            List<String> safeChunks = guard.processChunk(text);
+            if (guard.isViolationDetected()) {
+                block();
+                return;
+            }
+            safeChunks.forEach(this::sendMessage);
+        }
+
+        synchronized void finish(ChatResponse chatResp) {
+            if (!blocked && !closed) {
+                String remaining = guard.flush();
+                if (guard.isViolationDetected()) {
+                    block();
+                } else {
+                    sendMessage(remaining);
+                }
+            }
+            Map<String, Object> endPayload = new LinkedHashMap<>();
+            endPayload.put("event", "message_end");
+            endPayload.put("conversation_id", chatResp.getConversationId() != null ? chatResp.getConversationId() : convId);
+            endPayload.put("message_id", msgId);
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("model", chatResp.getModel() != null ? chatResp.getModel() : agent.getModelName());
+            metadata.put("tokens_used", chatResp.getTokensUsed() != null ? chatResp.getTokensUsed() : 0);
+            metadata.put("latency_ms", chatResp.getLatencyMs() != null ? chatResp.getLatencyMs() : 0);
+            metadata.put("tool_called", chatResp.getToolCalled());
+            if (blocked) {
+                metadata.put("guardrail", "blocked");
+            }
+            endPayload.put("metadata", metadata);
+            send("message_end", endPayload);
+            emitter.complete();
+        }
+
+        synchronized void fail() {
+            if (!closed) {
+                try {
+                    emitter.send(SseEmitter.event().name("error").data("{\"event\":\"error\",\"message\":\"模型调用失败\"}"));
+                } catch (Exception ignored) {
+                    // 调用方已断开
+                }
+            }
+            emitter.complete();
+        }
+
+        private void block() {
+            blocked = true;
+            Map<String, Object> guardPayload = new LinkedHashMap<>();
+            guardPayload.put("event", "guardrail");
+            guardPayload.put("action", "blocked");
+            guardPayload.put("reason", "output_violation");
+            guardPayload.put("message", "输出命中敏感内容，流式传输已即时中断");
+            send("guardrail", guardPayload);
+            auditRecorder.record("chat.output_blocked", "AGENT", agent.getId(), "BLOCKED", "streaming_violation", "HIGH", guard.getViolatedTerm());
+        }
+
+        private void sendMessage(String text) {
+            if (text == null || text.isEmpty()) {
+                return;
+            }
+            Map<String, Object> chunkPayload = new LinkedHashMap<>();
+            chunkPayload.put("event", "message");
+            chunkPayload.put("conversation_id", convId);
+            chunkPayload.put("message_id", msgId);
+            chunkPayload.put("answer", text);
+            chunkPayload.put("created_at", createdAt);
+            send("message", chunkPayload);
+        }
+
+        private void send(String event, Map<String, Object> payload) {
+            if (closed) {
+                return;
+            }
+            try {
+                emitter.send(SseEmitter.event().name(event).data(objectMapper.writeValueAsString(payload)));
+            } catch (Exception e) {
+                // 调用方断开连接：停止推送，并通过 cancelled() 让模型停止生成
+                closed = true;
+            }
+        }
     }
 
     private Agent resolveAgent(OpenApiChatRequest request, OpenApiContext ctx) {

@@ -1,5 +1,7 @@
 package com.shimeta.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import java.util.List;
 
 public class ChatRequest {
@@ -62,6 +64,23 @@ public class ChatRequest {
 
     public void setConversationId(String conversationId) {
         this.conversationId = conversationId;
+    }
+
+    /**
+     * 服务端预先分配的新会话 ID（开放接口流式输出需要在第一段内容里就带上会话 ID）。
+     * 只由服务端设置，不接受客户端传入；conversationId 指向已有会话时不使用。
+     */
+    @JsonIgnore
+    private transient String newConversationId;
+
+    @JsonIgnore
+    public String getNewConversationId() {
+        return newConversationId;
+    }
+
+    @JsonIgnore
+    public void setNewConversationId(String newConversationId) {
+        this.newConversationId = newConversationId;
     }
 
     public String getAccount() {

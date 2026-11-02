@@ -93,6 +93,23 @@ class OpenApiTrafficGuardFilterTest {
     }
 
     @Test
+    @DisplayName("凭证上设置的每分钟请求数优先于护栏策略的默认值")
+    void keyRpmOverridesPolicyDefault() throws ServletException, IOException {
+        key.setRateLimitRpm(10);
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/open/v1/chat-messages");
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        when(rateLimiter.tryConsume(eq("key:oak-guard-1"), eq(1), eq(10)))
+                .thenReturn(new RateLimiter.Result(false, 10, 0, 30));
+
+        filter.doFilter(req, res, filterChain);
+
+        assertThat(res.getStatus()).isEqualTo(429);
+        assertThat(res.getHeader("X-RateLimit-Limit")).isEqualTo("10");
+        assertThat(res.getContentAsString()).contains("10 RPM");
+        verify(filterChain, never()).doFilter(any(), any());
+    }
+
+    @Test
     @DisplayName("配额超额时拦截返回 429 quota_exceeded")
     void quotaLimitTriggered() throws ServletException, IOException {
         MockHttpServletRequest req = new MockHttpServletRequest("POST", "/open/v1/chat-messages");

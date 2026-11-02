@@ -52,4 +52,7 @@ public interface UsageDailyRepository extends JpaRepository<UsageDaily, String> 
 
     @Query("SELECT COALESCE(SUM(u.promptTokens + u.completionTokens), 0) FROM UsageDaily u WHERE u.clientCredentialId = :clientId AND u.statDate = :today")
     long getTodayTokensByClient(@Param("clientId") String clientId, @Param("today") LocalDate today);
+
+    @Query("SELECT COALESCE(SUM(u.promptTokens + u.completionTokens), 0) FROM UsageDaily u WHERE u.apiKeyId = :keyId AND u.statDate = :today")
+    long getTodayTokensByKey(@Param("keyId") String keyId, @Param("today") LocalDate today);
 }
