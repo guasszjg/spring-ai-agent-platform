@@ -144,11 +144,70 @@ public class OpenApiKeyService {
         request.setOwnerId(ownerId);
         request.setScopes(List.of(OpenApiScopes.CHAT));
         request.setAgentScope(List.of(agent.getId()));
-        Map<String, Object> created = create(request, actor);
-        String plaintext = (String) created.get("plaintext");
-        agent.setApiKey(plaintext);
-        agentRepository.save(agent);
-        return created;
+        return create(request, actor);
+    }
+
+    /** 能调用该智能体对话的凭证：专属于它的，以及不限智能体范围的；按当前用户可见范围过滤，不含已吊销 */
+    public List<Map<String, Object>> credentialsForAgent(Agent agent, CurrentActor actor) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (OpenApiKey key : listForActor(actor)) {
+            if (!canChatWith(key, agent.getId()) || "REVOKED".equalsIgnoreCase(key.getStatus())) {
+                continue;
+            }
+            Map<String, Object> view = toView(key);
+            view.put("binding", isDedicated(key, agent.getId()) ? "DEDICATED" : "ALL_AGENTS");
+            view.put("usable", isUsable(key));
+            result.add(view);
+        }
+        return result;
+    }
+
+    /**
+     * 调试页「重新生成」：有专属于该智能体、当前用户可管理的启用凭证时轮换它（新 Key 立即生效，旧 Key 进入宽限期），
+     * 否则签发一条新的专属对话凭证。返回值统一带 plaintext 与 key。
+     */
+    @Transactional
+    public Map<String, Object> rotateOrIssueForAgent(Agent agent, CurrentActor actor, Integer graceHours) {
+        Optional<OpenApiKey> current = listForActor(actor).stream()
+                .filter(k -> "ACTIVE".equalsIgnoreCase(k.getStatus()) && isDedicated(k, agent.getId()) && isUsable(k))
+                .findFirst();
+        if (current.isEmpty()) {
+            Map<String, Object> created = createChatKeyForAgent(agent, actor);
+            created.put("mode", "ISSUED");
+            return created;
+        }
+        Map<String, Object> rotated = rotate(current.get().getId(), graceHours, actor);
+        Map<String, Object> result = new LinkedHashMap<>(rotated);
+        result.put("mode", "ROTATED");
+        result.put("key", rotated.get("newKey"));
+        result.put("plaintext", rotated.get("newPlaintext"));
+        return result;
+    }
+
+    private static boolean canChatWith(OpenApiKey key, String agentId) {
+        List<String> scopes = key.getScopes() == null ? List.of() : key.getScopes();
+        if (!scopes.contains(OpenApiScopes.CHAT)) {
+            return false;
+        }
+        List<String> agentScope = key.getAgentScope();
+        return agentScope == null || agentScope.isEmpty() || agentScope.contains(agentId);
+    }
+
+    private static boolean isDedicated(OpenApiKey key, String agentId) {
+        List<String> agentScope = key.getAgentScope();
+        return agentScope != null && agentScope.size() == 1 && agentScope.contains(agentId);
+    }
+
+    /** 当前能否通过鉴权：启用且未过期，或轮换中且仍在宽限期内 */
+    private static boolean isUsable(OpenApiKey key) {
+        LocalDateTime now = LocalDateTime.now();
+        if (key.getExpiresAt() != null && now.isAfter(key.getExpiresAt())) {
+            return false;
+        }
+        if ("ROTATING".equalsIgnoreCase(key.getStatus())) {
+            return key.getGraceExpiresAt() == null || now.isBefore(key.getGraceExpiresAt());
+        }
+        return "ACTIVE".equalsIgnoreCase(key.getStatus());
     }
 
     @Transactional
@@ -237,9 +296,9 @@ public class OpenApiKeyService {
                 k.setRevokedAt(LocalDateTime.now());
                 keyRepository.save(k);
             }
-            return Optional.of(ResolvedKey.fromStored(k));
+            return Optional.of(new ResolvedKey(k));
         }
-        return agentRepository.findByApiKey(plaintext.trim()).map(ResolvedKey::fromLegacyAgent);
+        return Optional.empty();
     }
 
     @Transactional
@@ -257,31 +316,6 @@ public class OpenApiKeyService {
         });
     }
 
-    @Transactional
-    public void migrateLegacyAgentKeys() {
-        for (Agent agent : agentRepository.findAll()) {
-            String raw = agent.getApiKey();
-            if (raw == null || raw.isBlank()) {
-                continue;
-            }
-            String hash = sha256(raw);
-            if (keyRepository.findByKeyHash(hash).isPresent()) {
-                continue;
-            }
-            OpenApiKey key = new OpenApiKey();
-            key.setOwnerId(agent.getOwnerId() != null ? agent.getOwnerId() : "system");
-            key.setCreatedBy(key.getOwnerId());
-            key.setIssuerAuthVersion(1);
-            key.setName((agent.getName() != null ? agent.getName() : "智能体") + " 兼容凭证");
-            key.setKeyPrefix(raw.substring(0, Math.min(16, raw.length())));
-            key.setKeyHash(hash);
-            key.setScopes(List.of(OpenApiScopes.CHAT));
-            key.setAgentScope(List.of(agent.getId()));
-            key.setMigrated(true);
-            key.setExpiresAt(LocalDateTime.now().plusDays(7));
-            keyRepository.save(key);
-        }
-    }
 
     public OpenApiKey requireOwned(String id, CurrentActor actor) {
         OpenApiKey key = keyRepository.findById(id)
@@ -320,27 +354,6 @@ public class OpenApiKeyService {
         return map;
     }
 
-    public record ResolvedKey(OpenApiKey key, Agent legacyAgent) {
-        static ResolvedKey fromStored(OpenApiKey key) {
-            return new ResolvedKey(key, null);
-        }
-
-        static ResolvedKey fromLegacyAgent(Agent agent) {
-            OpenApiKey synthetic = new OpenApiKey();
-            synthetic.setId("legacy-" + agent.getId());
-            synthetic.setOwnerId(agent.getOwnerId() != null ? agent.getOwnerId() : "system");
-            synthetic.setCreatedBy(synthetic.getOwnerId());
-            synthetic.setName("兼容智能体凭证");
-            synthetic.setKeyPrefix(agent.getApiKey() != null ? agent.getApiKey().substring(0, Math.min(16, agent.getApiKey().length())) : "sk-agent-");
-            synthetic.setScopes(List.of(OpenApiScopes.CHAT));
-            synthetic.setAgentScope(List.of(agent.getId()));
-            synthetic.setStatus("ACTIVE");
-            synthetic.setMigrated(true);
-            return new ResolvedKey(synthetic, agent);
-        }
-
-        public boolean isLegacy() {
-            return legacyAgent != null;
-        }
+    public record ResolvedKey(OpenApiKey key) {
     }
 }

@@ -40,7 +40,6 @@ public class DataInitializer implements ApplicationRunner {
     private final LlmProviderRepository llmProviderRepository;
     private final GatewayPolicyRepository gatewayPolicyRepository;
     private final PasswordEncoder passwordEncoder;
-    private final com.shimeta.service.OpenApiKeyService openApiKeyService;
     private final boolean seedDemoUsers;
     private final ToolConfigSanitizer toolConfigSanitizer;
     private final com.shimeta.repository.KnowledgeBaseRepository knowledgeBaseRepository;
@@ -57,7 +56,6 @@ public class DataInitializer implements ApplicationRunner {
                            ToolConfigSanitizer toolConfigSanitizer,
                            com.shimeta.repository.KnowledgeBaseRepository knowledgeBaseRepository,
                            com.shimeta.service.KnowledgeBaseService knowledgeBaseService,
-                           com.shimeta.service.OpenApiKeyService openApiKeyService,
                            PlatformTransactionManager transactionManager,
                            @Value("${app.seed.demo-users:false}") boolean seedDemoUsers) {
         this.userRepository = userRepository;
@@ -70,7 +68,6 @@ public class DataInitializer implements ApplicationRunner {
         this.toolConfigSanitizer = toolConfigSanitizer;
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.knowledgeBaseService = knowledgeBaseService;
-        this.openApiKeyService = openApiKeyService;
         this.seedDemoUsers = seedDemoUsers;
         // 依赖外部服务、允许失败的步骤放进独立事务：被调用的 @Transactional 方法抛异常会把外层事务标记为
         // rollback-only，即使在这里 catch 住，run() 提交时仍会 UnexpectedRollbackException，导致空库首次启动失败。
@@ -92,11 +89,6 @@ public class DataInitializer implements ApplicationRunner {
         seedUsers();
         seedAgents();
         seedTemplates();
-        ensureAgentApiKeys();
-        try {
-            openApiKeyService.migrateLegacyAgentKeys();
-        } catch (Exception ignored) {
-        }
         syncAgentCallStats();
         scrubPersistedToolSecrets();
         seedLlmGateway();
@@ -174,15 +166,6 @@ public class DataInitializer implements ApplicationRunner {
         );
 
         templateRepository.saveAll(list);
-    }
-
-    private void ensureAgentApiKeys() {
-        for (Agent agent : agentRepository.findAll()) {
-            if (agent.getApiKey() == null || agent.getApiKey().isBlank()) {
-                agent.setApiKey("sk-agent-" + java.util.UUID.randomUUID().toString().replace("-", ""));
-                agentRepository.save(agent);
-            }
-        }
     }
 
     private void scrubPersistedToolSecrets() {

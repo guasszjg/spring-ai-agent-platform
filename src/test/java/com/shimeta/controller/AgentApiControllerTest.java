@@ -89,7 +89,7 @@ class AgentApiControllerTest {
         request.addHeader("Authorization", "Bearer sk-live-abc");
         OpenApiKey key = new OpenApiKey();
         key.setOwnerId("missing");
-        when(openApiKeyService.resolvePlaintext("sk-live-abc")).thenReturn(Optional.of(new ResolvedKey(key, null)));
+        when(openApiKeyService.resolvePlaintext("sk-live-abc")).thenReturn(Optional.of(new ResolvedKey(key)));
         when(userRepository.findById("missing")).thenReturn(Optional.empty());
 
         Object result = controller.sendChatMessage(new OpenApiChatRequest(), request, new MockHttpServletResponse());
