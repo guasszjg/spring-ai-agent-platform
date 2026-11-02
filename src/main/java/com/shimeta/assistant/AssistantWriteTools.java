@@ -110,7 +110,9 @@ public class AssistantWriteTools {
                                 "templateId", prop("string", "场景模板 ID（来自 list_templates），可选"),
                                 "knowledgeBases", Map.of("type", "array", "items", Map.of("type", "string"),
                                         "description", "要绑定的知识库名称或 ID 列表，可选"),
-                                "temperature", prop("number", "采样温度 0~2，可选")), "name"),
+                                "temperature", prop("number", "采样温度 0~2，可选"),
+                                "memoryTurns", prop("integer", "上下文记忆轮数 0~10，可选。默认 0 = 关闭（每次只发当前问题，最省 token）；"
+                                        + "用户需要连续追问时设 2~3")), "name"),
                         this::draftCreateAgent),
                 AssistantTool.write(CREATE_KNOWLEDGE_BASE, "生成创建知识库操作",
                         "创建一个平台内置引擎的知识库（生成待确认操作卡片，用户确认后才创建）。",
@@ -210,6 +212,11 @@ public class AssistantWriteTools {
         if (temperature != null && (temperature < 0 || temperature > 2)) {
             throw new IllegalArgumentException("温度需在 0~2 之间");
         }
+        Double memory = number(args, "memoryTurns");
+        Integer memoryTurns = memory == null ? null : memory.intValue();
+        if (memory != null && (memory != Math.floor(memory) || memoryTurns < 0 || memoryTurns > Agent.MAX_MEMORY_TURNS)) {
+            throw new IllegalArgumentException("上下文记忆轮数需为 0~" + Agent.MAX_MEMORY_TURNS + " 的整数");
+        }
 
         List<KnowledgeBase> kbs = new ArrayList<>();
         for (String ref : textList(args, "knowledgeBases")) {
@@ -234,6 +241,7 @@ public class AssistantWriteTools {
         payload.put("description", description);
         payload.put("systemPrompt", prompt);
         payload.put("temperature", temperature);
+        payload.put("memoryTurns", memoryTurns);
         payload.put("knowledgeBaseIds", kbs.stream().map(KnowledgeBase::getId).toList());
         payload.put("templateId", template != null ? template.getId() : null);
         if (template != null) {
@@ -257,6 +265,7 @@ public class AssistantWriteTools {
         if (temperature != null) {
             fields.add(field("温度", String.valueOf(temperature)));
         }
+        fields.add(field("上下文记忆", memoryTurns == null || memoryTurns == 0 ? "关闭" : memoryTurns + " 轮"));
         return pending(ctx, CREATE_AGENT, "W1", "创建智能体：" + name, payload, preview(fields, null, null), "AGENT");
     }
 
@@ -501,6 +510,9 @@ public class AssistantWriteTools {
         agent.setAvatar("🤖");
         if (p.hasNonNull("temperature")) {
             agent.setTemperature(p.get("temperature").asDouble());
+        }
+        if (p.hasNonNull("memoryTurns")) {
+            agent.setMemoryTurns(p.get("memoryTurns").asInt());
         }
         List<String> kbIds = new ArrayList<>();
         p.path("knowledgeBaseIds").forEach(node -> kbIds.add(node.asText()));

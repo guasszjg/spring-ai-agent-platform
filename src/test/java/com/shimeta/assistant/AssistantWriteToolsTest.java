@@ -121,6 +121,30 @@ class AssistantWriteToolsTest {
     }
 
     @Test
+    void createAgentCarriesMemoryTurnsToCardAndExecution() throws Exception {
+        tools.draftCreateAgent(args("{\"name\":\"导购助手\",\"systemPrompt\":\"p\",\"memoryTurns\":3}"), ctx);
+        AssistantAction action = ctx.createdActions().get(0);
+        assertEquals(3, mapper.readTree(action.getPayload()).path("memoryTurns").asInt());
+        assertTrue(action.getPreview().contains("3 轮"));
+
+        when(agentService.create(any(), any())).thenAnswer(inv -> {
+            Agent a = inv.getArgument(0);
+            a.setId("agent-new");
+            return a;
+        });
+        tools.execute(AssistantWriteTools.CREATE_AGENT, action.getPayload(), developer);
+        verify(agentService).create(org.mockito.ArgumentMatchers.argThat(a -> a.getMemoryTurns() == 3), any());
+
+        // 不传时卡片显示关闭；超出范围或非整数直接拒绝
+        tools.draftCreateAgent(args("{\"name\":\"FAQ\",\"systemPrompt\":\"p\"}"), ctx);
+        assertTrue(ctx.createdActions().get(1).getPreview().contains("关闭"));
+        assertThrows(IllegalArgumentException.class, () -> tools.draftCreateAgent(args(
+                "{\"name\":\"a\",\"systemPrompt\":\"p\",\"memoryTurns\":11}"), ctx));
+        assertThrows(IllegalArgumentException.class, () -> tools.draftCreateAgent(args(
+                "{\"name\":\"a\",\"systemPrompt\":\"p\",\"memoryTurns\":2.5}"), ctx));
+    }
+
+    @Test
     void createAgentRejectsInvalidCategoryTakenCodeAndMissingPrompt() {
         when(agentRepository.existsByCode("taken")).thenReturn(true);
 

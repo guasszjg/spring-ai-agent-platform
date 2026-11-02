@@ -81,6 +81,9 @@ public class AiChatService {
         // 若依赖失效或授权已撤销，在此立即阻断，严禁调用 LLM 或 Dify，且不产生任何数据库会话写入与外部调用！
         resourceAuthorizationService.checkAgentKnowledgeBaseDependencies(agent);
 
+        // 上下文记忆：只带最近 N 轮问答（0 = 不带历史），无论调用方传了多少条
+        request.setHistory(recentTurns(request.getHistory(), agent.resolveMemoryTurns(), request.getMessage()));
+
         String userMessage = request.getMessage();
         String reply;
         String executionModel = agent.getModelName() != null && !agent.getModelName().isBlank()
@@ -193,6 +196,31 @@ public class AiChatService {
         );
         response.setConversationId(conversation.getId());
         return response;
+    }
+
+    /**
+     * 取最近 turns 轮问答（每轮 = 用户 + 助手两条消息）。
+     * 调用方把本次问题也放进了历史末尾时先去掉（本次问题会单独发送，否则模型会看到两遍）；
+     * 结果不以助手消息开头，避免模型看到没有提问的回答。
+     */
+    static List<ChatMessage> recentTurns(List<ChatMessage> history, int turns, String currentMessage) {
+        if (history == null || history.isEmpty() || turns <= 0) {
+            return List.of();
+        }
+        List<ChatMessage> items = history.stream()
+                .filter(m -> m != null && m.getRole() != null && m.getContent() != null)
+                .collect(java.util.stream.Collectors.toCollection(java.util.ArrayList::new));
+        if (!items.isEmpty() && currentMessage != null) {
+            ChatMessage last = items.get(items.size() - 1);
+            if ("user".equalsIgnoreCase(last.getRole()) && currentMessage.trim().equals(last.getContent().trim())) {
+                items.remove(items.size() - 1);
+            }
+        }
+        int from = Math.max(0, items.size() - turns * 2);
+        while (from < items.size() && !"user".equalsIgnoreCase(items.get(from).getRole())) {
+            from++;
+        }
+        return List.copyOf(items.subList(from, items.size()));
     }
 
     // ==================== 平台 AI 助手（不绑定智能体，走模型网关默认路由） ====================

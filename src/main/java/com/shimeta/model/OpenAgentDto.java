@@ -11,6 +11,8 @@ public class OpenAgentDto {
     private String category;
     private String description;
     private String modelName;
+    /** 上下文记忆轮数，0 = 关闭 */
+    private Integer memoryTurns;
     private String status;
     private Boolean isSystem;
     private String ownerUsername;
@@ -27,6 +29,7 @@ public class OpenAgentDto {
         dto.setCategory(agent.getCategory());
         dto.setDescription(agent.getDescription());
         dto.setModelName(agent.getModelName());
+        dto.setMemoryTurns(agent.resolveMemoryTurns());
         dto.setStatus(agent.getStatus() != null ? agent.getStatus().name() : "RUNNING");
         dto.setIsSystem(Boolean.TRUE.equals(agent.getIsSystem()));
         dto.setOwnerUsername(agent.getOwnerUsername());
@@ -48,6 +51,8 @@ public class OpenAgentDto {
     public void setDescription(String description) { this.description = description; }
     public String getModelName() { return modelName; }
     public void setModelName(String modelName) { this.modelName = modelName; }
+    public Integer getMemoryTurns() { return memoryTurns; }
+    public void setMemoryTurns(Integer memoryTurns) { this.memoryTurns = memoryTurns; }
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
     public Boolean getIsSystem() { return isSystem; }
