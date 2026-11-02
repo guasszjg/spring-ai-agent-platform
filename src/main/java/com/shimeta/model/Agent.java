@@ -48,6 +48,9 @@ public class Agent {
     private Double temperature;
     private Double topP;
     private Integer maxTokens;
+    /** 上下文记忆轮数：每次对话带上最近 N 轮问答，0 = 关闭记忆 */
+    @Column(name = "memory_turns")
+    private Integer memoryTurns = DEFAULT_MEMORY_TURNS;
     @ElementCollection(fetch = FetchType.EAGER)
     @CollectionTable(name = "agent_tags", joinColumns = @JoinColumn(name = "agent_id"))
     @Column(name = "tag", length = 64)
@@ -192,6 +195,25 @@ public class Agent {
 
     public Integer getMaxTokens() {
         return maxTokens;
+    }
+
+    public static final int DEFAULT_MEMORY_TURNS = 3;
+    public static final int MAX_MEMORY_TURNS = 10;
+
+    public Integer getMemoryTurns() {
+        return memoryTurns;
+    }
+
+    public void setMemoryTurns(Integer memoryTurns) {
+        this.memoryTurns = memoryTurns;
+    }
+
+    /** 实际生效的记忆轮数：未设置时用默认值，超出范围时截到 0～{@value #MAX_MEMORY_TURNS} */
+    public int resolveMemoryTurns() {
+        if (memoryTurns == null) {
+            return DEFAULT_MEMORY_TURNS;
+        }
+        return Math.max(0, Math.min(MAX_MEMORY_TURNS, memoryTurns));
     }
 
     public void setMaxTokens(Integer maxTokens) {

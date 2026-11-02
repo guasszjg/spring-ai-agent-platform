@@ -2,15 +2,18 @@ package com.shimeta.service;
 
 import com.shimeta.model.AgentConversation;
 import com.shimeta.model.AgentConversationMessage;
+import com.shimeta.model.ChatMessage;
 import com.shimeta.model.ConversationDetail;
 import com.shimeta.model.PageResult;
 import com.shimeta.repository.AgentConversationMessageRepository;
 import com.shimeta.repository.AgentConversationRepository;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -30,6 +33,31 @@ public class AgentConversationService {
                                     AgentConversationMessageRepository messageRepository) {
         this.conversationRepository = conversationRepository;
         this.messageRepository = messageRepository;
+    }
+
+    /**
+     * 开放接口的上下文记忆：取会话最近 turns 轮问答，按时间正序返回。
+     * 会话必须属于该智能体、且属于同一调用方（account），否则返回空，避免拿别人的会话 ID 读到对话内容。
+     */
+    @Transactional(readOnly = true)
+    public List<ChatMessage> recentHistory(String agentId, String conversationId, String account, int turns) {
+        if (turns <= 0 || conversationId == null || conversationId.isBlank()) {
+            return List.of();
+        }
+        Optional<AgentConversation> conversation = conversationRepository.findById(conversationId.trim())
+                .filter(c -> agentId.equals(c.getAgentId()))
+                .filter(c -> account != null && account.trim().equals(c.getAccount()));
+        if (conversation.isEmpty()) {
+            return List.of();
+        }
+        List<AgentConversationMessage> latest = messageRepository.findByConversationIdOrderByCreatedAtDesc(
+                conversation.get().getId(), PageRequest.of(0, turns * 2));
+        List<ChatMessage> history = new ArrayList<>();
+        for (int i = latest.size() - 1; i >= 0; i--) {
+            AgentConversationMessage m = latest.get(i);
+            history.add(new ChatMessage(m.getRole(), m.getContent()));
+        }
+        return history;
     }
 
     public AgentConversation appendTurn(String agentId, String conversationId, String account,

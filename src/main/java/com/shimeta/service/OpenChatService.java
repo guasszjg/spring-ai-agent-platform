@@ -47,6 +47,7 @@ public class OpenChatService {
     private final UsageRecorder usageRecorder;
     private final ObjectMapper objectMapper;
     private final ContentGuardService contentGuardService;
+    private final AgentConversationService conversationService;
 
     public OpenChatService(AgentRepository agentRepository,
                            AiChatService aiChatService,
@@ -55,7 +56,8 @@ public class OpenChatService {
                            AuditRecorder auditRecorder,
                            UsageRecorder usageRecorder,
                            ObjectMapper objectMapper,
-                           ContentGuardService contentGuardService) {
+                           ContentGuardService contentGuardService,
+                           AgentConversationService conversationService) {
         this.agentRepository = agentRepository;
         this.aiChatService = aiChatService;
         this.authorizationService = authorizationService;
@@ -64,6 +66,7 @@ public class OpenChatService {
         this.usageRecorder = usageRecorder;
         this.objectMapper = objectMapper;
         this.contentGuardService = contentGuardService;
+        this.conversationService = conversationService;
     }
 
     public Object chat(OpenApiChatRequest request, HttpServletRequest httpRequest) {
@@ -120,6 +123,13 @@ public class OpenChatService {
                 ? request.getEndUser().trim()
                 : (request.getUser() != null && !request.getUser().isBlank() ? request.getUser().trim() : "API-Caller");
         chatReq.setAccount(endUser);
+        // 上下文记忆：同一调用方带回 conversation_id 时，从已保存的对话里取最近 N 轮。
+        // 轮数取智能体设置，且不超过该开发者护栏策略的「最大历史轮数」
+        int memoryTurns = agent.resolveMemoryTurns();
+        if (policy != null && policy.getMaxHistoryTurns() != null) {
+            memoryTurns = Math.min(memoryTurns, Math.max(0, policy.getMaxHistoryTurns()));
+        }
+        chatReq.setHistory(conversationService.recentHistory(agent.getId(), request.getConversationId(), endUser, memoryTurns));
         chatReq.setPrompt(agent.getSystemPrompt());
         chatReq.setEnabledTools(extractEnabledTools(agent.getToolsConfig()));
 
