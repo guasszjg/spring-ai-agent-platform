@@ -51,6 +51,9 @@ public class Agent {
     /** 上下文记忆轮数：每次对话带上最近 N 轮问答，0 = 关闭记忆 */
     @Column(name = "memory_turns")
     private Integer memoryTurns = DEFAULT_MEMORY_TURNS;
+    /** 思考模式：AUTO 跟随模型默认 / ON 开启 / OFF 关闭 */
+    @Column(name = "thinking_mode", length = 8)
+    private String thinkingMode = THINKING_AUTO;
     @ElementCollection(fetch = FetchType.EAGER)
     @CollectionTable(name = "agent_tags", joinColumns = @JoinColumn(name = "agent_id"))
     @Column(name = "tag", length = 64)
@@ -199,6 +202,39 @@ public class Agent {
     }
 
     public static final int DEFAULT_MEMORY_TURNS = 0;
+    public static final String THINKING_AUTO = "AUTO";
+    public static final String THINKING_ON = "ON";
+    public static final String THINKING_OFF = "OFF";
+
+    public String getThinkingMode() {
+        return thinkingMode;
+    }
+
+    public void setThinkingMode(String thinkingMode) {
+        this.thinkingMode = thinkingMode;
+    }
+
+    /** 规范化思考模式：大小写不敏感，空值视为 AUTO，其他取值拒绝 */
+    public static String normalizeThinkingMode(String mode) {
+        if (mode == null || mode.isBlank()) {
+            return THINKING_AUTO;
+        }
+        String upper = mode.trim().toUpperCase(java.util.Locale.ROOT);
+        if (!THINKING_AUTO.equals(upper) && !THINKING_ON.equals(upper) && !THINKING_OFF.equals(upper)) {
+            throw new IllegalArgumentException("思考模式只能是 AUTO（跟随模型默认）、ON（开启）或 OFF（关闭）");
+        }
+        return upper;
+    }
+
+    /** 发给模型的思考参数：null 表示不传，由模型按默认行为决定 */
+    public Boolean resolveThinking() {
+        String mode = thinkingMode == null ? THINKING_AUTO : thinkingMode.trim().toUpperCase(java.util.Locale.ROOT);
+        return switch (mode) {
+            case THINKING_ON -> Boolean.TRUE;
+            case THINKING_OFF -> Boolean.FALSE;
+            default -> null;
+        };
+    }
     public static final int MAX_MEMORY_TURNS = 10;
 
     public Integer getMemoryTurns() {

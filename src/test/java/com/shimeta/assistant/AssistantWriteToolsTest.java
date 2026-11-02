@@ -145,6 +145,25 @@ class AssistantWriteToolsTest {
     }
 
     @Test
+    void createAgentCarriesThinkingModeToCardAndExecution() throws Exception {
+        tools.draftCreateAgent(args("{\"name\":\"快答助手\",\"systemPrompt\":\"p\",\"thinkingMode\":\"off\"}"), ctx);
+        AssistantAction action = ctx.createdActions().get(0);
+        assertEquals("OFF", mapper.readTree(action.getPayload()).path("thinkingMode").asText());
+        assertTrue(action.getPreview().contains("思考模式"));
+
+        when(agentService.create(any(), any())).thenAnswer(inv -> {
+            Agent a = inv.getArgument(0);
+            a.setId("agent-new");
+            return a;
+        });
+        tools.execute(AssistantWriteTools.CREATE_AGENT, action.getPayload(), developer);
+        verify(agentService).create(org.mockito.ArgumentMatchers.argThat(a -> "OFF".equals(a.getThinkingMode())), any());
+
+        assertThrows(IllegalArgumentException.class, () -> tools.draftCreateAgent(args(
+                "{\"name\":\"a\",\"systemPrompt\":\"p\",\"thinkingMode\":\"sometimes\"}"), ctx));
+    }
+
+    @Test
     void createAgentRejectsInvalidCategoryTakenCodeAndMissingPrompt() {
         when(agentRepository.existsByCode("taken")).thenReturn(true);
 
