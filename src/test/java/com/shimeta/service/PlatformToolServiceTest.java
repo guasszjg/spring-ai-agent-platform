@@ -58,7 +58,7 @@ class PlatformToolServiceTest {
     }
 
     @Test
-    void listSeedsSixBuiltinToolsWhenTableEmpty() {
+    void listSeedsSevenBuiltinToolsWhenTableEmpty() {
         PlatformToolRepository repository = mock(PlatformToolRepository.class);
         SecretCrypto crypto = new SecretCrypto("test-only-master-secret");
         AgentToolRegistry registry = mock(AgentToolRegistry.class);
@@ -69,7 +69,7 @@ class PlatformToolServiceTest {
         when(repository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
         when(repository.findAllByOrderBySortOrderAsc()).thenReturn(PlatformToolCatalog.builtins());
 
-        assertThat(service.list()).hasSize(6);
+        assertThat(service.list()).hasSize(7);
         assertThat(service.list())
                 .extracting(PlatformToolView::getName)
                 .contains("时区转换", "时间戳转换", "获取当前时间", "获取时间戳", "星期几计算器", "联网检索");
@@ -113,7 +113,7 @@ class PlatformToolServiceTest {
         when(repository.findAllByOrderBySortOrderAsc()).thenReturn(stored);
 
         PageResult<PlatformToolView> first = service.page(null, null, 1, 6);
-        assertThat(first.getTotal()).isEqualTo(7);
+        assertThat(first.getTotal()).isEqualTo(8);
         assertThat(first.getRecords()).hasSize(6);
         PageResult<PlatformToolView> second = service.page(null, "CUSTOM", 1, 6);
         assertThat(second.getTotal()).isEqualTo(1);

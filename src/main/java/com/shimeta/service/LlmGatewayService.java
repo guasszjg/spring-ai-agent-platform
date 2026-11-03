@@ -499,6 +499,21 @@ public class LlmGatewayService {
         }
     }
 
+    /**
+     * DeepSeek 联网搜索工具使用的 Key：取模型网关里 DeepSeek 官方通道的 Key（优先已启用的通道）。
+     * 没有配置 DeepSeek 通道时返回 null。
+     */
+    public String deepSeekApiKey() {
+        return providerRepository.findAll().stream()
+                .filter(p -> p.getVendor() == LlmProviderType.DEEPSEEK)
+                .filter(p -> p.getApiKeyEncrypted() != null && !p.getApiKeyEncrypted().isBlank())
+                .sorted(java.util.Comparator.comparing((LlmProvider p) -> !Boolean.TRUE.equals(p.getEnabled())))
+                .map(this::decryptKey)
+                .filter(key -> key != null && !key.isBlank())
+                .findFirst()
+                .orElse(null);
+    }
+
     public boolean hasKey(LlmProvider provider) {
         if (provider == null) {
             return false;

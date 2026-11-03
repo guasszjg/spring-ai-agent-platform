@@ -36,7 +36,8 @@ public final class PlatformToolCatalog {
                         "计算历史上或未来的任意特定日期属于星期几",
                         "计算历史上或未来的某个具体日期是星期几。当用户询问某一天是周几或星期几时调用。",
                         50),
-                searchTool()
+                searchTool(),
+                deepSeekSearchTool()
         );
     }
 
@@ -57,6 +58,26 @@ public final class PlatformToolCatalog {
         tool.setEnabled(true);
         tool.setBuiltin(true);
         tool.setSortOrder(sort);
+        return tool;
+    }
+
+    private static PlatformTool deepSeekSearchTool() {
+        PlatformTool tool = new PlatformTool();
+        tool.setId("tool-deepseek-web-search");
+        tool.setCode("deepseek_web_search");
+        tool.setName("DeepSeek 联网搜索");
+        tool.setTitle("DeepSeek Search");
+        tool.setPrefix("deepseek");
+        tool.setCategory("SEARCH");
+        tool.setIcon("fa-solid fa-magnifying-glass");
+        tool.setIconClass("icon-deepseek-badge");
+        tool.setCustomIcon("deepseek");
+        tool.setHelp("DeepSeek 官方搜索接口，默认使用模型网关里 DeepSeek 通道的 Key，按次计费（约 0.005 元/次）");
+        tool.setDescription("DeepSeek 联网搜索。当用户询问最新时事、实时天气、新闻事件、实时数据或任何需要获取最新互联网真实信息的场景时调用（注：系统时钟及今天几号等问题已有系统时间基准保障，无需调用本工具）。");
+        tool.setConfigJson("{\"count\":5}");
+        tool.setEnabled(true);
+        tool.setBuiltin(true);
+        tool.setSortOrder(61);
         return tool;
     }
 
