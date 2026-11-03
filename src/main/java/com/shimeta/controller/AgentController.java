@@ -43,11 +43,14 @@ public class AgentController {
     private final AgentConversationService conversationService;
     private final com.shimeta.service.ResourceAuthorizationService authService;
     private final com.shimeta.service.OpenApiKeyService openApiKeyService;
+    private final com.shimeta.service.AgentChatStreamService chatStreamService;
 
     public AgentController(AgentService agentService, AiChatService aiChatService,
                            AgentConversationService conversationService,
                            com.shimeta.service.ResourceAuthorizationService authService,
-                           com.shimeta.service.OpenApiKeyService openApiKeyService) {
+                           com.shimeta.service.OpenApiKeyService openApiKeyService,
+                           com.shimeta.service.AgentChatStreamService chatStreamService) {
+        this.chatStreamService = chatStreamService;
         this.agentService = agentService;
         this.aiChatService = aiChatService;
         this.conversationService = conversationService;
@@ -196,6 +199,26 @@ public class AgentController {
         } catch (IllegalStateException e) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
         }
+    }
+
+    /**
+     * 调试页流式对话：以 SSE 推送 message（answer 为一段文字）、message_end（完整回复与统计）、error 事件。
+     * 参数校验失败时直接返回 JSON。
+     */
+    @PostMapping(value = "/{id}/messages/stream", produces = org.springframework.http.MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Object chatStream(@PathVariable String id, @RequestBody ChatRequest request, HttpSession session) {
+        if (request.getMessage() == null || request.getMessage().trim().isEmpty()) {
+            return ResponseEntity.badRequest().contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                    .body(ApiResponse.error("发送内容不能为空"));
+        }
+        request.setAgentId(id);
+        if (request.getAccount() == null || request.getAccount().isBlank()) {
+            LoginResponse user = (LoginResponse) session.getAttribute(SessionAuthInterceptor.SESSION_USER);
+            if (user != null && user.getUsername() != null) {
+                request.setAccount(user.getUsername());
+            }
+        }
+        return chatStreamService.stream(request, CurrentActor.get());
     }
 
     @PostMapping("/{id}/messages")
