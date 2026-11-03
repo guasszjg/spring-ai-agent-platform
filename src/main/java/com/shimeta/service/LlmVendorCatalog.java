@@ -23,8 +23,8 @@ public final class LlmVendorCatalog {
                     LlmProviderType.DEEPSEEK,
                     "DeepSeek",
                     "https://api.deepseek.com/v1",
-                    "deepseek-chat",
-                    List.of("deepseek-chat", "deepseek-reasoner"),
+                    "deepseek-flash",
+                    List.of("deepseek-flash", "deepseek-v4-pro"),
                     "https://platform.deepseek.com",
                     "兼容 OpenAI Chat Completions，适合作为默认高性价比通道。"
             ),

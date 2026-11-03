@@ -295,7 +295,7 @@ public class DataInitializer implements ApplicationRunner {
         a2.setAvatar("⚡");
         a2.setCategory("数据分析");
         a2.setDescription("分析复杂 SQL 执行计划，提供索引优化、分库分表与性能诊断方案。");
-        a2.setModelName("deepseek-chat");
+        a2.setModelName("deepseek-flash");
         a2.setSystemPrompt("你是一名资深数据库管理员(DBA)和 SQL 调优大师。请对用户提供的 SQL 语句或业务场景进行深度分析，指出性能瓶颈，给出优化后的 SQL 及索引创建建议。");
         a2.setTemperature(0.2);
         a2.setTopP(0.8);
