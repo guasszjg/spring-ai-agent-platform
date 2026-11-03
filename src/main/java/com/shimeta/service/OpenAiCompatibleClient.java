@@ -30,6 +30,16 @@ public class OpenAiCompatibleClient {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final OutboundUrlValidator outboundUrlValidator;
 
+    /** 流式读取的空闲超时：连续这么久没收到任何字节就判定通道卡死，中断读取（HttpClient 的 timeout 只管到响应头）。 */
+    static final long DEFAULT_STREAM_IDLE_TIMEOUT_MS = 45_000;
+    long streamIdleTimeoutMs = DEFAULT_STREAM_IDLE_TIMEOUT_MS;
+    private static final java.util.concurrent.ScheduledExecutorService STREAM_WATCHDOG =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "llm-stream-watchdog");
+                t.setDaemon(true);
+                return t;
+            });
+
     public OpenAiCompatibleClient(OutboundUrlValidator outboundUrlValidator) {
         this.outboundUrlValidator = outboundUrlValidator;
     }
@@ -343,10 +353,10 @@ public class OpenAiCompatibleClient {
             boolean finalTurn = turn == maxRounds;
             // 最后一轮先缓冲：模型可能把工具调用写成文本标记，确认是正常回答后再推送
             StringBuilder finalBuffer = new StringBuilder();
-            StreamResult result = streamChat(baseUrl, apiKey, model, customHeaders, defaultWebSearch,
+            StreamResult result = streamRoundWithRetry(baseUrl, apiKey, model, customHeaders, defaultWebSearch,
                     finalTurn ? withFinalNudge(currentMessages) : currentMessages,
                     finalTurn ? null : tools, generation, timeoutMs,
-                    finalTurn ? finalBuffer::append : onContent, cancelled);
+                    finalTurn ? finalBuffer::append : onContent, cancelled, turn > 0);
             promptTokens += result.promptTokens();
             completionTokens += result.completionTokens();
             boolean stop = cancelled != null && cancelled.getAsBoolean();
@@ -392,6 +402,34 @@ public class OpenAiCompatibleClient {
             toolCalled = appendToolSummary(toolCalled, summaries);
         }
         return new ChatResult(TOOL_LIMIT_FALLBACK, promptTokens, completionTokens, promptTokens + completionTokens, toolCalled);
+    }
+
+    /**
+     * 跑一轮流式请求。工具执行后的轮次（retry=true）若在本轮推送任何内容之前就失败（如通道卡住超时），原样重试一次：
+     * 此时已经推送过前面轮次的内容，外层不能再整体重试，只能在这里补救。首轮失败交给外层的重试/降级。
+     */
+    private StreamResult streamRoundWithRetry(String baseUrl, String apiKey, String model,
+                                              Map<String, String> customHeaders, boolean defaultWebSearch,
+                                              List<Map<String, Object>> messages, List<Map<String, Object>> tools,
+                                              ChatGeneration generation, int timeoutMs,
+                                              java.util.function.Consumer<String> onContent,
+                                              java.util.function.BooleanSupplier cancelled, boolean retry) {
+        boolean[] emitted = {false};
+        java.util.function.Consumer<String> tracking = onContent == null ? null : text -> {
+            emitted[0] = true;
+            onContent.accept(text);
+        };
+        try {
+            return streamChat(baseUrl, apiKey, model, customHeaders, defaultWebSearch, messages, tools,
+                    generation, timeoutMs, tracking, cancelled);
+        } catch (RuntimeException e) {
+            if (!retry || emitted[0] || (cancelled != null && cancelled.getAsBoolean())) {
+                throw e;
+            }
+            log.warn("工具调用后的流式轮次失败，重试一次: {}", e.getMessage());
+            return streamChat(baseUrl, apiKey, model, customHeaders, defaultWebSearch, messages, tools,
+                    generation, timeoutMs, tracking, cancelled);
+        }
     }
 
     /**
@@ -458,7 +496,8 @@ public class OpenAiCompatibleClient {
                     .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload), StandardCharsets.UTF_8))
                     .build();
             HttpResponse<java.io.InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
-            try (java.io.InputStream body = response.body();
+            StreamWatchdog watchdog = new StreamWatchdog(response.body(), cancelled, streamIdleTimeoutMs);
+            try (java.io.InputStream body = watchdog.stream();
                  java.io.BufferedReader reader = new java.io.BufferedReader(
                          new java.io.InputStreamReader(body, StandardCharsets.UTF_8))) {
                 if (response.statusCode() < 200 || response.statusCode() >= 300) {
@@ -469,6 +508,16 @@ public class OpenAiCompatibleClient {
                     throw new IllegalStateException("HTTP " + response.statusCode() + " " + truncate(error));
                 }
                 return parseStream(reader, onContent, cancelled);
+            } catch (Exception e) {
+                if (watchdog.idleTimedOut()) {
+                    throw new IllegalStateException("模型流式输出超过 " + streamIdleTimeoutMs / 1000 + " 秒无响应，已中断", e);
+                }
+                if (watchdog.abortedByCancel()) {
+                    return new StreamResult("", List.of(), 0, 0); // 调用方已断开，结果不再使用
+                }
+                throw e;
+            } finally {
+                watchdog.stop();
             }
         } catch (StreamOptionsRejected | IllegalStateException e) {
             throw e;
@@ -585,6 +634,96 @@ public class OpenAiCompatibleClient {
     }
 
     /** 通道不支持 stream_options 参数（仅内部用于去掉该参数重试） */
+    /**
+     * 盯住流式响应体：每秒检查一次，连续 idleTimeoutMs 没读到字节、或调用方已取消（且读取卡住超过 2 秒）时，
+     * 关闭响应体并中断读取线程，让阻塞在 readLine 的线程抛出异常返回。
+     */
+    private static final class StreamWatchdog {
+        private final java.io.InputStream raw;
+        private final java.util.function.BooleanSupplier cancelled;
+        private final long idleTimeoutMs;
+        private final Thread reader = Thread.currentThread();
+        private final Object lock = new Object();
+        private volatile long lastActivity = System.currentTimeMillis();
+        private boolean stopped;
+        private boolean fired;
+        private volatile boolean idleTimedOut;
+        private volatile boolean abortedByCancel;
+        private final java.util.concurrent.ScheduledFuture<?> task;
+
+        StreamWatchdog(java.io.InputStream raw, java.util.function.BooleanSupplier cancelled, long idleTimeoutMs) {
+            this.raw = raw;
+            this.cancelled = cancelled;
+            this.idleTimeoutMs = idleTimeoutMs;
+            long period = Math.min(1000, Math.max(50, idleTimeoutMs / 4));
+            this.task = STREAM_WATCHDOG.scheduleWithFixedDelay(this::check, period, period,
+                    java.util.concurrent.TimeUnit.MILLISECONDS);
+        }
+
+        java.io.InputStream stream() {
+            return new java.io.FilterInputStream(raw) {
+                @Override
+                public int read() throws java.io.IOException {
+                    int b = super.read();
+                    lastActivity = System.currentTimeMillis();
+                    return b;
+                }
+
+                @Override
+                public int read(byte[] buf, int off, int len) throws java.io.IOException {
+                    int n = super.read(buf, off, len);
+                    lastActivity = System.currentTimeMillis();
+                    return n;
+                }
+            };
+        }
+
+        private void check() {
+            long idle = System.currentTimeMillis() - lastActivity;
+            boolean timeout = idle >= idleTimeoutMs;
+            boolean cancel = !timeout && idle >= 2000 && cancelled != null && cancelled.getAsBoolean();
+            if (!timeout && !cancel) {
+                return;
+            }
+            synchronized (lock) {
+                if (stopped || fired) {
+                    return;
+                }
+                fired = true;
+                idleTimedOut = timeout;
+                abortedByCancel = cancel;
+                log.warn(timeout ? "模型流式输出 {}ms 无数据，中断读取" : "调用方已取消且流式读取阻塞 {}ms，中断读取", idle);
+                try {
+                    raw.close();
+                } catch (Exception ignored) {
+                    // 关闭失败不影响后面的中断
+                }
+                reader.interrupt();
+            }
+            if (task != null) {
+                task.cancel(false);
+            }
+        }
+
+        boolean idleTimedOut() {
+            return idleTimedOut;
+        }
+
+        boolean abortedByCancel() {
+            return abortedByCancel;
+        }
+
+        void stop() {
+            task.cancel(false);
+            synchronized (lock) {
+                stopped = true;
+                if (fired) {
+                    Thread.interrupted(); // 清掉看门狗留下的中断标记，免得影响线程池里的下一个任务
+                }
+            }
+        }
+    }
+
     private static class StreamOptionsRejected extends RuntimeException {
         StreamOptionsRejected() {
             super(null, null, false, false);
