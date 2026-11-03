@@ -60,7 +60,7 @@ public final class LlmVendorCatalog {
                     "智谱 GLM",
                     "https://open.bigmodel.cn/api/paas/v4",
                     "glm-4.7",
-                    List.of("glm-5.3-flash", "glm-5.1", "glm-5", "glm-4.7", "glm-4.6", "glm-4.5-air", "glm-4.5-flash"),
+                    List.of("glm-5.3-flash", "glm-4.7-flashx", "glm-4.7-flash", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5-air"),
                     "https://docs.bigmodel.cn",
                     "使用智谱开放平台 API Key（OpenAI 兼容接口）；GLM Coding Plan 套餐的 Key 需改用 /api/coding/paas/v4 地址。"
             ),
