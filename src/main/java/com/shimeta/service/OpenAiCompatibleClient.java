@@ -30,9 +30,12 @@ public class OpenAiCompatibleClient {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final OutboundUrlValidator outboundUrlValidator;
 
-    /** 流式读取的空闲超时：连续这么久没收到任何 data 行就判定通道卡死或在排队，中断读取（HttpClient 的 timeout 只管到响应头）。 */
+    /** 流式读取的空闲超时：开始输出后，连续这么久没有新输出就判定通道卡死，中断读取（HttpClient 的 timeout 只管到响应头）。 */
     static final long DEFAULT_STREAM_IDLE_TIMEOUT_MS = 45_000;
+    /** 首次输出超时：请求发出后这么久还没有任何输出（通道繁忙排队，只发 keep-alive），尽早中断去重试；正常 1~3 秒内就会开始输出。 */
+    static final long DEFAULT_STREAM_FIRST_OUTPUT_TIMEOUT_MS = 15_000;
     long streamIdleTimeoutMs = DEFAULT_STREAM_IDLE_TIMEOUT_MS;
+    long streamFirstOutputTimeoutMs = DEFAULT_STREAM_FIRST_OUTPUT_TIMEOUT_MS;
     private static final java.util.concurrent.ScheduledExecutorService STREAM_WATCHDOG =
             java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
                 Thread t = new Thread(r, "llm-stream-watchdog");
@@ -496,7 +499,7 @@ public class OpenAiCompatibleClient {
                     .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload), StandardCharsets.UTF_8))
                     .build();
             HttpResponse<java.io.InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
-            StreamWatchdog watchdog = new StreamWatchdog(response.body(), cancelled, streamIdleTimeoutMs);
+            StreamWatchdog watchdog = new StreamWatchdog(response.body(), cancelled, streamFirstOutputTimeoutMs, streamIdleTimeoutMs);
             try (java.io.InputStream body = response.body();
                  java.io.BufferedReader reader = new java.io.BufferedReader(
                          new java.io.InputStreamReader(body, StandardCharsets.UTF_8))) {
@@ -510,7 +513,9 @@ public class OpenAiCompatibleClient {
                 return parseStream(reader, onContent, cancelled, watchdog::touch);
             } catch (Exception e) {
                 if (watchdog.idleTimedOut()) {
-                    throw new IllegalStateException("模型流式输出超过 " + streamIdleTimeoutMs / 1000 + " 秒无响应，已中断", e);
+                    throw new IllegalStateException(watchdog.sawOutput()
+                            ? "模型流式输出超过 " + streamIdleTimeoutMs / 1000 + " 秒无响应，已中断"
+                            : "模型 " + streamFirstOutputTimeoutMs / 1000 + " 秒内没有开始输出（通道繁忙），已中断", e);
                 }
                 if (watchdog.abortedByCancel()) {
                     return new StreamResult("", List.of(), 0, 0); // 调用方已断开，结果不再使用
@@ -565,9 +570,6 @@ public class OpenAiCompatibleClient {
                 continue; // event: / id: 等字段
             }
             sawEvent = true;
-            if (onData != null) {
-                onData.run();
-            }
             String data = trimmed.substring(5).trim();
             if ("[DONE]".equals(data)) {
                 break;
@@ -592,6 +594,11 @@ public class OpenAiCompatibleClient {
                 }
             }
             JsonNode calls = delta.path("tool_calls");
+            if (onData != null && ((text.isTextual() && !text.asText().isEmpty())
+                    || (delta.path("reasoning_content").isTextual() && !delta.path("reasoning_content").asText().isEmpty())
+                    || calls.isArray() || usage.isObject())) {
+                onData.run(); // 只有真正的输出才算有进展；只有角色头的空块不算
+            }
             if (calls.isArray()) {
                 for (JsonNode call : calls) {
                     int index = call.path("index").asInt(toolParts.size());
@@ -645,14 +652,16 @@ public class OpenAiCompatibleClient {
     }
 
     /**
-     * 盯住流式响应体：每秒检查一次，连续 idleTimeoutMs 没收到 data 行（通道繁忙时只发 keep-alive 注释，不算输出）、
-     * 或调用方已取消（且读取卡住超过 2 秒）时，
+     * 盯住流式响应体：每秒检查一次。还没有任何输出时超过 firstOutputTimeoutMs、开始输出后连续 idleTimeoutMs 没有新输出
+     * （通道繁忙时只发 keep-alive 注释或空块，不算输出）、或调用方已取消（且读取卡住超过 2 秒）时，
      * 关闭响应体并中断读取线程，让阻塞在 readLine 的线程抛出异常返回。
      */
     private static final class StreamWatchdog {
         private final java.io.InputStream raw;
         private final java.util.function.BooleanSupplier cancelled;
+        private final long firstOutputTimeoutMs;
         private final long idleTimeoutMs;
+        private volatile boolean sawOutput;
         private final Thread reader = Thread.currentThread();
         private final Object lock = new Object();
         private volatile long lastActivity = System.currentTimeMillis();
@@ -662,23 +671,30 @@ public class OpenAiCompatibleClient {
         private volatile boolean abortedByCancel;
         private final java.util.concurrent.ScheduledFuture<?> task;
 
-        StreamWatchdog(java.io.InputStream raw, java.util.function.BooleanSupplier cancelled, long idleTimeoutMs) {
+        StreamWatchdog(java.io.InputStream raw, java.util.function.BooleanSupplier cancelled,
+                       long firstOutputTimeoutMs, long idleTimeoutMs) {
             this.raw = raw;
             this.cancelled = cancelled;
+            this.firstOutputTimeoutMs = firstOutputTimeoutMs;
             this.idleTimeoutMs = idleTimeoutMs;
-            long period = Math.min(1000, Math.max(50, idleTimeoutMs / 4));
+            long period = Math.min(1000, Math.max(50, Math.min(firstOutputTimeoutMs, idleTimeoutMs) / 4));
             this.task = STREAM_WATCHDOG.scheduleWithFixedDelay(this::check, period, period,
                     java.util.concurrent.TimeUnit.MILLISECONDS);
         }
 
-        /** 收到有效数据时调用，重置空闲计时 */
+        /** 收到真正的输出时调用，重置空闲计时 */
         void touch() {
+            sawOutput = true;
             lastActivity = System.currentTimeMillis();
+        }
+
+        boolean sawOutput() {
+            return sawOutput;
         }
 
         private void check() {
             long idle = System.currentTimeMillis() - lastActivity;
-            boolean timeout = idle >= idleTimeoutMs;
+            boolean timeout = idle >= (sawOutput ? idleTimeoutMs : firstOutputTimeoutMs);
             boolean cancel = !timeout && idle >= 2000 && cancelled != null && cancelled.getAsBoolean();
             if (!timeout && !cancel) {
                 return;

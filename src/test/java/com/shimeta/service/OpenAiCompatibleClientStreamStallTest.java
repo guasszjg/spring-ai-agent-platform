@@ -71,6 +71,7 @@ class OpenAiCompatibleClientStreamStallTest {
         server.start();
         baseUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/v1";
         client.streamIdleTimeoutMs = 600;
+        client.streamFirstOutputTimeoutMs = 600;
     }
 
     @AfterEach
@@ -87,7 +88,7 @@ class OpenAiCompatibleClientStreamStallTest {
         assertThatThrownBy(() -> client.streamChat(baseUrl, "sk", "m", null, false,
                 List.of(Map.of("role", "user", "content", "hi")), null, null, 10_000, d -> { }, () -> false))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("无响应");
+                .hasMessageContaining("没有开始输出");
         assertThat(System.currentTimeMillis() - start).isLessThan(5_000);
         assertThat(Thread.currentThread().isInterrupted()).isFalse();
     }
@@ -101,7 +102,7 @@ class OpenAiCompatibleClientStreamStallTest {
         assertThatThrownBy(() -> client.streamChat(baseUrl, "sk", "m", null, false,
                 List.of(Map.of("role", "user", "content", "hi")), null, null, 10_000, d -> { }, () -> false))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("无响应");
+                .hasMessageContaining("没有开始输出");
         assertThat(System.currentTimeMillis() - start).isLessThan(5_000);
     }
 
@@ -129,6 +130,7 @@ class OpenAiCompatibleClientStreamStallTest {
     void cancelWhileBlockedReturnsQuickly() {
         stallOn = 0;
         client.streamIdleTimeoutMs = 60_000;
+        client.streamFirstOutputTimeoutMs = 60_000;
         long start = System.currentTimeMillis();
         boolean[] cancel = {false};
         new Thread(() -> {
