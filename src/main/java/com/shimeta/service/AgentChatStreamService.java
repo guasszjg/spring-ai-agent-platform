@@ -49,6 +49,12 @@ public class AgentChatStreamService {
         emitter.onCompletion(() -> closed.set(true));
         emitter.onTimeout(() -> closed.set(true));
         emitter.onError(e -> closed.set(true));
+        try {
+            // 先推一行注释，让响应头立刻发出：模型排队时页面能确认已连上，而不是一直等响应头
+            emitter.send(SseEmitter.event().comment("connected"));
+        } catch (Exception ignored) {
+            closed.set(true);
+        }
 
         executor.execute(() -> {
             CurrentActor.set(actor);
@@ -78,19 +84,28 @@ public class AgentChatStreamService {
                 end.put("conversationId", response.getConversationId());
                 end.put("degraded", Boolean.TRUE.equals(response.getDegraded()));
                 send(emitter, closed, "message_end", end);
-                emitter.complete();
+                complete(emitter);
             } catch (IllegalStateException | IllegalArgumentException e) {
                 send(emitter, closed, "error", Map.of("message", e.getMessage() == null ? "对话失败" : e.getMessage()));
-                emitter.complete();
+                complete(emitter);
             } catch (Exception e) {
                 log.error("调试页流式对话失败: {}", e.getMessage(), e);
                 send(emitter, closed, "error", Map.of("message", "当前无法完成模型调用，请检查模型网关配置或稍后重试"));
-                emitter.complete();
+                complete(emitter);
             } finally {
                 CurrentActor.clear();
             }
         });
         return emitter;
+    }
+
+    /** 连接已超时或断开时 Tomcat 已回收响应，再 complete 会抛异常，忽略即可 */
+    private void complete(SseEmitter emitter) {
+        try {
+            emitter.complete();
+        } catch (Exception ignored) {
+            // 连接已关闭
+        }
     }
 
     private void sendAnswer(SseEmitter emitter, AtomicBoolean closed, String text) {

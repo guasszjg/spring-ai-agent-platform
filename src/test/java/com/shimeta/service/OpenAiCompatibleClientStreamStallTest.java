@@ -31,6 +31,7 @@ class OpenAiCompatibleClientStreamStallTest {
     private final CountDownLatch release = new CountDownLatch(1);
     /** 第几次请求卡住（从 1 开始），0 表示每次都卡 */
     private volatile int stallOn;
+    private volatile boolean keepAlive;
     private HttpServer server;
     private String baseUrl;
 
@@ -52,6 +53,13 @@ class OpenAiCompatibleClientStreamStallTest {
                 if (stallOn == 0 || n == stallOn) {
                     os.write("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n".getBytes(StandardCharsets.UTF_8));
                     os.flush();
+                    if (keepAlive) {
+                        // 模拟通道繁忙排队：只发 keep-alive 注释行，一直不出内容
+                        while (!release.await(100, TimeUnit.MILLISECONDS)) {
+                            os.write(": keep-alive\n\n".getBytes(StandardCharsets.UTF_8));
+                            os.flush();
+                        }
+                    }
                     release.await(30, TimeUnit.SECONDS); // 卡住：连接保持但不再发数据
                     return;
                 }
@@ -82,6 +90,19 @@ class OpenAiCompatibleClientStreamStallTest {
                 .hasMessageContaining("无响应");
         assertThat(System.currentTimeMillis() - start).isLessThan(5_000);
         assertThat(Thread.currentThread().isInterrupted()).isFalse();
+    }
+
+    @Test
+    @DisplayName("通道排队只发 keep-alive 注释、一直不出内容：同样按空闲超时中断")
+    void keepAliveOnlyStreamTimesOut() {
+        stallOn = 0;
+        keepAlive = true;
+        long start = System.currentTimeMillis();
+        assertThatThrownBy(() -> client.streamChat(baseUrl, "sk", "m", null, false,
+                List.of(Map.of("role", "user", "content", "hi")), null, null, 10_000, d -> { }, () -> false))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("无响应");
+        assertThat(System.currentTimeMillis() - start).isLessThan(5_000);
     }
 
     @Test

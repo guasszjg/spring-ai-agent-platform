@@ -30,7 +30,7 @@ public class OpenAiCompatibleClient {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final OutboundUrlValidator outboundUrlValidator;
 
-    /** 流式读取的空闲超时：连续这么久没收到任何字节就判定通道卡死，中断读取（HttpClient 的 timeout 只管到响应头）。 */
+    /** 流式读取的空闲超时：连续这么久没收到任何 data 行就判定通道卡死或在排队，中断读取（HttpClient 的 timeout 只管到响应头）。 */
     static final long DEFAULT_STREAM_IDLE_TIMEOUT_MS = 45_000;
     long streamIdleTimeoutMs = DEFAULT_STREAM_IDLE_TIMEOUT_MS;
     private static final java.util.concurrent.ScheduledExecutorService STREAM_WATCHDOG =
@@ -497,7 +497,7 @@ public class OpenAiCompatibleClient {
                     .build();
             HttpResponse<java.io.InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
             StreamWatchdog watchdog = new StreamWatchdog(response.body(), cancelled, streamIdleTimeoutMs);
-            try (java.io.InputStream body = watchdog.stream();
+            try (java.io.InputStream body = response.body();
                  java.io.BufferedReader reader = new java.io.BufferedReader(
                          new java.io.InputStreamReader(body, StandardCharsets.UTF_8))) {
                 if (response.statusCode() < 200 || response.statusCode() >= 300) {
@@ -507,7 +507,7 @@ public class OpenAiCompatibleClient {
                     }
                     throw new IllegalStateException("HTTP " + response.statusCode() + " " + truncate(error));
                 }
-                return parseStream(reader, onContent, cancelled);
+                return parseStream(reader, onContent, cancelled, watchdog::touch);
             } catch (Exception e) {
                 if (watchdog.idleTimedOut()) {
                     throw new IllegalStateException("模型流式输出超过 " + streamIdleTimeoutMs / 1000 + " 秒无响应，已中断", e);
@@ -530,6 +530,14 @@ public class OpenAiCompatibleClient {
     StreamResult parseStream(java.io.BufferedReader reader,
                              java.util.function.Consumer<String> onContent,
                              java.util.function.BooleanSupplier cancelled) throws java.io.IOException {
+        return parseStream(reader, onContent, cancelled, null);
+    }
+
+    /** @param onData 每收到一条 data 行回调一次（看门狗据此判断通道是否还在输出；keep-alive 注释行不算） */
+    StreamResult parseStream(java.io.BufferedReader reader,
+                             java.util.function.Consumer<String> onContent,
+                             java.util.function.BooleanSupplier cancelled,
+                             Runnable onData) throws java.io.IOException {
         StringBuilder content = new StringBuilder();
         java.util.TreeMap<Integer, String[]> toolParts = new java.util.TreeMap<>(); // index -> [id, name, arguments]
         int promptTokens = 0;
@@ -557,6 +565,9 @@ public class OpenAiCompatibleClient {
                 continue; // event: / id: 等字段
             }
             sawEvent = true;
+            if (onData != null) {
+                onData.run();
+            }
             String data = trimmed.substring(5).trim();
             if ("[DONE]".equals(data)) {
                 break;
@@ -633,9 +644,9 @@ public class OpenAiCompatibleClient {
                 root.path("usage").path("completion_tokens").asInt(0));
     }
 
-    /** 通道不支持 stream_options 参数（仅内部用于去掉该参数重试） */
     /**
-     * 盯住流式响应体：每秒检查一次，连续 idleTimeoutMs 没读到字节、或调用方已取消（且读取卡住超过 2 秒）时，
+     * 盯住流式响应体：每秒检查一次，连续 idleTimeoutMs 没收到 data 行（通道繁忙时只发 keep-alive 注释，不算输出）、
+     * 或调用方已取消（且读取卡住超过 2 秒）时，
      * 关闭响应体并中断读取线程，让阻塞在 readLine 的线程抛出异常返回。
      */
     private static final class StreamWatchdog {
@@ -660,22 +671,9 @@ public class OpenAiCompatibleClient {
                     java.util.concurrent.TimeUnit.MILLISECONDS);
         }
 
-        java.io.InputStream stream() {
-            return new java.io.FilterInputStream(raw) {
-                @Override
-                public int read() throws java.io.IOException {
-                    int b = super.read();
-                    lastActivity = System.currentTimeMillis();
-                    return b;
-                }
-
-                @Override
-                public int read(byte[] buf, int off, int len) throws java.io.IOException {
-                    int n = super.read(buf, off, len);
-                    lastActivity = System.currentTimeMillis();
-                    return n;
-                }
-            };
+        /** 收到有效数据时调用，重置空闲计时 */
+        void touch() {
+            lastActivity = System.currentTimeMillis();
         }
 
         private void check() {
@@ -724,6 +722,7 @@ public class OpenAiCompatibleClient {
         }
     }
 
+    /** 通道不支持 stream_options 参数（仅内部用于去掉该参数重试） */
     private static class StreamOptionsRejected extends RuntimeException {
         StreamOptionsRejected() {
             super(null, null, false, false);
