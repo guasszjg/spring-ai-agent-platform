@@ -55,6 +55,15 @@ public final class LlmVendorCatalog {
                     "https://www.volcengine.com/docs/82379",
                     "火山方舟请填写推理接入点 ID 作为模型名（例如 ep-xxxxxxxx）。"
             ),
+            LlmProviderType.ZHIPU, new VendorPreset(
+                    LlmProviderType.ZHIPU,
+                    "智谱 GLM",
+                    "https://open.bigmodel.cn/api/paas/v4",
+                    "glm-4.7",
+                    List.of("glm-5.1", "glm-5", "glm-4.7", "glm-4.6", "glm-4.5-air", "glm-4.5-flash"),
+                    "https://docs.bigmodel.cn",
+                    "使用智谱开放平台 API Key（OpenAI 兼容接口）；GLM Coding Plan 套餐的 Key 需改用 /api/coding/paas/v4 地址。"
+            ),
             LlmProviderType.CUSTOM, new VendorPreset(
                     LlmProviderType.CUSTOM,
                     "自定义 OpenAI 兼容",
@@ -79,6 +88,7 @@ public final class LlmVendorCatalog {
                 preset(LlmProviderType.QIANWEN),
                 preset(LlmProviderType.TENCENT),
                 preset(LlmProviderType.BYTEDANCE),
+                preset(LlmProviderType.ZHIPU),
                 preset(LlmProviderType.CUSTOM)
         );
     }
