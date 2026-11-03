@@ -199,10 +199,12 @@ public class LlmGatewayService {
         String providerId = blankToNull(request.getProviderId());
         LlmProtocolType protocol = request.getProtocol();
         String customConfig = request.getCustomConfig();
+        LlmProviderType vendor = request.getVendor();
 
         if (providerId != null) {
             LlmProvider provider = providerRepository.findById(providerId)
                     .orElseThrow(() -> new IllegalArgumentException("未找到该模型通道"));
+            vendor = provider.getVendor();
             if (protocol == null) {
                 protocol = provider.getProtocol();
             }
@@ -245,12 +247,13 @@ public class LlmGatewayService {
             result = openAiClient.probe(baseUrl, apiKey, customHeaders, probeModel, timeoutMs);
         }
 
+        List<String> models = withPresetModels(vendor, result.models());
         if (providerId != null && result.success() && !result.models().isEmpty()) {
             providerRepository.findById(providerId).ifPresent(provider -> {
-                provider.setModels(String.join(",", result.models()));
+                provider.setModels(String.join(",", models));
                 if (provider.getDefaultModel() == null || provider.getDefaultModel().isBlank()
-                        || result.models().stream().noneMatch(item -> item.equalsIgnoreCase(provider.getDefaultModel()))) {
-                    provider.setDefaultModel(result.models().get(0));
+                        || models.stream().noneMatch(item -> item.equalsIgnoreCase(provider.getDefaultModel()))) {
+                    provider.setDefaultModel(models.get(0));
                 }
                 provider.setLastProbeStatus("SUCCESS");
                 provider.setLastProbeMessage(result.message());
@@ -266,7 +269,24 @@ public class LlmGatewayService {
             });
         }
 
-        return new GatewayProbeResult(result.success(), result.message(), result.models());
+        return new GatewayProbeResult(result.success(), result.message(), models);
+    }
+
+    /**
+     * 探测拿到的模型列表后面补上该厂商的预设模型：有些模型（如智谱 glm-4.7-flash）
+     * 能调用，但厂商的模型列表接口不返回，只用接口结果会把它们冲掉。
+     */
+    static List<String> withPresetModels(LlmProviderType vendor, List<String> discovered) {
+        if (discovered == null || discovered.isEmpty() || vendor == null || vendor == LlmProviderType.CUSTOM) {
+            return discovered == null ? List.of() : discovered;
+        }
+        List<String> merged = new ArrayList<>(discovered);
+        for (String preset : LlmVendorCatalog.preset(vendor).models()) {
+            if (merged.stream().noneMatch(item -> item.equalsIgnoreCase(preset))) {
+                merged.add(preset);
+            }
+        }
+        return merged;
     }
 
     private GatewayProbeRequest probeRequestFromProvider(String id) {
