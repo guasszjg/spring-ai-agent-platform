@@ -421,6 +421,7 @@ public class DataInitializer implements ApplicationRunner {
         seedBuiltinProvider("llm-qianwen", LlmProviderType.QIANWEN);
         seedBuiltinProvider("llm-tencent", LlmProviderType.TENCENT);
         seedBuiltinProvider("llm-bytedance", LlmProviderType.BYTEDANCE);
+        seedBuiltinProvider("llm-zhipu", LlmProviderType.ZHIPU);
 
         if (gatewayPolicyRepository.findById(LlmGatewayService.POLICY_ID).isEmpty()) {
             GatewayPolicy policy = new GatewayPolicy();

@@ -5,5 +5,6 @@ public enum LlmProviderType {
     QIANWEN,
     TENCENT,
     BYTEDANCE,
+    ZHIPU,
     CUSTOM
 }
