@@ -30,6 +30,16 @@ public class PlatformToolService {
 
     public static final String BOCHA_TOOL_ID = "tool-bocha-web-search";
     public static final String BOCHA_TOOL_CODE = "bocha_web_search";
+    public static final String DEEPSEEK_SEARCH_TOOL_ID = "tool-deepseek-web-search";
+    public static final String DEEPSEEK_SEARCH_TOOL_CODE = "deepseek_web_search";
+
+    /** 取 DeepSeek 通道 Key 用；setter 注入避免与网关服务形成构造循环 */
+    private LlmGatewayService gatewayService;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setGatewayService(LlmGatewayService gatewayService) {
+        this.gatewayService = gatewayService;
+    }
 
     private final PlatformToolRepository repository;
     private final SecretCrypto secretCrypto;
@@ -111,6 +121,9 @@ public class PlatformToolService {
         String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 10);
         PlatformTool entity = new PlatformTool();
         entity.setId("tool-http-" + suffix);
+        if (req.getUnitPrice() != null) {
+            entity.setUnitPrice(validUnitPrice(req.getUnitPrice()));
+        }
         entity.setCode("http_" + suffix);
         entity.setName(name);
         entity.setTitle(title);
@@ -189,6 +202,9 @@ public class PlatformToolService {
     @Transactional
     public PlatformToolView update(String id, PlatformToolUpdateRequest req) {
         PlatformTool entity = require(id);
+        if (req.getUnitPrice() != null) {
+            entity.setUnitPrice(validUnitPrice(req.getUnitPrice()));
+        }
         if (req.getTitle() != null && !req.getTitle().isBlank()) {
             entity.setTitle(req.getTitle().trim());
         }
@@ -219,7 +235,7 @@ public class PlatformToolService {
             entity.setConfigJson(writeConfig(config));
         }
         if (req.getApiKey() != null && !req.getApiKey().isBlank()) {
-            if (!isBocha(entity) && !isHttp(entity)) {
+            if (!isBocha(entity) && !isHttp(entity) && !isDeepSeekSearch(entity)) {
                 throw new IllegalArgumentException("当前工具不支持配置 API Key");
             }
             entity.setApiKeyEncrypted(secretCrypto.encrypt(req.getApiKey().trim()));
@@ -244,11 +260,35 @@ public class PlatformToolService {
                 .orElse(null);
     }
 
+    /**
+     * DeepSeek 联网搜索使用的 Key：工具管理页单独填写的优先，否则用模型网关里 DeepSeek 通道的 Key。
+     */
+    public String resolveDeepSeekSearchKey() {
+        String own = repository.findById(DEEPSEEK_SEARCH_TOOL_ID)
+                .or(() -> repository.findByCode(DEEPSEEK_SEARCH_TOOL_CODE))
+                .map(PlatformTool::getApiKeyEncrypted)
+                .filter(value -> value != null && !value.isBlank())
+                .map(secretCrypto::decrypt)
+                .orElse(null);
+        return own != null && !own.isBlank() ? own : gatewayDeepSeekKey();
+    }
+
+    private String gatewayDeepSeekKey() {
+        return gatewayService != null ? gatewayService.deepSeekApiKey() : null;
+    }
+
+    private boolean isDeepSeekSearch(PlatformTool entity) {
+        return entity != null && (DEEPSEEK_SEARCH_TOOL_ID.equals(entity.getId()) || DEEPSEEK_SEARCH_TOOL_CODE.equals(entity.getCode()));
+    }
+
     public Map<String, Object> testConnection(String id, String draftApiKey) {
         PlatformTool entity = require(id);
         String key = draftApiKey != null && !draftApiKey.isBlank() ? draftApiKey.trim() : decrypt(entity);
         if (isBocha(entity)) {
             return toolRegistry.testBochaConnection(key);
+        }
+        if (isDeepSeekSearch(entity)) {
+            return toolRegistry.testDeepSeekSearch(key != null && !key.isBlank() ? key : gatewayDeepSeekKey());
         }
         if (isHttp(entity)) {
             Map<String, Object> config = readConfig(entity.getConfigJson());
@@ -262,6 +302,13 @@ public class PlatformToolService {
             return toolRegistry.testHttpTool(spec);
         }
         throw new IllegalArgumentException("当前工具无需连通性测试");
+    }
+
+    private static java.math.BigDecimal validUnitPrice(java.math.BigDecimal price) {
+        if (price.signum() < 0 || price.compareTo(new java.math.BigDecimal("1000")) > 0) {
+            throw new IllegalArgumentException("单价需在 0～1000 元/次之间");
+        }
+        return price.setScale(4, java.math.RoundingMode.HALF_UP);
     }
 
     private PlatformTool require(String id) {
@@ -324,6 +371,7 @@ public class PlatformToolService {
         view.setEnabled(Boolean.TRUE.equals(entity.getEnabled()));
         view.setBuiltin(Boolean.TRUE.equals(entity.getBuiltin()));
         view.setSortOrder(entity.getSortOrder());
+        view.setUnitPrice(entity.getUnitPrice());
         view.setUpdatedAt(entity.getUpdatedAt());
         String plain = decrypt(entity);
         boolean hasKey = plain != null && !plain.isBlank();

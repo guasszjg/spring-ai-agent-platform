@@ -69,6 +69,10 @@ public class PlatformTool implements Persistable<String> {
     @Column(name = "sort_order")
     private Integer sortOrder = 100;
 
+    /** 单价（元/次），用于估算费用；为空视为 0 */
+    @Column(name = "unit_price", precision = 12, scale = 4)
+    private java.math.BigDecimal unitPrice;
+
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
@@ -131,6 +135,8 @@ public class PlatformTool implements Persistable<String> {
     public void setBuiltin(Boolean builtin) { this.builtin = builtin; }
     public Integer getSortOrder() { return sortOrder; }
     public void setSortOrder(Integer sortOrder) { this.sortOrder = sortOrder; }
+    public java.math.BigDecimal getUnitPrice() { return unitPrice; }
+    public void setUnitPrice(java.math.BigDecimal unitPrice) { this.unitPrice = unitPrice; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }

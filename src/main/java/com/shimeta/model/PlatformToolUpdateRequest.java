@@ -10,6 +10,8 @@ public class PlatformToolUpdateRequest {
     private Boolean enabled;
     private Map<String, Object> config;
     private String apiKey;
+    /** 单价（元/次），可选 */
+    private java.math.BigDecimal unitPrice;
 
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
@@ -23,6 +25,8 @@ public class PlatformToolUpdateRequest {
     public void setEnabled(Boolean enabled) { this.enabled = enabled; }
     public Map<String, Object> getConfig() { return config; }
     public void setConfig(Map<String, Object> config) { this.config = config; }
+    public java.math.BigDecimal getUnitPrice() { return unitPrice; }
+    public void setUnitPrice(java.math.BigDecimal unitPrice) { this.unitPrice = unitPrice; }
     public String getApiKey() { return apiKey; }
     public void setApiKey(String apiKey) { this.apiKey = apiKey; }
 }

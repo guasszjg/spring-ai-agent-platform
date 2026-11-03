@@ -38,6 +38,24 @@ public class AgentToolRegistry {
             .build();
 
     private final ThreadLocal<String> currentContextBochaApiKey = new ThreadLocal<>();
+    private final ThreadLocal<String> currentContextDeepSeekKey = new ThreadLocal<>();
+    private final ThreadLocal<String> currentContextAgentId = new ThreadLocal<>();
+    /** 工具调用统计；setter 注入，单元测试里可以不提供 */
+    private com.shimeta.service.ToolUsageService usageService;
+
+    /** 工具别名 → 统计用的工具编码（与工具管理页的编码一致） */
+    private static final Map<String, String> TOOL_ALIASES = Map.of(
+            "get_current_time", "time_get_current_time",
+            "calculate_weekday", "time_calculate_weekday",
+            "convert_timezone", "time_convert_timezone",
+            "timestamp_converter", "time_timestamp_converter",
+            "date_calculator", "time_date_calculator",
+            "web_search", "bocha_web_search");
+    /** 工具返回这些前缀时记为调用失败 */
+    private static final List<String> FAILURE_PREFIXES = List.of(
+            "工具执行失败", "未知工具", "【联网检索异常】", "【联网检索提示】", "【联网检索插件】", "【自定义工具失败】");
+    /** DeepSeek 搜索接口地址；包内可见便于测试替换 */
+    String deepSeekSearchUrl = "https://api.deepseek.com/v1/tools/search";
     private final ThreadLocal<Map<String, Map<String, Object>>> currentPlatformConfigs = new ThreadLocal<>();
     private final ThreadLocal<List<HttpToolSpec>> currentHttpTools = new ThreadLocal<>();
     private final String configuredBochaApiKey;
@@ -54,6 +72,29 @@ public class AgentToolRegistry {
             currentContextBochaApiKey.set(apiKey.trim());
         } else {
             currentContextBochaApiKey.remove();
+        }
+    }
+
+    /** 本次对话 DeepSeek 联网搜索使用的 Key（来自工具管理页或模型网关的 DeepSeek 通道） */
+    public void setCurrentContextDeepSeekKey(String apiKey) {
+        if (apiKey != null && !apiKey.isBlank()) {
+            currentContextDeepSeekKey.set(apiKey.trim());
+        } else {
+            currentContextDeepSeekKey.remove();
+        }
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setUsageService(com.shimeta.service.ToolUsageService usageService) {
+        this.usageService = usageService;
+    }
+
+    /** 本次对话所属的智能体，用于工具调用统计按智能体拆分 */
+    public void setCurrentContextAgentId(String agentId) {
+        if (agentId != null && !agentId.isBlank()) {
+            currentContextAgentId.set(agentId);
+        } else {
+            currentContextAgentId.remove();
         }
     }
 
@@ -75,6 +116,8 @@ public class AgentToolRegistry {
 
     public void clearCurrentContext() {
         currentContextBochaApiKey.remove();
+        currentContextDeepSeekKey.remove();
+        currentContextAgentId.remove();
         currentPlatformConfigs.remove();
         currentHttpTools.remove();
     }
@@ -172,6 +215,18 @@ public class AgentToolRegistry {
                         "required", List.of("query")
                 ));
 
+        addIfEnabled(list, enabledToolNames, "DeepSeek 联网搜索", "deepseek_web_search",
+                "DeepSeek 联网搜索引擎。当用户询问最新时事、实时天气、新闻事件、实时数据或任何需要获取最新互联网真实信息的场景时，必须调用本工具检索权威事实。注意：严禁用本工具查询“今天几号”、“现在几点”等系统时钟问题（当前日期时间请直接使用系统基准时间或获取当前时间工具）。",
+                Map.of("type", "object",
+                        "properties", Map.of(
+                                "query", Map.of(
+                                        "type", "string",
+                                        "description", "搜索关键词，128 字以内，例如：深圳明天天气预报。支持 site:、after:2026-01-01 等搜索语法"
+                                )
+                        ),
+                        "required", List.of("query")
+                ));
+
         List<HttpToolSpec> httpTools = currentHttpTools.get();
         if (httpTools != null) {
             for (HttpToolSpec spec : httpTools) {
@@ -219,6 +274,27 @@ public class AgentToolRegistry {
     }
 
     public String execute(String toolName, String argumentsJson) {
+        long start = System.currentTimeMillis();
+        String result = doExecute(toolName, argumentsJson);
+        recordUsage(toolName, result, System.currentTimeMillis() - start);
+        return result;
+    }
+
+    private void recordUsage(String toolName, String result, long latencyMs) {
+        if (usageService == null || toolName == null) {
+            return;
+        }
+        String code = TOOL_ALIASES.getOrDefault(toolName, toolName);
+        boolean known = code.startsWith("time_") || "bocha_web_search".equals(code) || "deepseek_web_search".equals(code)
+                || findHttpTool(code) != null;
+        if (!known) {
+            return;
+        }
+        boolean success = result != null && FAILURE_PREFIXES.stream().noneMatch(result::startsWith);
+        usageService.record(code, currentContextAgentId.get(), success, latencyMs);
+    }
+
+    private String doExecute(String toolName, String argumentsJson) {
         try {
             JsonNode root = (argumentsJson != null && !argumentsJson.isBlank())
                     ? objectMapper.readTree(argumentsJson)
@@ -231,6 +307,7 @@ public class AgentToolRegistry {
                 case "time_timestamp_converter", "timestamp_converter" -> handleTimestampConverter(root);
                 case "time_date_calculator", "date_calculator" -> handleDateCalculator(root);
                 case "bocha_web_search", "web_search" -> handleBochaWebSearch(root);
+                case "deepseek_web_search" -> handleDeepSeekWebSearch(root);
                 default -> handleCustomOrUnknown(toolName, root);
             };
         } catch (Exception e) {
@@ -416,6 +493,129 @@ public class AgentToolRegistry {
             log.warn("解析 Bocha 响应数据异常: {}", e.getMessage());
             return String.format("【联网检索数据已返回】针对关键词 [%s]，原始内容如下：\n%s", query, truncate(responseBody, 800));
         }
+    }
+
+    // ==================== DeepSeek 联网搜索 ====================
+
+    private String handleDeepSeekWebSearch(JsonNode root) {
+        String query = root.path("query").asText("").trim();
+        if (query.isEmpty()) {
+            return "【联网检索提示】搜索关键词为空，请提供要检索的内容。";
+        }
+        if (query.length() > 128) {
+            query = query.substring(0, 128);
+        }
+        String apiKey = currentContextDeepSeekKey.get();
+        if (apiKey == null || apiKey.isBlank()) {
+            return String.format("【联网检索插件】已触发 DeepSeek 联网搜索，检索关键词: [%s]。提示：未找到可用的 DeepSeek Key，请在「模型网关」配置 DeepSeek 通道，或在「工具管理」为 DeepSeek 联网搜索单独填写 Key。", query);
+        }
+        int count = Math.max(1, Math.min(10, platformInt("deepseek_web_search", "count", 5)));
+        try {
+            HttpResponse<String> response = postDeepSeekSearch(apiKey, Map.of("query", query, "count", count), 12);
+            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                return formatDeepSeekResults(query, response.body(), count);
+            }
+            return String.format("【联网检索提示】DeepSeek 搜索返回 %d：%s", response.statusCode(), deepSeekErrorHint(response.statusCode()));
+        } catch (Exception e) {
+            log.error("DeepSeek web search 异常 [query={}]: {}", query, e.getMessage(), e);
+            return String.format("【联网检索异常】请求 DeepSeek 搜索失败: %s", e.getMessage());
+        }
+    }
+
+    private HttpResponse<String> postDeepSeekSearch(String apiKey, Map<String, Object> body, int timeoutSeconds) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(URI.create(deepSeekSearchUrl))
+                .timeout(Duration.ofSeconds(timeoutSeconds))
+                .header("Authorization", "Bearer " + apiKey)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body), StandardCharsets.UTF_8))
+                .build();
+        return httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    }
+
+    /** 整理成与博查一致的格式：标题（来源）[日期] + 长摘要 + 网址；按相关度排序，只取前 count 条 */
+    String formatDeepSeekResults(String query, String responseBody, int count) {
+        try {
+            JsonNode results = objectMapper.readTree(responseBody).path("results");
+            if (!results.isArray() || results.isEmpty()) {
+                return String.format("【联网检索完成】未检索到关于 [%s] 的网页记录。", query);
+            }
+            List<JsonNode> items = new ArrayList<>();
+            results.forEach(items::add);
+            items.sort((a, b) -> Double.compare(b.path("rerank_score").asDouble(0), a.path("rerank_score").asDouble(0)));
+            String today = ZonedDateTime.now(ZoneId.of("Asia/Shanghai")).format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
+            StringBuilder sb = new StringBuilder(String.format(
+                    "【联网检索结果】（当前物理世界基准日期：%s）针对关键词 [%s]，DeepSeek 检索到以下互联网资讯（提示：列表中发布时间为各网页的历史发布时刻，切勿误当做今天的真实日期）：\n\n", today, query));
+            int idx = 1;
+            for (JsonNode item : items) {
+                if (idx > count) {
+                    break;
+                }
+                String title = item.path("title").asText("");
+                String siteName = item.path("site_name").asText("");
+                String date = item.path("date").asText("");
+                String summary = item.path("summary").asText("");
+                if (summary.isBlank()) {
+                    summary = item.path("snippet").asText("");
+                }
+                String url = item.path("url").asText("");
+                sb.append(idx++).append(". ").append(title.isBlank() ? "互联网网页资讯" : title);
+                if (!siteName.isBlank() && !"null".equals(siteName)) {
+                    sb.append("（来源: ").append(siteName).append("）");
+                }
+                if (!date.isBlank() && !"null".equals(date)) {
+                    sb.append(" [").append(date.length() > 10 ? date.substring(0, 10) : date).append("]");
+                }
+                sb.append("\n");
+                if (!summary.isBlank()) {
+                    sb.append("   摘要内容: ").append(summary.trim()).append("\n");
+                }
+                if (!url.isBlank()) {
+                    sb.append("   网页参考: ").append(url.trim()).append("\n");
+                }
+                sb.append("\n");
+            }
+            return sb.toString().trim();
+        } catch (Exception e) {
+            log.warn("解析 DeepSeek 搜索响应异常: {}", e.getMessage());
+            return String.format("【联网检索数据已返回】针对关键词 [%s]，原始内容如下：\n%s", query, truncate(responseBody, 800));
+        }
+    }
+
+    private static String deepSeekErrorHint(int status) {
+        return switch (status) {
+            case 401 -> "Key 无效，请检查 DeepSeek 通道或工具的 Key";
+            case 402 -> "DeepSeek 账户余额不足，请充值";
+            case 429 -> "请求过于频繁，请稍后再试";
+            case 400 -> "搜索参数无效";
+            default -> "服务暂不可用，请稍后再试";
+        };
+    }
+
+    public Map<String, Object> testDeepSeekSearch(String apiKey) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        if (apiKey == null || apiKey.isBlank()) {
+            result.put("success", false);
+            result.put("code", 400);
+            result.put("message", "测试未通过：工具未单独填写 Key，模型网关里也没有配置 DeepSeek 通道的 Key。");
+            return result;
+        }
+        long start = System.currentTimeMillis();
+        try {
+            HttpResponse<String> response = postDeepSeekSearch(apiKey.trim(), Map.of("query", "DeepSeek", "count", 1), 8);
+            long latency = System.currentTimeMillis() - start;
+            result.put("latencyMs", latency);
+            result.put("code", response.statusCode());
+            boolean ok = response.statusCode() >= 200 && response.statusCode() < 300;
+            result.put("success", ok);
+            result.put("message", ok
+                    ? String.format("连接成功！DeepSeek 搜索服务可用，响应耗时 %d ms", latency)
+                    : String.format("连接失败 (HTTP %d)：%s", response.statusCode(), deepSeekErrorHint(response.statusCode())));
+        } catch (Exception e) {
+            result.put("success", false);
+            result.put("latencyMs", System.currentTimeMillis() - start);
+            result.put("message", "网络连接失败：" + e.getMessage());
+        }
+        return result;
     }
 
     public Map<String, Object> testBochaConnection(String customApiKey) {

@@ -35,6 +35,17 @@ public class AiChatService {
     private final com.shimeta.tool.AgentToolRegistry toolRegistry;
     private final AgentToolSecretService toolSecretService;
     private final PlatformToolService platformToolService;
+    /** 平台设置（单次回答最多调用工具轮数）；setter 注入，单元测试里可以不提供 */
+    private PlatformSettingService platformSettingService;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setPlatformSettingService(PlatformSettingService platformSettingService) {
+        this.platformSettingService = platformSettingService;
+    }
+
+    private int maxToolRounds() {
+        return platformSettingService != null ? platformSettingService.maxToolRounds() : OpenAiCompatibleClient.DEFAULT_MAX_TOOL_ROUNDS;
+    }
     private final KnowledgeBaseService knowledgeBaseService;
     private final ResourceAuthorizationService resourceAuthorizationService;
     private final boolean simulationFallbackEnabled;
@@ -120,6 +131,11 @@ public class AiChatService {
             toolRegistry.setHttpTools(platformToolService.httpRuntimeSpecs());
         }
         List<java.util.Map<String, Object>> tools = toolRegistry.getToolDefinitions(request.getEnabledTools());
+        toolRegistry.setCurrentContextAgentId(agent.getId());
+        // 启用了 DeepSeek 联网搜索时才取 Key（工具管理页单独填写的优先，否则用模型网关 DeepSeek 通道的）
+        if (platformToolService != null && hasTool(tools, "deepseek_web_search")) {
+            toolRegistry.setCurrentContextDeepSeekKey(platformToolService.resolveDeepSeekSearchKey());
+        }
 
         // 当前请求 Key 优先，否则使用该智能体在数据库中加密保存的 Key。
         String bochaKey = firstNonBlank(
@@ -365,14 +381,28 @@ public class AiChatService {
         // 若挂载了扩展工具，注入工具调用路由规范，消除模型对时间工具与联网搜索的二义性竞争
         if (enabledTools != null && !enabledTools.isEmpty()) {
             boolean hasTime = enabledTools.stream().anyMatch(t -> t.contains("时间") || t.contains("time") || t.contains("时区") || t.contains("星期"));
-            boolean hasBocha = enabledTools.stream().anyMatch(t -> t.contains("联网") || t.contains("bocha") || t.contains("检索"));
+            boolean hasDeepSeekSearch = enabledTools.stream().anyMatch(t -> t.contains("DeepSeek") || t.contains("deepseek"));
+            boolean hasBocha = enabledTools.stream().anyMatch(t -> t.contains("bocha")
+                    || ((t.contains("联网") || t.contains("检索")) && !t.contains("DeepSeek") && !t.contains("deepseek")));
 
             StringBuilder toolGuide = new StringBuilder("\n\n【工具调用指引规范】\n");
             if (hasTime) {
                 toolGuide.append("- 当前智能体已装配时间工具集（包含获取当前时间、星期几计算器等）。当用户询问“今天多少号”、“今天几号”、“现在几点”、“当前日期”等本地时序问题时，可直接参考系统基准时间或优先调用 `time_get_current_time` 工具，严禁使用联网搜索查询当前本地系统时间！\n");
             }
-            if (hasBocha) {
-                toolGuide.append("- 联网检索工具（`bocha_web_search`）仅用于查询外部最新新闻、实时天气或全网事实，切勿使用联网检索来查问当前的本地系统时间！\n");
+            if (hasBocha || hasDeepSeekSearch) {
+                List<String> searchTools = new java.util.ArrayList<>();
+                if (hasBocha) {
+                    searchTools.add("`bocha_web_search`");
+                }
+                if (hasDeepSeekSearch) {
+                    searchTools.add("`deepseek_web_search`");
+                }
+                toolGuide.append("- 联网检索工具（").append(String.join("、", searchTools))
+                        .append("）仅用于查询外部最新新闻、实时天气或全网事实，切勿使用联网检索来查问当前的本地系统时间！");
+                if (searchTools.size() > 1) {
+                    toolGuide.append("同一问题只需调用其中一个联网检索工具。");
+                }
+                toolGuide.append("\n");
             }
             timeContext.append(toolGuide.toString().trim());
         }
@@ -431,9 +461,10 @@ public class AiChatService {
                                 emitted.set(true);
                                 sink.onDelta(text);
                             },
-                            sink::cancelled);
+                            sink::cancelled, maxToolRounds());
                 }
-                return openAiClient.chatWithTools(provider.getBaseUrl(), apiKey, model, customHeaders, defaultWebSearch, messages, tools, toolRegistry, generation, timeoutMs);
+                return openAiClient.chatWithTools(provider.getBaseUrl(), apiKey, model, customHeaders, defaultWebSearch,
+                        messages, tools, toolRegistry, generation, timeoutMs, maxToolRounds());
             } catch (Exception ex) {
                 if (emitted.get()) {
                     throw new StreamInterruptedException("模型通道在输出过程中中断: " + ex.getMessage(), ex);
@@ -456,6 +487,11 @@ public class AiChatService {
             return provider.getDefaultModel();
         }
         return requested;
+    }
+
+    private static boolean hasTool(List<java.util.Map<String, Object>> tools, String functionName) {
+        return tools != null && tools.stream().anyMatch(tool -> tool.get("function") instanceof java.util.Map<?, ?> fn
+                && functionName.equals(fn.get("name")));
     }
 
     private String firstNonBlank(String... values) {
