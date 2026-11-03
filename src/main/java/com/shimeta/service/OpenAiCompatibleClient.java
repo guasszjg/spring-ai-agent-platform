@@ -148,6 +148,33 @@ public class OpenAiCompatibleClient {
         return chatWithTools(baseUrl, apiKey, model, null, objectMessages, null, null, generation, timeoutMs);
     }
 
+    /**
+     * 一次回答最多执行几轮工具调用。用完后再请求一次：不再提供工具定义，并提示模型根据已查到的资料作答。
+     * （DeepSeek 对 tool_choice=none 不生效，会把工具调用以文本标记输出，所以改为不提供工具）
+     */
+    static final int MAX_TOOL_ROUNDS = 3;
+    /** 最后一轮模型仍未作答时的兜底回复（不把内部状态暴露给用户） */
+    static final String TOOL_LIMIT_FALLBACK = "抱歉，这个问题需要查询的资料较多，暂时没能整理出答案，请换个更具体的问法再试。";
+    static final String FINAL_ROUND_NUDGE = "（系统提示）检索次数已达上限，不能再调用任何工具。请直接根据以上已获得的检索结果回答用户的问题，资料不足的部分如实说明。";
+
+    /** 最后一轮的消息：在已有对话后追加作答提示 */
+    private static List<Map<String, Object>> withFinalNudge(List<Map<String, Object>> messages) {
+        List<Map<String, Object>> copy = new ArrayList<>(messages);
+        copy.add(Map.of("role", "user", "content", FINAL_ROUND_NUDGE));
+        return copy;
+    }
+
+    /** 模型把工具调用以文本标记输出（如 DeepSeek 的 DSML 标记），不能当作回答 */
+    static boolean looksLikeToolMarkup(String content) {
+        return content != null && (content.contains("DSML") || content.contains("<tool_call>")
+                || content.contains("<｜tool▁call"));
+    }
+
+    private static String appendToolSummary(String existing, List<String> summaries) {
+        String joined = String.join(" | ", summaries);
+        return existing == null || existing.isBlank() ? joined : existing + " | " + joined;
+    }
+
     public ChatResult chatWithTools(String baseUrl, String apiKey, String model, List<Map<String, Object>> messages,
                                     List<Map<String, Object>> tools, com.shimeta.tool.AgentToolRegistry toolRegistry,
                                     ChatGeneration generation, int timeoutMs) {
@@ -179,12 +206,12 @@ public class OpenAiCompatibleClient {
             int totalTokens = 0;
             String toolCalled = null;
 
-            int maxTurns = 3;
-            for (int turn = 0; turn < maxTurns; turn++) {
+            for (int turn = 0; turn <= MAX_TOOL_ROUNDS; turn++) {
+                boolean finalTurn = turn == MAX_TOOL_ROUNDS;
                 Map<String, Object> payload = new LinkedHashMap<>();
                 payload.put("model", model);
-                payload.put("messages", currentMessages);
-                if (tools != null && !tools.isEmpty()) {
+                payload.put("messages", finalTurn ? withFinalNudge(currentMessages) : currentMessages);
+                if (tools != null && !tools.isEmpty() && !finalTurn) {
                     payload.put("tools", tools);
                 }
                 applyGeneration(payload, generation, defaultWebSearch);
@@ -219,7 +246,7 @@ public class OpenAiCompatibleClient {
                 totalTokens = promptTokens + completionTokens;
 
                 JsonNode toolCalls = messageNode.path("tool_calls");
-                if (toolCalls.isArray() && !toolCalls.isEmpty() && toolRegistry != null) {
+                if (toolCalls.isArray() && !toolCalls.isEmpty() && toolRegistry != null && !finalTurn) {
                     Map<String, Object> assistantMsg = new LinkedHashMap<>();
                     assistantMsg.put("role", "assistant");
                     if (messageNode.has("content") && !messageNode.get("content").isNull()) {
@@ -244,16 +271,18 @@ public class OpenAiCompatibleClient {
                         toolMsg.put("content", toolResult);
                         currentMessages.add(toolMsg);
                     }
-                    if (toolCalled == null) {
-                        toolCalled = String.join(" | ", summaries);
-                    }
+                    toolCalled = appendToolSummary(toolCalled, summaries);
                     continue;
                 }
 
                 String content = cleanAnswer(messageNode.path("content").asText(""));
+                if (finalTurn && (content == null || content.isBlank() || looksLikeToolMarkup(content))) {
+                    log.warn("工具调用达到 {} 轮且模型未给出回答，返回兜底回复", MAX_TOOL_ROUNDS);
+                    content = TOOL_LIMIT_FALLBACK;
+                }
                 return new ChatResult(content, promptTokens, completionTokens, totalTokens, toolCalled);
             }
-            return new ChatResult("工具调用轮次达到上限", promptTokens, completionTokens, totalTokens, toolCalled);
+            return new ChatResult(TOOL_LIMIT_FALLBACK, promptTokens, completionTokens, totalTokens, toolCalled);
         } catch (IllegalStateException e) {
             throw e;
         } catch (Exception e) {
@@ -263,7 +292,8 @@ public class OpenAiCompatibleClient {
 
     /**
      * 流式版的 {@link #chatWithTools}：模型输出的文字边生成边通过 onContent 推送；模型发起工具调用时执行工具、
-     * 把结果交回模型再继续流式生成，最多 3 轮。返回值与 chatWithTools 相同（内容已清理引用角标，Token 为各轮之和）。
+     * 把结果交回模型再继续流式生成；工具最多 {@value #MAX_TOOL_ROUNDS} 轮，用完后禁止调用工具再请求一次，让模型作答。
+     * 返回值与 chatWithTools 相同（内容已清理引用角标，Token 为各轮之和）。
      *
      * @param cancelled 返回 true 时停止读取（调用方已断开或输出被护栏拦截）
      */
@@ -280,14 +310,31 @@ public class OpenAiCompatibleClient {
         int promptTokens = 0;
         int completionTokens = 0;
         String toolCalled = null;
-        for (int turn = 0; turn < 3; turn++) {
+        for (int turn = 0; turn <= MAX_TOOL_ROUNDS; turn++) {
+            boolean finalTurn = turn == MAX_TOOL_ROUNDS;
+            // 最后一轮先缓冲：模型可能把工具调用写成文本标记，确认是正常回答后再推送
+            StringBuilder finalBuffer = new StringBuilder();
             StreamResult result = streamChat(baseUrl, apiKey, model, customHeaders, defaultWebSearch,
-                    currentMessages, tools, generation, timeoutMs, onContent, cancelled);
+                    finalTurn ? withFinalNudge(currentMessages) : currentMessages,
+                    finalTurn ? null : tools, generation, timeoutMs,
+                    finalTurn ? finalBuffer::append : onContent, cancelled);
             promptTokens += result.promptTokens();
             completionTokens += result.completionTokens();
             boolean stop = cancelled != null && cancelled.getAsBoolean();
-            if (!result.hasToolCalls() || toolRegistry == null || stop) {
-                return new ChatResult(cleanAnswer(result.content()), promptTokens, completionTokens,
+            if (!result.hasToolCalls() || toolRegistry == null || stop || finalTurn) {
+                String content = cleanAnswer(result.content());
+                if (finalTurn && !stop) {
+                    if (content == null || content.isBlank() || looksLikeToolMarkup(content)) {
+                        log.warn("工具调用达到 {} 轮且模型未给出回答，返回兜底回复（流式）", MAX_TOOL_ROUNDS);
+                        content = TOOL_LIMIT_FALLBACK;
+                        if (onContent != null) {
+                            onContent.accept(content);
+                        }
+                    } else if (onContent != null && finalBuffer.length() > 0) {
+                        onContent.accept(finalBuffer.toString());
+                    }
+                }
+                return new ChatResult(content, promptTokens, completionTokens,
                         promptTokens + completionTokens, toolCalled);
             }
             Map<String, Object> assistantMsg = new LinkedHashMap<>();
@@ -313,11 +360,9 @@ public class OpenAiCompatibleClient {
                 toolMsg.put("content", toolResult);
                 currentMessages.add(toolMsg);
             }
-            if (toolCalled == null) {
-                toolCalled = String.join(" | ", summaries);
-            }
+            toolCalled = appendToolSummary(toolCalled, summaries);
         }
-        return new ChatResult("工具调用轮次达到上限", promptTokens, completionTokens, promptTokens + completionTokens, toolCalled);
+        return new ChatResult(TOOL_LIMIT_FALLBACK, promptTokens, completionTokens, promptTokens + completionTokens, toolCalled);
     }
 
     /**
