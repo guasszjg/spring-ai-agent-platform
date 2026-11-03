@@ -787,7 +787,7 @@ public class AgentService {
                 "name", "数据分析与 BI 洞察助手",
                 "avatar", "📊",
                 "category", "数据分析",
-                "modelName", "deepseek-chat",
+                "modelName", "deepseek-flash",
                 "description", "对业务数据进行多维度下钻分析，提取核心指标变化原因与商业决策建议。",
                 "systemPrompt", "你是一名资深商业数据分析师(BI)。请根据用户提供的数据集或业务指标，给出多维度统计分析、异常值检测、趋势预测及切实可行的商业优化策略。",
                 "temperature", 0.3,

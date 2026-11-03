@@ -8,6 +8,15 @@ public class GatewayProbeRequest {
     private String apiKey;
     private Integer timeoutMs;
     private String defaultModel;
+    private LlmProviderType vendor;
+
+    public LlmProviderType getVendor() {
+        return vendor;
+    }
+
+    public void setVendor(LlmProviderType vendor) {
+        this.vendor = vendor;
+    }
 
     public String getDefaultModel() {
         return defaultModel;

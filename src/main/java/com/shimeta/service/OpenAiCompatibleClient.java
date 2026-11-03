@@ -94,7 +94,7 @@ public class OpenAiCompatibleClient {
 
     private ProbeResult chatPing(String baseUrl, String apiKey, Map<String, String> customHeaders, String defaultModel, int timeoutMs) {
         String chatUrl = resolveChatUrl(baseUrl);
-        String model = (defaultModel != null && !defaultModel.isBlank()) ? defaultModel.trim() : "deepseek-v4-flash";
+        String model = (defaultModel != null && !defaultModel.isBlank()) ? defaultModel.trim() : "deepseek-flash";
         try {
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("model", model);
