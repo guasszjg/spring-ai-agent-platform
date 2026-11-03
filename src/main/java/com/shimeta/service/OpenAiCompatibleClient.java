@@ -149,10 +149,11 @@ public class OpenAiCompatibleClient {
     }
 
     /**
-     * 一次回答最多执行几轮工具调用。用完后再请求一次：不再提供工具定义，并提示模型根据已查到的资料作答。
+     * 一次回答默认最多执行几轮工具调用（平台设置可调）。用完后再请求一次：不再提供工具定义，并提示模型根据已查到的资料作答。
      * （DeepSeek 对 tool_choice=none 不生效，会把工具调用以文本标记输出，所以改为不提供工具）
+     * 只限制回答一个问题时反复调用工具，不限制提问次数。
      */
-    static final int MAX_TOOL_ROUNDS = 3;
+    public static final int DEFAULT_MAX_TOOL_ROUNDS = 5;
     /** 最后一轮模型仍未作答时的兜底回复（不把内部状态暴露给用户） */
     static final String TOOL_LIMIT_FALLBACK = "抱歉，这个问题需要查询的资料较多，暂时没能整理出答案，请换个更具体的问法再试。";
     static final String FINAL_ROUND_NUDGE = "（系统提示）检索次数已达上限，不能再调用任何工具。请直接根据以上已获得的检索结果回答用户的问题，资料不足的部分如实说明。";
@@ -197,8 +198,21 @@ public class OpenAiCompatibleClient {
                                     List<Map<String, Object>> tools,
                                     com.shimeta.tool.AgentToolRegistry toolRegistry,
                                     ChatGeneration generation, int timeoutMs) {
+        return chatWithTools(baseUrl, apiKey, model, customHeaders, defaultWebSearch, messages, tools, toolRegistry,
+                generation, timeoutMs, DEFAULT_MAX_TOOL_ROUNDS);
+    }
+
+    /** @param maxToolRounds 回答一个问题最多调用几轮工具（至少 1 轮） */
+    public ChatResult chatWithTools(String baseUrl, String apiKey, String model,
+                                    Map<String, String> customHeaders,
+                                    boolean defaultWebSearch,
+                                    List<Map<String, Object>> messages,
+                                    List<Map<String, Object>> tools,
+                                    com.shimeta.tool.AgentToolRegistry toolRegistry,
+                                    ChatGeneration generation, int timeoutMs, int maxToolRounds) {
         outboundUrlValidator.validateProviderBaseUrl(baseUrl);
         String url = resolveChatUrl(baseUrl);
+        int maxRounds = Math.max(1, maxToolRounds);
         try {
             List<Map<String, Object>> currentMessages = new ArrayList<>(messages);
             int promptTokens = 0;
@@ -206,8 +220,8 @@ public class OpenAiCompatibleClient {
             int totalTokens = 0;
             String toolCalled = null;
 
-            for (int turn = 0; turn <= MAX_TOOL_ROUNDS; turn++) {
-                boolean finalTurn = turn == MAX_TOOL_ROUNDS;
+            for (int turn = 0; turn <= maxRounds; turn++) {
+                boolean finalTurn = turn == maxRounds;
                 Map<String, Object> payload = new LinkedHashMap<>();
                 payload.put("model", model);
                 payload.put("messages", finalTurn ? withFinalNudge(currentMessages) : currentMessages);
@@ -277,7 +291,7 @@ public class OpenAiCompatibleClient {
 
                 String content = cleanAnswer(messageNode.path("content").asText(""));
                 if (finalTurn && (content == null || content.isBlank() || looksLikeToolMarkup(content))) {
-                    log.warn("工具调用达到 {} 轮且模型未给出回答，返回兜底回复", MAX_TOOL_ROUNDS);
+                    log.warn("工具调用达到 {} 轮且模型未给出回答，返回兜底回复", maxRounds);
                     content = TOOL_LIMIT_FALLBACK;
                 }
                 return new ChatResult(content, promptTokens, completionTokens, totalTokens, toolCalled);
@@ -292,7 +306,7 @@ public class OpenAiCompatibleClient {
 
     /**
      * 流式版的 {@link #chatWithTools}：模型输出的文字边生成边通过 onContent 推送；模型发起工具调用时执行工具、
-     * 把结果交回模型再继续流式生成；工具最多 {@value #MAX_TOOL_ROUNDS} 轮，用完后禁止调用工具再请求一次，让模型作答。
+     * 把结果交回模型再继续流式生成；工具最多 maxToolRounds 轮（默认 {@value #DEFAULT_MAX_TOOL_ROUNDS}），用完后不再提供工具、让模型作答。
      * 返回值与 chatWithTools 相同（内容已清理引用角标，Token 为各轮之和）。
      *
      * @param cancelled 返回 true 时停止读取（调用方已断开或输出被护栏拦截）
@@ -306,12 +320,27 @@ public class OpenAiCompatibleClient {
                                              ChatGeneration generation, int timeoutMs,
                                              java.util.function.Consumer<String> onContent,
                                              java.util.function.BooleanSupplier cancelled) {
+        return chatWithToolsStreaming(baseUrl, apiKey, model, customHeaders, defaultWebSearch, messages, tools,
+                toolRegistry, generation, timeoutMs, onContent, cancelled, DEFAULT_MAX_TOOL_ROUNDS);
+    }
+
+    public ChatResult chatWithToolsStreaming(String baseUrl, String apiKey, String model,
+                                             Map<String, String> customHeaders,
+                                             boolean defaultWebSearch,
+                                             List<Map<String, Object>> messages,
+                                             List<Map<String, Object>> tools,
+                                             com.shimeta.tool.AgentToolRegistry toolRegistry,
+                                             ChatGeneration generation, int timeoutMs,
+                                             java.util.function.Consumer<String> onContent,
+                                             java.util.function.BooleanSupplier cancelled,
+                                             int maxToolRounds) {
+        int maxRounds = Math.max(1, maxToolRounds);
         List<Map<String, Object>> currentMessages = new ArrayList<>(messages);
         int promptTokens = 0;
         int completionTokens = 0;
         String toolCalled = null;
-        for (int turn = 0; turn <= MAX_TOOL_ROUNDS; turn++) {
-            boolean finalTurn = turn == MAX_TOOL_ROUNDS;
+        for (int turn = 0; turn <= maxRounds; turn++) {
+            boolean finalTurn = turn == maxRounds;
             // 最后一轮先缓冲：模型可能把工具调用写成文本标记，确认是正常回答后再推送
             StringBuilder finalBuffer = new StringBuilder();
             StreamResult result = streamChat(baseUrl, apiKey, model, customHeaders, defaultWebSearch,
@@ -325,7 +354,7 @@ public class OpenAiCompatibleClient {
                 String content = cleanAnswer(result.content());
                 if (finalTurn && !stop) {
                     if (content == null || content.isBlank() || looksLikeToolMarkup(content)) {
-                        log.warn("工具调用达到 {} 轮且模型未给出回答，返回兜底回复（流式）", MAX_TOOL_ROUNDS);
+                        log.warn("工具调用达到 {} 轮且模型未给出回答，返回兜底回复（流式）", maxRounds);
                         content = TOOL_LIMIT_FALLBACK;
                         if (onContent != null) {
                             onContent.accept(content);

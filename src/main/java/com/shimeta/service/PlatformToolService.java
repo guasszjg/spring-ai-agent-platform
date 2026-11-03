@@ -121,6 +121,9 @@ public class PlatformToolService {
         String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 10);
         PlatformTool entity = new PlatformTool();
         entity.setId("tool-http-" + suffix);
+        if (req.getUnitPrice() != null) {
+            entity.setUnitPrice(validUnitPrice(req.getUnitPrice()));
+        }
         entity.setCode("http_" + suffix);
         entity.setName(name);
         entity.setTitle(title);
@@ -199,6 +202,9 @@ public class PlatformToolService {
     @Transactional
     public PlatformToolView update(String id, PlatformToolUpdateRequest req) {
         PlatformTool entity = require(id);
+        if (req.getUnitPrice() != null) {
+            entity.setUnitPrice(validUnitPrice(req.getUnitPrice()));
+        }
         if (req.getTitle() != null && !req.getTitle().isBlank()) {
             entity.setTitle(req.getTitle().trim());
         }
@@ -298,6 +304,13 @@ public class PlatformToolService {
         throw new IllegalArgumentException("当前工具无需连通性测试");
     }
 
+    private static java.math.BigDecimal validUnitPrice(java.math.BigDecimal price) {
+        if (price.signum() < 0 || price.compareTo(new java.math.BigDecimal("1000")) > 0) {
+            throw new IllegalArgumentException("单价需在 0～1000 元/次之间");
+        }
+        return price.setScale(4, java.math.RoundingMode.HALF_UP);
+    }
+
     private PlatformTool require(String id) {
         return repository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("未找到平台工具: " + id));
@@ -358,6 +371,7 @@ public class PlatformToolService {
         view.setEnabled(Boolean.TRUE.equals(entity.getEnabled()));
         view.setBuiltin(Boolean.TRUE.equals(entity.getBuiltin()));
         view.setSortOrder(entity.getSortOrder());
+        view.setUnitPrice(entity.getUnitPrice());
         view.setUpdatedAt(entity.getUpdatedAt());
         String plain = decrypt(entity);
         boolean hasKey = plain != null && !plain.isBlank();

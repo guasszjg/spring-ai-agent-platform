@@ -39,6 +39,21 @@ public class AgentToolRegistry {
 
     private final ThreadLocal<String> currentContextBochaApiKey = new ThreadLocal<>();
     private final ThreadLocal<String> currentContextDeepSeekKey = new ThreadLocal<>();
+    private final ThreadLocal<String> currentContextAgentId = new ThreadLocal<>();
+    /** 工具调用统计；setter 注入，单元测试里可以不提供 */
+    private com.shimeta.service.ToolUsageService usageService;
+
+    /** 工具别名 → 统计用的工具编码（与工具管理页的编码一致） */
+    private static final Map<String, String> TOOL_ALIASES = Map.of(
+            "get_current_time", "time_get_current_time",
+            "calculate_weekday", "time_calculate_weekday",
+            "convert_timezone", "time_convert_timezone",
+            "timestamp_converter", "time_timestamp_converter",
+            "date_calculator", "time_date_calculator",
+            "web_search", "bocha_web_search");
+    /** 工具返回这些前缀时记为调用失败 */
+    private static final List<String> FAILURE_PREFIXES = List.of(
+            "工具执行失败", "未知工具", "【联网检索异常】", "【联网检索提示】", "【联网检索插件】", "【自定义工具失败】");
     /** DeepSeek 搜索接口地址；包内可见便于测试替换 */
     String deepSeekSearchUrl = "https://api.deepseek.com/v1/tools/search";
     private final ThreadLocal<Map<String, Map<String, Object>>> currentPlatformConfigs = new ThreadLocal<>();
@@ -69,6 +84,20 @@ public class AgentToolRegistry {
         }
     }
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setUsageService(com.shimeta.service.ToolUsageService usageService) {
+        this.usageService = usageService;
+    }
+
+    /** 本次对话所属的智能体，用于工具调用统计按智能体拆分 */
+    public void setCurrentContextAgentId(String agentId) {
+        if (agentId != null && !agentId.isBlank()) {
+            currentContextAgentId.set(agentId);
+        } else {
+            currentContextAgentId.remove();
+        }
+    }
+
     public void setPlatformConfigs(Map<String, Map<String, Object>> configs) {
         if (configs == null || configs.isEmpty()) {
             currentPlatformConfigs.remove();
@@ -88,6 +117,7 @@ public class AgentToolRegistry {
     public void clearCurrentContext() {
         currentContextBochaApiKey.remove();
         currentContextDeepSeekKey.remove();
+        currentContextAgentId.remove();
         currentPlatformConfigs.remove();
         currentHttpTools.remove();
     }
@@ -244,6 +274,27 @@ public class AgentToolRegistry {
     }
 
     public String execute(String toolName, String argumentsJson) {
+        long start = System.currentTimeMillis();
+        String result = doExecute(toolName, argumentsJson);
+        recordUsage(toolName, result, System.currentTimeMillis() - start);
+        return result;
+    }
+
+    private void recordUsage(String toolName, String result, long latencyMs) {
+        if (usageService == null || toolName == null) {
+            return;
+        }
+        String code = TOOL_ALIASES.getOrDefault(toolName, toolName);
+        boolean known = code.startsWith("time_") || "bocha_web_search".equals(code) || "deepseek_web_search".equals(code)
+                || findHttpTool(code) != null;
+        if (!known) {
+            return;
+        }
+        boolean success = result != null && FAILURE_PREFIXES.stream().noneMatch(result::startsWith);
+        usageService.record(code, currentContextAgentId.get(), success, latencyMs);
+    }
+
+    private String doExecute(String toolName, String argumentsJson) {
         try {
             JsonNode root = (argumentsJson != null && !argumentsJson.isBlank())
                     ? objectMapper.readTree(argumentsJson)

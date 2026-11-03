@@ -20,6 +20,8 @@ public class PlatformToolView {
     private Boolean enabled;
     private Boolean builtin;
     private Integer sortOrder;
+    /** 单价（元/次） */
+    private java.math.BigDecimal unitPrice;
     private boolean hasApiKey;
     private String apiKeyMasked;
     private LocalDateTime updatedAt;
@@ -54,6 +56,8 @@ public class PlatformToolView {
     public void setBuiltin(Boolean builtin) { this.builtin = builtin; }
     public Integer getSortOrder() { return sortOrder; }
     public void setSortOrder(Integer sortOrder) { this.sortOrder = sortOrder; }
+    public java.math.BigDecimal getUnitPrice() { return unitPrice; }
+    public void setUnitPrice(java.math.BigDecimal unitPrice) { this.unitPrice = unitPrice; }
     public boolean isHasApiKey() { return hasApiKey; }
     public void setHasApiKey(boolean hasApiKey) { this.hasApiKey = hasApiKey; }
     public String getApiKeyMasked() { return apiKeyMasked; }

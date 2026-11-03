@@ -27,7 +27,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 工具调用轮次上限：模型一直要求调用工具时，用完 3 轮后不再提供工具、提示模型根据已查到的资料作答；
+ * 工具调用轮次上限（平台设置，默认 5 轮）：模型一直要求调用工具时，用完上限后不再提供工具、提示模型根据已查到的资料作答；
  * 不再把"工具调用轮次达到上限"这类内部状态，或模型写成文本的工具调用标记，当成回答返回给用户。
  */
 class OpenAiCompatibleClientToolLimitTest {
@@ -109,24 +109,35 @@ class OpenAiCompatibleClientToolLimitTest {
         return List.of(Map.of("type", "function", "function", Map.of("name", "bocha_web_search")));
     }
 
-    private void assertFinalRoundHasNoToolsAndNudge() {
-        assertThat(requests).hasSize(4);
-        assertThat(requests.subList(0, 3)).allMatch(r -> r.has("tools"));
-        JsonNode last = requests.get(3);
+    private void assertFinalRoundHasNoToolsAndNudge(int rounds) {
+        assertThat(requests).hasSize(rounds + 1);
+        assertThat(requests.subList(0, rounds)).allMatch(r -> r.has("tools"));
+        JsonNode last = requests.get(rounds);
         assertThat(last.has("tools")).isFalse();
         JsonNode msgs = last.path("messages");
         assertThat(msgs.get(msgs.size() - 1).path("content").asText()).isEqualTo(OpenAiCompatibleClient.FINAL_ROUND_NUDGE);
     }
 
     @Test
-    @DisplayName("阻塞：3 轮工具后不再提供工具并提示作答，返回模型的回答，工具摘要记录全部轮次")
+    @DisplayName("阻塞：默认 5 轮工具后不再提供工具并提示作答，返回模型的回答，工具摘要记录全部轮次")
     void blockingAnswersAfterToolRounds() {
         OpenAiCompatibleClient.ChatResult result = client.chatWithTools(baseUrl, "sk", "m", question(), tools(), registry, null, 10_000);
 
         assertThat(result.content()).isEqualTo("根据检索结果，答案如下。");
-        assertFinalRoundHasNoToolsAndNudge();
-        verify(registry, times(3)).execute(anyString(), anyString());
-        assertThat(result.toolCalled().split(" \\| ")).hasSize(3);
+        assertFinalRoundHasNoToolsAndNudge(OpenAiCompatibleClient.DEFAULT_MAX_TOOL_ROUNDS);
+        verify(registry, times(5)).execute(anyString(), anyString());
+        assertThat(result.toolCalled().split(" \\| ")).hasSize(5);
+    }
+
+    @Test
+    @DisplayName("轮数上限可配置：设为 2 时第 3 次请求就不再提供工具")
+    void roundLimitIsConfigurable() {
+        OpenAiCompatibleClient.ChatResult result = client.chatWithTools(baseUrl, "sk", "m", null, false, question(), tools(),
+                registry, null, 10_000, 2);
+
+        assertThat(result.content()).isEqualTo("根据检索结果，答案如下。");
+        assertFinalRoundHasNoToolsAndNudge(2);
+        verify(registry, times(2)).execute(anyString(), anyString());
     }
 
     @Test
@@ -135,11 +146,11 @@ class OpenAiCompatibleClientToolLimitTest {
         List<String> deltas = new ArrayList<>();
 
         OpenAiCompatibleClient.ChatResult result = client.chatWithToolsStreaming(baseUrl, "sk", "m", null, false,
-                question(), tools(), registry, null, 10_000, deltas::add, () -> false);
+                question(), tools(), registry, null, 10_000, deltas::add, () -> false, 3);
 
         assertThat(result.content()).isEqualTo("根据检索结果，答案如下。");
         assertThat(String.join("", deltas)).isEqualTo("根据检索结果，答案如下。");
-        assertFinalRoundHasNoToolsAndNudge();
+        assertFinalRoundHasNoToolsAndNudge(3);
         assertThat(result.toolCalled().split(" \\| ")).hasSize(3);
     }
 
@@ -156,6 +167,6 @@ class OpenAiCompatibleClientToolLimitTest {
         assertThat(blocking.content()).isEqualTo(OpenAiCompatibleClient.TOOL_LIMIT_FALLBACK).doesNotContain("上限");
         assertThat(streaming.content()).isEqualTo(OpenAiCompatibleClient.TOOL_LIMIT_FALLBACK);
         assertThat(deltas).containsExactly(OpenAiCompatibleClient.TOOL_LIMIT_FALLBACK);
-        verify(registry, times(6)).execute(anyString(), anyString());
+        verify(registry, times(10)).execute(anyString(), anyString());
     }
 }

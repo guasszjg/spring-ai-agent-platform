@@ -75,6 +75,7 @@ public final class PlatformToolCatalog {
         tool.setHelp("DeepSeek 官方搜索接口，默认使用模型网关里 DeepSeek 通道的 Key，按次计费（约 0.005 元/次）");
         tool.setDescription("DeepSeek 联网搜索。当用户询问最新时事、实时天气、新闻事件、实时数据或任何需要获取最新互联网真实信息的场景时调用（注：系统时钟及今天几号等问题已有系统时间基准保障，无需调用本工具）。");
         tool.setConfigJson("{\"count\":5}");
+        tool.setUnitPrice(new java.math.BigDecimal("0.005"));
         tool.setEnabled(true);
         tool.setBuiltin(true);
         tool.setSortOrder(61);
@@ -95,6 +96,7 @@ public final class PlatformToolCatalog {
         tool.setHelp("博查 AI 搜索引擎，提供全网实时网页、新闻与知识检索");
         tool.setDescription("博查 AI 联网搜索引擎。当用户询问最新时事、实时天气、新闻事件、实时数据或任何需要获取最新互联网真实信息的场景时调用（注：系统时钟及今天几号等问题已有系统时间基准保障，无需调用本工具）。");
         tool.setConfigJson("{\"count\":5,\"freshness\":\"noLimit\",\"summary\":true}");
+        tool.setUnitPrice(new java.math.BigDecimal("0.036"));
         tool.setEnabled(true);
         tool.setBuiltin(true);
         tool.setSortOrder(60);

@@ -35,6 +35,17 @@ public class AiChatService {
     private final com.shimeta.tool.AgentToolRegistry toolRegistry;
     private final AgentToolSecretService toolSecretService;
     private final PlatformToolService platformToolService;
+    /** 平台设置（单次回答最多调用工具轮数）；setter 注入，单元测试里可以不提供 */
+    private PlatformSettingService platformSettingService;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setPlatformSettingService(PlatformSettingService platformSettingService) {
+        this.platformSettingService = platformSettingService;
+    }
+
+    private int maxToolRounds() {
+        return platformSettingService != null ? platformSettingService.maxToolRounds() : OpenAiCompatibleClient.DEFAULT_MAX_TOOL_ROUNDS;
+    }
     private final KnowledgeBaseService knowledgeBaseService;
     private final ResourceAuthorizationService resourceAuthorizationService;
     private final boolean simulationFallbackEnabled;
@@ -120,6 +131,7 @@ public class AiChatService {
             toolRegistry.setHttpTools(platformToolService.httpRuntimeSpecs());
         }
         List<java.util.Map<String, Object>> tools = toolRegistry.getToolDefinitions(request.getEnabledTools());
+        toolRegistry.setCurrentContextAgentId(agent.getId());
         // 启用了 DeepSeek 联网搜索时才取 Key（工具管理页单独填写的优先，否则用模型网关 DeepSeek 通道的）
         if (platformToolService != null && hasTool(tools, "deepseek_web_search")) {
             toolRegistry.setCurrentContextDeepSeekKey(platformToolService.resolveDeepSeekSearchKey());
@@ -449,9 +461,10 @@ public class AiChatService {
                                 emitted.set(true);
                                 sink.onDelta(text);
                             },
-                            sink::cancelled);
+                            sink::cancelled, maxToolRounds());
                 }
-                return openAiClient.chatWithTools(provider.getBaseUrl(), apiKey, model, customHeaders, defaultWebSearch, messages, tools, toolRegistry, generation, timeoutMs);
+                return openAiClient.chatWithTools(provider.getBaseUrl(), apiKey, model, customHeaders, defaultWebSearch,
+                        messages, tools, toolRegistry, generation, timeoutMs, maxToolRounds());
             } catch (Exception ex) {
                 if (emitted.get()) {
                     throw new StreamInterruptedException("模型通道在输出过程中中断: " + ex.getMessage(), ex);
