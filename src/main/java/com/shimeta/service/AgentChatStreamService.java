@@ -81,6 +81,7 @@ public class AgentChatStreamService {
                 end.put("latencyMs", response.getLatencyMs());
                 end.put("tokensUsed", response.getTokensUsed());
                 end.put("toolCalled", response.getToolCalled());
+                end.put("images", response.getImages());
                 end.put("conversationId", response.getConversationId());
                 end.put("degraded", Boolean.TRUE.equals(response.getDegraded()));
                 send(emitter, closed, "message_end", end);

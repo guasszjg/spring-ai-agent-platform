@@ -612,6 +612,9 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
             metadata.put("parentExpanded", parentExpanded);
             metadata.put("chunkType", ch.getChunkType() != null ? ch.getChunkType() : "CHILD");
             metadata.put("matchedBy", sc.matchedBy());
+            if (ch.getFaqId() != null) {
+                metadata.put("faqId", ch.getFaqId());
+            }
             if (isImage) {
                 metadata.put("isImage", true);
                 metadata.put("imageUrl", ch.getImageUrl());

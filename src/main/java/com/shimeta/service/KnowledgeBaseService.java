@@ -42,6 +42,7 @@ import com.shimeta.security.CurrentActor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -65,6 +66,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -88,6 +90,9 @@ public class KnowledgeBaseService {
     private final KnowledgeBaseRepository knowledgeBaseRepository;
     private final KnowledgeDocumentRepository documentRepository;
     private final KnowledgeFaqRepository faqRepository;
+    /** FAQ 附图随回答返回所需的最低向量相似度：混合检索几乎不过滤，无关问题也会召回 FAQ，低于它不返回图片 */
+    @Value("${app.faq-images.min-similarity:0.4}")
+    double faqImageMinSimilarity = 0.4;
     private final ResourceAuthorizationService resourceAuthorizationService;
     private final ResourceGrantRepository resourceGrantRepository;
     private final Map<String, KnowledgeBaseProvider> providerMap = new HashMap<>();
@@ -329,9 +334,21 @@ public class KnowledgeBaseService {
      * 按智能体绑定的知识库检索切片，拼成可注入系统提示词的上下文。检索失败不抛错。
      */
     public String buildRetrievalContext(List<String> knowledgeBaseIds, String query) {
+        return buildRetrieval(knowledgeBaseIds, query).text();
+    }
+
+    /**
+     * 知识库检索结果：注入模型的上下文文本，以及排名最高的命中 FAQ 所带的回答附图（相对地址，按上传顺序）。
+     * 附图不交给模型，由调用方随回答单独返回。
+     */
+    public record RetrievalContext(String text, List<String> faqImages) {
+        static final RetrievalContext EMPTY = new RetrievalContext("", List.of());
+    }
+
+    public RetrievalContext buildRetrieval(List<String> knowledgeBaseIds, String query) {
         if (knowledgeBaseIds == null || knowledgeBaseIds.isEmpty()
                 || query == null || query.isBlank()) {
-            return "";
+            return RetrievalContext.EMPTY;
         }
         List<RetrievedChunk> allChunks = new ArrayList<>();
         for (String kbId : knowledgeBaseIds) {
@@ -375,6 +392,8 @@ public class KnowledgeBaseService {
             allChunks = budgetPruner.prune(allChunks, 3000).prunedChunks();
         }
 
+        List<String> faqImages = topFaqImages(allChunks, knowledgeBaseIds);
+
         StringBuilder body = new StringBuilder();
         int index = 1;
         for (RetrievedChunk chunk : allChunks) {
@@ -390,9 +409,51 @@ public class KnowledgeBaseService {
             body.append('\n').append(chunk.content().trim()).append("\n\n");
         }
         if (body.isEmpty()) {
-            return "";
+            return RetrievalContext.EMPTY;
         }
-        return "【知识库检索结果】以下是可能相关的参考资料。请优先参考其中的有效信息作答；若资料不相关或不足以回答，请严格遵循智能体本身的流程规则继续处理，切勿声明无法从知识库确认。\n\n" + body;
+        return new RetrievalContext("【知识库检索结果】以下是可能相关的参考资料。请优先参考其中的有效信息作答；若资料不相关或不足以回答，请严格遵循智能体本身的流程规则继续处理，切勿声明无法从知识库确认。\n\n" + body, faqImages);
+    }
+
+    /**
+     * 取得分最高的那条命中 FAQ 的附图：只看第一条命中的 FAQ（它没有附图、或与问题的相似度不够就不返回），
+     * 避免把排名靠后或不相关的 FAQ 图片也带出去。
+     */
+    private List<String> topFaqImages(List<RetrievedChunk> chunks, List<String> knowledgeBaseIds) {
+        List<String> kbIds = knowledgeBaseIds.stream().filter(Objects::nonNull).map(String::trim).toList();
+        List<RetrievedChunk> sorted = chunks.stream()
+                .filter(c -> c != null && c.score() != null)
+                .sorted(Comparator.comparingDouble(RetrievedChunk::score).reversed())
+                .toList();
+        for (RetrievedChunk chunk : sorted) {
+            Object faqId = chunk.metadata() != null ? chunk.metadata().get("faqId") : null;
+            String key = faqId != null ? faqId.toString() : chunk.documentId();
+            if (key == null || key.isBlank()) {
+                continue;
+            }
+            Optional<KnowledgeFaq> faq = faqRepository.findByExternalDocId(key)
+                    .filter(f -> kbIds.contains(f.getKnowledgeBaseId()));
+            if (faq.isPresent()) {
+                Double similarity = chunk.vectorScore() != null ? chunk.vectorScore() : chunk.score();
+                if (similarity == null || similarity < faqImageMinSimilarity) {
+                    return List.of();
+                }
+                return parseImageUrls(faq.get().getImageUrls());
+            }
+        }
+        return List.of();
+    }
+
+    private List<String> parseImageUrls(String json) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            List<String> urls = objectMapper.readValue(json, new TypeReference<List<String>>() {});
+            return urls.stream().filter(u -> u != null && !u.isBlank()).toList();
+        } catch (Exception e) {
+            log.warn("解析 FAQ 图片地址失败: {}", e.getMessage());
+            return List.of();
+        }
     }
 
     @Transactional(readOnly = true)

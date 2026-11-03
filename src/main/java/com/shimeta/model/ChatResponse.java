@@ -14,6 +14,8 @@ public class ChatResponse {
     private Boolean degraded;
     private String source;
     private LocalDateTime timestamp;
+    /** 命中的 FAQ 回答附图（相对地址，如 /uploads/knowledge/xxx.png），没有时为空列表 */
+    private java.util.List<String> images = java.util.List.of();
 
     public ChatResponse() {
         this.timestamp = LocalDateTime.now();
@@ -115,5 +117,13 @@ public class ChatResponse {
 
     public void setTimestamp(LocalDateTime timestamp) {
         this.timestamp = timestamp;
+    }
+
+    public java.util.List<String> getImages() {
+        return images;
+    }
+
+    public void setImages(java.util.List<String> images) {
+        this.images = images == null ? java.util.List.of() : images;
     }
 }

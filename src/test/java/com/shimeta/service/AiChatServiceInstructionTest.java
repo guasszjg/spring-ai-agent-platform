@@ -38,7 +38,7 @@ class AiChatServiceInstructionTest {
 
     @Test
     void testBuildEffectiveInstructionInjectsCurrentDateAndReplacesVariables() {
-        when(knowledgeBaseService.buildRetrievalContext(any(), any())).thenReturn(null);
+        when(knowledgeBaseService.buildRetrieval(any(), any())).thenReturn(new KnowledgeBaseService.RetrievalContext("", java.util.List.of()));
 
         AiChatService aiChatService = new AiChatService(
                 agentService,
@@ -77,7 +77,7 @@ class AiChatServiceInstructionTest {
 
     @Test
     void testBuildEffectiveInstructionWithEnabledToolsInjectsToolBehaviorGuide() {
-        when(knowledgeBaseService.buildRetrievalContext(any(), any())).thenReturn(null);
+        when(knowledgeBaseService.buildRetrieval(any(), any())).thenReturn(new KnowledgeBaseService.RetrievalContext("", java.util.List.of()));
 
         AiChatService aiChatService = new AiChatService(
                 agentService,
