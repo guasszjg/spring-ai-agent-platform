@@ -114,7 +114,7 @@ public class AssistantWriteTools {
                                 "memoryTurns", prop("integer", "上下文记忆轮数 0~10，可选。默认 0 = 关闭（每次只发当前问题，最省 token）；"
                                         + "用户需要连续追问时设 2~3"),
                                 "thinkingMode", Map.of("type", "string", "enum", List.of("AUTO", "ON", "OFF"),
-                                        "description", "思考模式，可选。AUTO 跟随模型默认（默认）；OFF 关闭思考，回答更快更省 token；ON 开启思考")), "name"),
+                                        "description", "思考模式，可选。默认 OFF 关闭思考（回答更快、更省 token）；ON 开启思考（复杂问题更严谨但更慢）；AUTO 跟随模型默认")), "name"),
                         this::draftCreateAgent),
                 AssistantTool.write(CREATE_KNOWLEDGE_BASE, "生成创建知识库操作",
                         "创建一个平台内置引擎的知识库（生成待确认操作卡片，用户确认后才创建）。",

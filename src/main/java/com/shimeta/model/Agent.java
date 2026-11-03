@@ -53,7 +53,7 @@ public class Agent {
     private Integer memoryTurns = DEFAULT_MEMORY_TURNS;
     /** 思考模式：AUTO 跟随模型默认 / ON 开启 / OFF 关闭 */
     @Column(name = "thinking_mode", length = 8)
-    private String thinkingMode = THINKING_AUTO;
+    private String thinkingMode = DEFAULT_THINKING_MODE;
     @ElementCollection(fetch = FetchType.EAGER)
     @CollectionTable(name = "agent_tags", joinColumns = @JoinColumn(name = "agent_id"))
     @Column(name = "tag", length = 64)
@@ -205,6 +205,8 @@ public class Agent {
     public static final String THINKING_AUTO = "AUTO";
     public static final String THINKING_ON = "ON";
     public static final String THINKING_OFF = "OFF";
+    /** 新建智能体默认关闭思考：首字更快、更省 token；需要时再在智能体设置里开启 */
+    public static final String DEFAULT_THINKING_MODE = THINKING_OFF;
 
     public String getThinkingMode() {
         return thinkingMode;
@@ -214,10 +216,10 @@ public class Agent {
         this.thinkingMode = thinkingMode;
     }
 
-    /** 规范化思考模式：大小写不敏感，空值视为 AUTO，其他取值拒绝 */
+    /** 规范化思考模式：大小写不敏感，空值取默认（关闭），其他取值拒绝 */
     public static String normalizeThinkingMode(String mode) {
         if (mode == null || mode.isBlank()) {
-            return THINKING_AUTO;
+            return DEFAULT_THINKING_MODE;
         }
         String upper = mode.trim().toUpperCase(java.util.Locale.ROOT);
         if (!THINKING_AUTO.equals(upper) && !THINKING_ON.equals(upper) && !THINKING_OFF.equals(upper)) {
@@ -228,7 +230,7 @@ public class Agent {
 
     /** 发给模型的思考参数：null 表示不传，由模型按默认行为决定 */
     public Boolean resolveThinking() {
-        String mode = thinkingMode == null ? THINKING_AUTO : thinkingMode.trim().toUpperCase(java.util.Locale.ROOT);
+        String mode = thinkingMode == null ? DEFAULT_THINKING_MODE : thinkingMode.trim().toUpperCase(java.util.Locale.ROOT);
         return switch (mode) {
             case THINKING_ON -> Boolean.TRUE;
             case THINKING_OFF -> Boolean.FALSE;
