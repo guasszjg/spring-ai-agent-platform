@@ -9,7 +9,6 @@ import com.shimeta.model.KnowledgeBase;
 import com.shimeta.model.KnowledgeFaq;
 import com.shimeta.rag.dto.CreateFaqRequest;
 import com.shimeta.rag.dto.CreateKnowledgeBaseRequest;
-import com.shimeta.repository.AgentRepository;
 import com.shimeta.repository.AssistantActionRepository;
 import com.shimeta.repository.KnowledgeBaseRepository;
 import com.shimeta.security.CurrentActor;
@@ -31,7 +30,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import java.util.regex.Pattern;
 
 /**
@@ -59,12 +57,10 @@ public class AssistantWriteTools {
     static final int QUESTION_MAX = 300;
     static final int ANSWER_MAX = 4000;
     static final List<String> AGENT_CATEGORIES = List.of("代码研发", "运维架构", "产品策划", "知识库客服", "数据分析", "内容创作", "通用智能");
-    private static final Pattern CODE_PATTERN = Pattern.compile("^[A-Za-z][A-Za-z0-9_-]{2,63}$");
     private static final Set<String> SETTABLE_STATUSES = Set.of("RUNNING", "DISABLED");
 
     private final AssistantQueryTools queryTools;
     private final AgentService agentService;
-    private final AgentRepository agentRepository;
     private final AgentTemplateService templateService;
     private final KnowledgeBaseService knowledgeBaseService;
     private final KnowledgeBaseRepository knowledgeBaseRepository;
@@ -76,7 +72,6 @@ public class AssistantWriteTools {
 
     public AssistantWriteTools(AssistantQueryTools queryTools,
                                AgentService agentService,
-                               AgentRepository agentRepository,
                                AgentTemplateService templateService,
                                KnowledgeBaseService knowledgeBaseService,
                                KnowledgeBaseRepository knowledgeBaseRepository,
@@ -86,7 +81,6 @@ public class AssistantWriteTools {
                                OpenApiKeyService openApiKeyService) {
         this.queryTools = queryTools;
         this.agentService = agentService;
-        this.agentRepository = agentRepository;
         this.templateService = templateService;
         this.knowledgeBaseService = knowledgeBaseService;
         this.knowledgeBaseRepository = knowledgeBaseRepository;
@@ -106,7 +100,6 @@ public class AssistantWriteTools {
                                 "systemPrompt", prop("string", "完整的系统提示词；基于模板创建时可省略，默认使用模板的提示词"),
                                 "category", Map.of("type", "string", "enum", AGENT_CATEGORIES, "description", "分类，默认 通用智能"),
                                 "description", prop("string", "一句话描述，可选"),
-                                "code", prop("string", "唯一业务编码（字母开头，字母数字下划线），可选，不填自动生成"),
                                 "templateId", prop("string", "场景模板 ID（来自 list_templates），可选"),
                                 "knowledgeBases", Map.of("type", "array", "items", Map.of("type", "string"),
                                         "description", "要绑定的知识库名称或 ID 列表，可选"),
@@ -194,19 +187,6 @@ public class AssistantWriteTools {
         }
         checkMax(description, DESCRIPTION_MAX, "描述");
 
-        String code = text(args, "code");
-        boolean autoCode = code == null;
-        if (autoCode) {
-            code = generateCode();
-        } else {
-            if (!CODE_PATTERN.matcher(code).matches()) {
-                throw new IllegalArgumentException("编码需以字母开头，只含字母、数字、下划线或短横线，长度 3~64");
-            }
-            if (agentRepository.existsByCode(code)) {
-                throw new IllegalArgumentException("编码「" + code + "」已被占用，请换一个或不填自动生成");
-            }
-        }
-
         Double temperature = number(args, "temperature");
         if (temperature == null && template != null) {
             temperature = template.getTemperature();
@@ -238,8 +218,6 @@ public class AssistantWriteTools {
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("name", name);
-        payload.put("code", code);
-        payload.put("autoCode", autoCode);
         payload.put("category", category);
         payload.put("description", description);
         payload.put("systemPrompt", prompt);
@@ -254,7 +232,6 @@ public class AssistantWriteTools {
 
         List<Map<String, Object>> fields = new ArrayList<>();
         fields.add(field("名称", name));
-        fields.add(field("编码", code + (autoCode ? "（自动生成）" : "")));
         fields.add(field("分类", category));
         fields.add(field("模型", template != null && template.getModelName() != null && !template.getModelName().isBlank()
                 ? template.getModelName() : "跟随网关默认通道"));
@@ -502,16 +479,8 @@ public class AssistantWriteTools {
     }
 
     private ExecutionResult executeCreateAgent(JsonNode p, CurrentActor actor) {
-        String code = p.path("code").asText();
-        if (agentRepository.existsByCode(code)) {
-            if (!p.path("autoCode").asBoolean(false)) {
-                throw new IllegalStateException("编码「" + code + "」在生成卡片后已被占用，请重新生成");
-            }
-            code = generateCode();
-        }
         Agent agent = new Agent();
         agent.setName(p.path("name").asText());
-        agent.setCode(code);
         agent.setCategory(p.path("category").asText("通用智能"));
         agent.setDescription(textOrNull(p, "description"));
         agent.setSystemPrompt(p.path("systemPrompt").asText());
@@ -819,14 +788,6 @@ public class AssistantWriteTools {
 
     private static String joinNames(List<String> names) {
         return names.isEmpty() ? "（无）" : String.join("、", names);
-    }
-
-    private String generateCode() {
-        String code;
-        do {
-            code = "agent_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
-        } while (agentRepository.existsByCode(code));
-        return code;
     }
 
     private static Map<String, Object> preview(List<Map<String, Object>> fields, Map<String, Object> diff, String note) {

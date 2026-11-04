@@ -6,7 +6,6 @@ import com.shimeta.model.AssistantAction;
 import com.shimeta.model.CreateOpenApiKeyRequest;
 import com.shimeta.model.KnowledgeBase;
 import com.shimeta.model.UserRole;
-import com.shimeta.repository.AgentRepository;
 import com.shimeta.repository.AssistantActionRepository;
 import com.shimeta.repository.KnowledgeBaseRepository;
 import com.shimeta.security.CurrentActor;
@@ -49,7 +48,6 @@ class AssistantWriteToolsTest {
 
     @Mock AssistantQueryTools queryTools;
     @Mock AgentService agentService;
-    @Mock AgentRepository agentRepository;
     @Mock AgentTemplateService templateService;
     @Mock KnowledgeBaseService knowledgeBaseService;
     @Mock KnowledgeBaseRepository knowledgeBaseRepository;
@@ -65,7 +63,7 @@ class AssistantWriteToolsTest {
 
     @BeforeEach
     void setUp() {
-        tools = new AssistantWriteTools(queryTools, agentService, agentRepository, templateService, knowledgeBaseService,
+        tools = new AssistantWriteTools(queryTools, agentService, templateService, knowledgeBaseService,
                 knowledgeBaseRepository, embeddingConfigService, authorizationService, actionRepository, openApiKeyService);
         ctx = ToolContext.of(developer, "asc-1");
         when(actionRepository.save(any())).thenAnswer(inv -> {
@@ -115,8 +113,7 @@ class AssistantWriteToolsTest {
         assertTrue(action.getExpiresAt().isAfter(java.time.LocalDateTime.now().plusMinutes(9)));
         assertTrue(action.getExpiresAt().isBefore(java.time.LocalDateTime.now().plusMinutes(11)));
         JsonNode payload = mapper.readTree(action.getPayload());
-        assertTrue(payload.path("code").asText().startsWith("agent_"));
-        assertTrue(payload.path("autoCode").asBoolean());
+        assertTrue(payload.path("code").isMissingNode());
         assertTrue(action.getPreview().contains("跟随网关默认通道"));
     }
 
@@ -164,13 +161,9 @@ class AssistantWriteToolsTest {
     }
 
     @Test
-    void createAgentRejectsInvalidCategoryTakenCodeAndMissingPrompt() {
-        when(agentRepository.existsByCode("taken")).thenReturn(true);
-
+    void createAgentRejectsInvalidCategoryAndMissingPrompt() {
         assertThrows(IllegalArgumentException.class, () -> tools.draftCreateAgent(args(
                 "{\"name\":\"a\",\"category\":\"随便\",\"systemPrompt\":\"p\"}"), ctx));
-        assertThrows(IllegalArgumentException.class, () -> tools.draftCreateAgent(args(
-                "{\"name\":\"a\",\"code\":\"taken\",\"systemPrompt\":\"p\"}"), ctx));
         assertThrows(IllegalArgumentException.class, () -> tools.draftCreateAgent(args("{\"name\":\"a\"}"), ctx));
         assertTrue(ctx.createdActions().isEmpty());
     }

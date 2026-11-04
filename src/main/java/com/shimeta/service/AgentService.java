@@ -188,6 +188,8 @@ public class AgentService {
             validateKnowledgeBaseBindings(actor, agent.getKnowledgeBaseIds());
         }
         agent.setId(null);
+        // Code 由系统生成，调用方传了也不用；创建后不再变化（开放接口可以用它指定智能体）
+        agent.setCode(generateCode());
         if (actor != null) {
             agent.setOwnerId(actor.getUserId());
             agent.setOwnerUsername(actor.getUsername());
@@ -205,6 +207,14 @@ public class AgentService {
             promptVersionService.recordCreated(saved, AgentPromptVersionService.SOURCE_CREATE, agent.getPromptChangeNote(), actor);
         }
         return saved;
+    }
+
+    private String generateCode() {
+        String code;
+        do {
+            code = "agent_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        } while (agentRepository.existsByCode(code));
+        return code;
     }
 
     public Agent update(String id, Agent agentUpdate) {
@@ -235,7 +245,6 @@ public class AgentService {
         }
 
         if (agentUpdate.getName() != null) existing.setName(agentUpdate.getName());
-        if (agentUpdate.getCode() != null) existing.setCode(agentUpdate.getCode());
         if (agentUpdate.getAvatar() != null) existing.setAvatar(agentUpdate.getAvatar());
         if (agentUpdate.getCategory() != null) existing.setCategory(agentUpdate.getCategory());
         if (agentUpdate.getDescription() != null) existing.setDescription(agentUpdate.getDescription());
