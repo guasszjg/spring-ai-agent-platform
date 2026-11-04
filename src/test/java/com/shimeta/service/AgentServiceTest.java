@@ -71,20 +71,30 @@ class AgentServiceTest {
     }
 
     @Test
-    void create_generatesCodeWhenBlank_andKeepsGivenCode() {
+    void create_alwaysGeneratesCode_evenWhenCallerSendsOne() {
         when(agentRepository.save(any(Agent.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        for (String blank : new String[]{null, "", "   "}) {
+        for (String given : new String[]{null, "", "tech_support_v1"}) {
             Agent agent = new Agent();
             agent.setName("客服");
-            agent.setCode(blank);
+            agent.setCode(given);
             assertThat(agentService.create(agent, null).getCode()).matches("agent_[0-9a-f]{8}");
         }
+    }
 
-        Agent named = new Agent();
-        named.setName("客服");
-        named.setCode("tech_support_v1");
-        assertThat(agentService.create(named, null).getCode()).isEqualTo("tech_support_v1");
+    @Test
+    void update_keepsExistingCode() {
+        Agent existing = new Agent();
+        existing.setId("a1");
+        existing.setName("客服");
+        existing.setCode("tech_support_v1");
+        when(agentRepository.findById("a1")).thenReturn(java.util.Optional.of(existing));
+        when(agentRepository.save(any(Agent.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(resourceAuthService.canManageAgent(any(), eq(existing))).thenReturn(true);
+
+        Agent change = new Agent();
+        change.setCode("changed");
+        assertThat(agentService.update("a1", change, new com.shimeta.security.CurrentActor("admin-1", "admin", com.shimeta.model.UserRole.SUPER_ADMIN)).getCode()).isEqualTo("tech_support_v1");
     }
 
     @Test
