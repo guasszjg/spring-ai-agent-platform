@@ -5,6 +5,7 @@ import com.shimeta.rag.RetrievedChunk;
 import com.shimeta.rag.pipeline.LocalEmbeddingService;
 import com.shimeta.repository.KnowledgeRetrievalCacheRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,7 +39,9 @@ public class SemanticCacheService {
 
     private final KnowledgeRetrievalCacheRepository cacheRepository;
     private final LocalEmbeddingService embeddingService;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    // RetrievedChunk 的 isImage()/isGraph() 会被写成 image/graph 字段，读回时要忽略，否则整条缓存解析失败
+    private final ObjectMapper objectMapper = new ObjectMapper()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     // 内存一级快速缓存 (kbId -> Map<normalizedQuery, CachedItem>)
     private final Map<String, Map<String, CachedMemoryItem>> memoryCache = new ConcurrentHashMap<>();
@@ -120,6 +123,11 @@ public class SemanticCacheService {
                 cacheRepository.save(entity);
 
                 List<RetrievedChunk> chunks = deserializeChunks(entity.getResultJson());
+                if (chunks == null) {
+                    // 解析不了的旧缓存当作未命中，删掉后走正常检索
+                    cacheRepository.delete(entity);
+                    return Optional.empty();
+                }
                 List<RetrievedChunk> annotated = annotateChunks(chunks, 1.0, newHit);
 
                 // 回填内存一级缓存
@@ -168,6 +176,10 @@ public class SemanticCacheService {
             cacheRepository.save(bestMatch);
 
             List<RetrievedChunk> chunks = deserializeChunks(bestMatch.getResultJson());
+            if (chunks == null) {
+                cacheRepository.delete(bestMatch);
+                return Optional.empty();
+            }
             List<RetrievedChunk> annotated = annotateChunks(chunks, highestSimilarity, newHit);
 
             // 回填内存一级缓存
@@ -310,12 +322,13 @@ public class SemanticCacheService {
         return res;
     }
 
+    /** 解析失败返回 null（调用方按未命中处理），不能返回空列表：空列表会被当成「检索无结果」 */
     private List<RetrievedChunk> deserializeChunks(String json) {
         try {
             return objectMapper.readValue(json, new TypeReference<List<RetrievedChunk>>() {});
         } catch (Exception e) {
-            log.warn("反序列化缓存切片失败: {}", e.getMessage());
-            return Collections.emptyList();
+            log.warn("反序列化缓存切片失败，按未命中处理: {}", e.getMessage());
+            return null;
         }
     }
 

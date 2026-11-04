@@ -97,8 +97,12 @@ public class AiChatService {
         return chat(request, null);
     }
 
+    /** 本次对话检索命中的 FAQ 附图：在拼装知识库上下文时记下，chat() 结束前取出并清空 */
+    private static final ThreadLocal<List<String>> RETRIEVED_FAQ_IMAGES = new ThreadLocal<>();
+
     public ChatResponse chat(ChatRequest request, StreamSink sink) {
         long startTime = System.currentTimeMillis();
+        RETRIEVED_FAQ_IMAGES.remove();
 
         Agent agent = agentService.getById(request.getAgentId())
                 .orElseThrow(() -> new IllegalArgumentException("智能体不存在: " + request.getAgentId()));
@@ -202,6 +206,8 @@ public class AiChatService {
         } finally {
             toolRegistry.clearCurrentContext();
         }
+        List<String> faqImages = RETRIEVED_FAQ_IMAGES.get();
+        RETRIEVED_FAQ_IMAGES.remove();
 
         reply = cleanAnswer(reply);
 
@@ -221,6 +227,7 @@ public class AiChatService {
                 tokens
         );
         response.setToolCalled(toolCalledHolder[0]);
+        response.setImages(faqImages);
         response.setDegraded(!realModelReply);
         response.setSource(realModelReply ? "MODEL" : "SIMULATION");
         AgentConversation conversation = conversationService.appendTurn(
@@ -415,7 +422,11 @@ public class AiChatService {
     }
 
     private String appendKnowledgeContext(String instruction, Agent agent, String userMessage) {
-        String rag = knowledgeBaseService.buildRetrievalContext(agent.getKnowledgeBaseIds(), userMessage);
+        KnowledgeBaseService.RetrievalContext retrieval = knowledgeBaseService.buildRetrieval(agent.getKnowledgeBaseIds(), userMessage);
+        if (retrieval.faqImages() != null && !retrieval.faqImages().isEmpty()) {
+            RETRIEVED_FAQ_IMAGES.set(retrieval.faqImages());
+        }
+        String rag = retrieval.text();
         if (rag == null || rag.isBlank()) {
             return instruction;
         }

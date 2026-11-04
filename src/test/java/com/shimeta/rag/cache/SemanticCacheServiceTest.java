@@ -114,4 +114,43 @@ public class SemanticCacheServiceTest {
         cacheService.clearCache(kbId);
         verify(cacheRepository, times(1)).deleteByKnowledgeBaseId(eq(kbId));
     }
+
+    @Test
+    void cachedChunksWithImageAndGraphFieldsAreReadBack() {
+        // 写缓存时 isImage()/isGraph() 会被序列化成 image/graph 字段，读回时不能因此整条失败
+        String kbId = "kb_test";
+        String query = "公司地址";
+        KnowledgeRetrievalCache cacheEntity = new KnowledgeRetrievalCache();
+        cacheEntity.setId("cache_g");
+        cacheEntity.setKnowledgeBaseId(kbId);
+        cacheEntity.setQueryText(query);
+        cacheEntity.setResultJson("[{\"chunkId\":\"c1\",\"content\":\"深圳\",\"score\":0.9,\"image\":false,\"graph\":false,"
+                + "\"metadata\":{\"faqId\":\"faq_1\"}}]");
+        cacheEntity.setHitCount(1L);
+        cacheEntity.setExpiresAt(LocalDateTime.now().plusDays(1));
+        when(cacheRepository.findByKnowledgeBaseIdAndQueryText(eq(kbId), eq(query))).thenReturn(Optional.of(cacheEntity));
+
+        Optional<SemanticCacheService.CacheLookupResult> result = cacheService.lookup(kbId, query, null, 0.95);
+
+        assertTrue(result.isPresent());
+        assertEquals(1, result.get().chunks().size());
+        assertEquals("faq_1", result.get().chunks().get(0).metadata().get("faqId"));
+    }
+
+    @Test
+    void unreadableCacheIsTreatedAsMissAndDeleted() {
+        String kbId = "kb_test";
+        String query = "公司地址";
+        KnowledgeRetrievalCache cacheEntity = new KnowledgeRetrievalCache();
+        cacheEntity.setId("cache_bad");
+        cacheEntity.setKnowledgeBaseId(kbId);
+        cacheEntity.setQueryText(query);
+        cacheEntity.setResultJson("not-json");
+        cacheEntity.setHitCount(1L);
+        cacheEntity.setExpiresAt(LocalDateTime.now().plusDays(1));
+        when(cacheRepository.findByKnowledgeBaseIdAndQueryText(eq(kbId), eq(query))).thenReturn(Optional.of(cacheEntity));
+
+        assertTrue(cacheService.lookup(kbId, query, null, 0.95).isEmpty());
+        verify(cacheRepository).delete(cacheEntity);
+    }
 }

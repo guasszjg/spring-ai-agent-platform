@@ -1,5 +1,6 @@
 package com.shimeta.service;
 
+import com.shimeta.config.PublicUrlResolver;
 import com.shimeta.model.Agent;
 import com.shimeta.model.AgentStatus;
 import com.shimeta.model.ApiResponse;
@@ -48,6 +49,7 @@ public class OpenChatService {
     private final ObjectMapper objectMapper;
     private final ContentGuardService contentGuardService;
     private final AgentConversationService conversationService;
+    private final PublicUrlResolver publicUrlResolver;
 
     public OpenChatService(AgentRepository agentRepository,
                            AiChatService aiChatService,
@@ -57,7 +59,8 @@ public class OpenChatService {
                            UsageRecorder usageRecorder,
                            ObjectMapper objectMapper,
                            ContentGuardService contentGuardService,
-                           AgentConversationService conversationService) {
+                           AgentConversationService conversationService,
+                           PublicUrlResolver publicUrlResolver) {
         this.agentRepository = agentRepository;
         this.aiChatService = aiChatService;
         this.authorizationService = authorizationService;
@@ -67,6 +70,7 @@ public class OpenChatService {
         this.objectMapper = objectMapper;
         this.contentGuardService = contentGuardService;
         this.conversationService = conversationService;
+        this.publicUrlResolver = publicUrlResolver;
     }
 
     public Object chat(OpenApiChatRequest request, HttpServletRequest httpRequest) {
@@ -133,9 +137,11 @@ public class OpenChatService {
         chatReq.setPrompt(agent.getSystemPrompt());
         chatReq.setEnabledTools(extractEnabledTools(agent.getToolsConfig()));
 
+        // FAQ 附图返回完整网址，广告机等终端拿到后可以直接显示
+        String publicBaseUrl = publicUrlResolver.baseUrl(httpRequest);
         boolean streaming = "streaming".equalsIgnoreCase(request.getResponseMode());
         if (streaming) {
-            return stream(chatReq, agent, policy);
+            return stream(chatReq, agent, policy, publicBaseUrl);
         }
         try {
             ChatResponse chatResp = aiChatService.chat(chatReq);
@@ -152,6 +158,8 @@ public class OpenChatService {
             data.put("conversation_id", chatResp.getConversationId());
             data.put("message_id", "msg-" + UUID.randomUUID().toString().substring(0, 8));
             data.put("reply", chatResp.getReply());
+            data.put("images", outputCheck.isBlocked() ? List.of()
+                    : PublicUrlResolver.absolute(chatResp.getImages(), publicBaseUrl));
             data.put("model", chatResp.getModel() != null ? chatResp.getModel() : agent.getModelName());
             data.put("tool_called", chatResp.getToolCalled());
             data.put("tokens_used", chatResp.getTokensUsed());
@@ -184,7 +192,7 @@ public class OpenChatService {
      * 流式输出：模型边生成边推送（经引用角标清理与输出护栏的滑动窗口检查）。
      * 通道不支持流式或走了兜底回复时，拿到完整回复后再一次性输出。
      */
-    private Object stream(ChatRequest chatReq, Agent agent, GuardrailPolicy policy) {
+    private Object stream(ChatRequest chatReq, Agent agent, GuardrailPolicy policy, String publicBaseUrl) {
         SseEmitter emitter = new SseEmitter(180_000L);
         // 流式在后台线程执行：带上本次开放调用的上下文，用量、配额与审计才能记到对应的凭证和终端上
         OpenApiContext ctx = OpenApiContext.get();
@@ -194,7 +202,7 @@ public class OpenChatService {
         String convId = conversationService.belongsToAgent(agent.getId(), chatReq.getConversationId())
                 ? chatReq.getConversationId().trim() : newConversationId;
         SseWriter writer = new SseWriter(emitter, contentGuardService.createStreamingGuard(policy), agent,
-                convId, "msg-" + UUID.randomUUID().toString().substring(0, 8));
+                convId, "msg-" + UUID.randomUUID().toString().substring(0, 8), publicBaseUrl);
         emitter.onCompletion(writer::markClosed);
         emitter.onTimeout(writer::markClosed);
         emitter.onError(e -> writer.markClosed());
@@ -245,17 +253,20 @@ public class OpenChatService {
         private final Agent agent;
         private final String convId;
         private final String msgId;
+        private final String publicBaseUrl;
         private final long createdAt = System.currentTimeMillis() / 1000;
         volatile boolean streamed;
         volatile boolean blocked;
         volatile boolean closed;
 
-        SseWriter(SseEmitter emitter, StreamingSlidingWindowGuard guard, Agent agent, String convId, String msgId) {
+        SseWriter(SseEmitter emitter, StreamingSlidingWindowGuard guard, Agent agent, String convId, String msgId,
+                  String publicBaseUrl) {
             this.emitter = emitter;
             this.guard = guard;
             this.agent = agent;
             this.convId = convId;
             this.msgId = msgId;
+            this.publicBaseUrl = publicBaseUrl;
         }
 
         void markClosed() {
@@ -287,6 +298,7 @@ public class OpenChatService {
             endPayload.put("event", "message_end");
             endPayload.put("conversation_id", chatResp.getConversationId() != null ? chatResp.getConversationId() : convId);
             endPayload.put("message_id", msgId);
+            endPayload.put("images", blocked ? List.of() : PublicUrlResolver.absolute(chatResp.getImages(), publicBaseUrl));
             Map<String, Object> metadata = new LinkedHashMap<>();
             metadata.put("model", chatResp.getModel() != null ? chatResp.getModel() : agent.getModelName());
             metadata.put("tokens_used", chatResp.getTokensUsed() != null ? chatResp.getTokensUsed() : 0);

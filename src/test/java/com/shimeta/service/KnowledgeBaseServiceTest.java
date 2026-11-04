@@ -456,4 +456,85 @@ class KnowledgeBaseServiceTest {
         assertThat(stats.estimatedCostYuan()).isEqualTo(1.1);
         assertThat(stats.formatSupport()).containsKey("supportedFormats");
     }
+
+    @Test
+    void buildRetrievalReturnsImagesOfTopRankedFaqOnly() {
+        stubRetrieval(List.of(
+                faqChunk("faq_low", 0.70),
+                docChunk("doc_1", 0.95),
+                faqChunk("faq_top", 0.85)));
+        // 普通文档切片也会先按 documentId 查一次 FAQ（查不到）
+        when(faqRepository.findByExternalDocId("doc_1")).thenReturn(Optional.empty());
+        when(faqRepository.findByExternalDocId("faq_top"))
+                .thenReturn(Optional.of(faqWithImages("kb-img", "[\"/uploads/knowledge/a.png\",\"/uploads/knowledge/b.png\"]")));
+
+        KnowledgeBaseService.RetrievalContext result = knowledgeBaseService.buildRetrieval(List.of("kb-img"), "公司位置");
+
+        assertThat(result.text()).contains("【知识库检索结果】");
+        assertThat(result.faqImages()).containsExactly("/uploads/knowledge/a.png", "/uploads/knowledge/b.png");
+        verify(faqRepository, never()).findByExternalDocId("faq_low");
+    }
+
+    @Test
+    void buildRetrievalSkipsImagesWhenTopFaqHasNoneOrBelongsToOtherKnowledgeBase() {
+        stubRetrieval(List.of(faqChunk("faq_top", 0.9), faqChunk("faq_low", 0.6)));
+        when(faqRepository.findByExternalDocId("faq_top")).thenReturn(Optional.of(faqWithImages("kb-img", null)));
+
+        assertThat(knowledgeBaseService.buildRetrieval(List.of("kb-img"), "公司位置").faqImages()).isEmpty();
+
+        when(faqRepository.findByExternalDocId("faq_top"))
+                .thenReturn(Optional.of(faqWithImages("kb-other", "[\"/uploads/knowledge/x.png\"]")));
+        lenient().when(faqRepository.findByExternalDocId("faq_low")).thenReturn(Optional.empty());
+
+        assertThat(knowledgeBaseService.buildRetrieval(List.of("kb-img"), "公司位置").faqImages()).isEmpty();
+    }
+
+    @Test
+    void buildRetrievalSkipsImagesWhenTopFaqIsNotSimilarEnough() {
+        // 混合检索对无关问题也会召回 FAQ：向量相似度低于门槛时不带图
+        stubRetrieval(List.of(faqChunk("faq_top", 0.33)));
+        when(faqRepository.findByExternalDocId("faq_top"))
+                .thenReturn(Optional.of(faqWithImages("kb-img", "[\"/uploads/knowledge/a.png\"]")));
+
+        assertThat(knowledgeBaseService.buildRetrieval(List.of("kb-img"), "今天天气怎么样").faqImages()).isEmpty();
+    }
+
+    private void stubRetrieval(List<RetrievedChunk> chunks) {
+        KnowledgeBase kb = new KnowledgeBase();
+        kb.setId("kb-img");
+        kb.setProvider("SPRING_AI");
+        kb.setExternalDatasetId("ds-img");
+        kb.setEnabled(true);
+        when(knowledgeBaseRepository.findById("kb-img")).thenReturn(Optional.of(kb));
+        when(springAiProvider.retrieve(eq("ds-img"), any(RetrievalRequest.class))).thenReturn(chunks);
+    }
+
+    private static RetrievedChunk faqChunk(String faqId, double score) {
+        return RetrievedChunk.builder()
+                .chunkId("c-" + faqId)
+                .sourceName("FAQ: " + faqId)
+                .content("【业务问题】" + faqId)
+                .score(score)
+                .vectorScore(score)
+                .metadata(Map.of("faqId", faqId))
+                .build();
+    }
+
+    private static RetrievedChunk docChunk(String documentId, double score) {
+        return RetrievedChunk.builder()
+                .chunkId("c-" + documentId)
+                .documentId(documentId)
+                .sourceName("手册")
+                .content("文档内容")
+                .score(score)
+                .metadata(Map.of())
+                .build();
+    }
+
+    private static KnowledgeFaq faqWithImages(String kbId, String imageUrls) {
+        KnowledgeFaq faq = new KnowledgeFaq();
+        faq.setKnowledgeBaseId(kbId);
+        faq.setImageUrls(imageUrls);
+        return faq;
+    }
 }
