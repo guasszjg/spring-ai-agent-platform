@@ -188,6 +188,9 @@ public class AgentService {
             validateKnowledgeBaseBindings(actor, agent.getKnowledgeBaseIds());
         }
         agent.setId(null);
+        if (agent.getCode() == null || agent.getCode().isBlank()) {
+            agent.setCode(generateCode());
+        }
         if (actor != null) {
             agent.setOwnerId(actor.getUserId());
             agent.setOwnerUsername(actor.getUsername());
@@ -205,6 +208,14 @@ public class AgentService {
             promptVersionService.recordCreated(saved, AgentPromptVersionService.SOURCE_CREATE, agent.getPromptChangeNote(), actor);
         }
         return saved;
+    }
+
+    private String generateCode() {
+        String code;
+        do {
+            code = "agent_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        } while (agentRepository.existsByCode(code));
+        return code;
     }
 
     public Agent update(String id, Agent agentUpdate) {

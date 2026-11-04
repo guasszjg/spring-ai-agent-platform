@@ -71,6 +71,23 @@ class AgentServiceTest {
     }
 
     @Test
+    void create_generatesCodeWhenBlank_andKeepsGivenCode() {
+        when(agentRepository.save(any(Agent.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        for (String blank : new String[]{null, "", "   "}) {
+            Agent agent = new Agent();
+            agent.setName("客服");
+            agent.setCode(blank);
+            assertThat(agentService.create(agent, null).getCode()).matches("agent_[0-9a-f]{8}");
+        }
+
+        Agent named = new Agent();
+        named.setName("客服");
+        named.setCode("tech_support_v1");
+        assertThat(agentService.create(named, null).getCode()).isEqualTo("tech_support_v1");
+    }
+
+    @Test
     void copyAgent_clonesPromptAndTools_resetsStatsAndGeneratesNewIdentity() {
         Agent source = new Agent();
         source.setId("orig-id-123");
