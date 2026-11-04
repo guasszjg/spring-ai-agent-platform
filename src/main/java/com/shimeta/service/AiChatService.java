@@ -97,6 +97,22 @@ public class AiChatService {
         return chat(request, null);
     }
 
+    /** 一次智能体对话的路由情况：是否切到了备用通道，以及拿不到用量时用的输入估算值 */
+    private static class RouteTrace {
+        String failoverFrom;
+        int estimatedPromptTokens;
+    }
+
+    /** 粗略估算 Token：中日韩字符每字约 1 个，其余每 4 个字符约 1 个。只在通道没有返回用量时使用 */
+    static int estimateTokens(String text) {
+        if (text == null || text.isEmpty()) {
+            return 0;
+        }
+        long cjk = text.codePoints().filter(Character::isIdeographic).count();
+        long others = text.codePoints().count() - cjk;
+        return (int) (cjk + (others + 3) / 4);
+    }
+
     /** 本次对话检索命中的 FAQ 附图：在拼装知识库上下文时记下，chat() 结束前取出并清空 */
     private static final ThreadLocal<List<String>> RETRIEVED_FAQ_IMAGES = new ThreadLocal<>();
 
@@ -150,9 +166,24 @@ public class AiChatService {
             toolRegistry.setCurrentContextBochaApiKey(bochaKey);
         }
 
+        RouteTrace trace = new RouteTrace();
+        StringBuilder streamedText = new StringBuilder();
+        StreamSink trackedSink = sink == null ? null : new StreamSink() {
+            @Override
+            public void onDelta(String text) {
+                streamedText.append(text);
+                sink.onDelta(text);
+            }
+
+            @Override
+            public boolean cancelled() {
+                return sink.cancelled();
+            }
+        };
+
         try {
             OpenAiCompatibleClient.ChatResult routed = invokeViaGateway(agent, userMessage, request.getHistory(),
-                    request.getGeneration(), request.getPrompt(), tools, request.getEnabledTools(), routedModel, sink);
+                    request.getGeneration(), request.getPrompt(), tools, request.getEnabledTools(), routedModel, trackedSink, trace);
             if (routed != null && routed.content() != null && !routed.content().isBlank()) {
                 reply = routed.content();
                 executionModel = routedModel[0];
@@ -161,10 +192,17 @@ public class AiChatService {
                 if (promptTokens + completionTokens == 0 && routed.totalTokens() > 0) {
                     completionTokens = routed.totalTokens();
                 }
+                // 流式中途断开时通道不会返回用量，这部分 Token 已经消耗，按文本长度估算
+                if (promptTokens + completionTokens == 0 && trackedSink != null && trackedSink.cancelled()) {
+                    promptTokens = trace.estimatedPromptTokens;
+                    completionTokens = estimateTokens(reply);
+                }
                 realModelReply = true;
                 if (routed.toolCalled() != null) {
                     toolCalledHolder[0] = routed.toolCalled();
                 }
+            } else if (trackedSink != null && trackedSink.cancelled()) {
+                throw new StreamInterruptedException("调用方已断开连接", null);
             } else if (chatClient != null) {
                 log.info("Invoking Spring AI ChatClient for Agent: [{}] with model: [{}]", agent.getName(), executionModel);
                 
@@ -199,9 +237,17 @@ public class AiChatService {
                 reply = fallbackReply(agent, userMessage, request.getHistory(), toolCalledHolder, null);
             }
         } catch (StreamInterruptedException ex) {
+            // 输出到一半中断：拿不到用量，按文本长度估算后计入，算一次失败调用
+            agentService.recordInvocation(agent.getId(), System.currentTimeMillis() - startTime,
+                    trace.estimatedPromptTokens, estimateTokens(streamedText.toString()), false, trace.failoverFrom != null);
             throw ex;
         } catch (Exception ex) {
             log.warn("模型调用失败: {}", ex.getMessage());
+            if (!simulationFallbackEnabled) {
+                // 下面会直接抛错，走不到末尾的统计，这里先记一次失败调用
+                agentService.recordInvocation(agent.getId(), System.currentTimeMillis() - startTime,
+                        0, 0, false, trace.failoverFrom != null);
+            }
             reply = fallbackReply(agent, userMessage, request.getHistory(), toolCalledHolder, ex);
         } finally {
             toolRegistry.clearCurrentContext();
@@ -213,8 +259,10 @@ public class AiChatService {
 
         long latencyMs = System.currentTimeMillis() - startTime;
         int tokens = promptTokens + completionTokens;
-        agentService.recordInvocation(agent.getId(), latencyMs, promptTokens, completionTokens, realModelReply);
-        if (realModelReply) {
+        agentService.recordInvocation(agent.getId(), latencyMs, promptTokens, completionTokens, realModelReply,
+                trace.failoverFrom != null);
+        // 备用通道只是临时顶替，不能把智能体自己的模型设置改成备用模型
+        if (realModelReply && trace.failoverFrom == null) {
             agentService.recordExecutedModel(agent.getId(), executionModel);
         }
 
@@ -228,6 +276,9 @@ public class AiChatService {
         );
         response.setToolCalled(toolCalledHolder[0]);
         response.setImages(faqImages);
+        response.setPromptTokens(promptTokens);
+        response.setCompletionTokens(completionTokens);
+        response.setFailoverFrom(realModelReply ? trace.failoverFrom : null);
         response.setDegraded(!realModelReply);
         response.setSource(realModelReply ? "MODEL" : "SIMULATION");
         AgentConversation conversation = conversationService.appendTurn(
@@ -327,7 +378,7 @@ public class AiChatService {
                                                                List<ChatMessage> history, ChatGeneration generation,
                                                                String livePrompt, List<java.util.Map<String, Object>> tools,
                                                                List<String> enabledTools,
-                                                               String[] routedModel, StreamSink sink) {
+                                                               String[] routedModel, StreamSink sink, RouteTrace trace) {
         ChatGeneration effective = generation != null ? generation : fromAgent(agent);
         final String instruction = buildEffectiveInstruction(livePrompt, agent, userMessage, enabledTools);
         return gatewayService.resolveRoute(agent.getModelName()).map(route -> {
@@ -336,6 +387,9 @@ public class AiChatService {
                     userMessage,
                     history
             );
+            trace.estimatedPromptTokens = messages.stream()
+                    .mapToInt(m -> estimateTokens(String.valueOf(m.get("content"))))
+                    .sum() + estimateTokens(String.valueOf(tools));
             OpenAiCompatibleClient.ChatResult result = callProvider(route.primary(), route.primaryKey(),
                     agent.getModelName(), effective, route.timeoutMs(), route.maxRetries(), messages, tools, routedModel, sink);
             if (result != null) {
@@ -344,6 +398,7 @@ public class AiChatService {
             if (route.fallback() != null && gatewayService.hasKey(route.fallback())) {
                 log.warn("Primary LLM channel [{}] failed, switching to fallback [{}]",
                         route.primary().getName(), route.fallback().getName());
+                trace.failoverFrom = route.primary().getName();
                 return callProvider(route.fallback(), route.fallbackKey(),
                         agent.getModelName(), effective, route.timeoutMs(), route.maxRetries(), messages, tools, routedModel, sink);
             }

@@ -537,17 +537,21 @@ public class AssistantQueryTools {
         m.put("tokensByModel", stats.getModelDistribution());
         m.put("agentCallsInPeriod", stats.getPeriodCalls());
         m.put("agentSuccessRatePercentInPeriod", stats.getPeriodCalls() == 0 ? null : stats.getSuccessRate());
-        m.put("topAgentsAllTime", stats.getRanking().stream().map(r -> {
+        m.put("agentFailoversInPeriod", stats.getFailoverCount());
+        m.put("deletedAgentTokensInPeriod", stats.getDeletedAgentTokens());
+        m.put("topAgentsInPeriod", stats.getRanking().stream().map(r -> {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("name", r.getName());
-            item.put("callsAllTime", r.getCalls());
+            item.put("callsInPeriod", r.getCalls());
             item.put("tokensInPeriod", r.getTokens());
             return item;
         }).toList());
         m.put("notes", List.of(
                 "totalTokens = agentTokens（智能体被调用消耗）+ assistantTokens（平台 AI 助手自身对话消耗），均为本时间段内",
                 "agentCallsInPeriod 为本时间段内智能体的调用次数；为 0 时成功率不适用",
-                "topAgentsAllTime 按累计调用次数（不限时间）排序，callsAllTime 与本时间段无关；tokensInPeriod 为该智能体本时间段内的 token"));
+                "agentFailoversInPeriod 为主通道失败、切到备用通道的调用次数，这些调用可能仍算成功",
+                "超级管理员的 totalTokens 含已删除智能体的用量（deletedAgentTokensInPeriod）",
+                "topAgentsInPeriod 只含现存智能体，按本时间段内调用次数排序"));
         return ok(m);
     }
 

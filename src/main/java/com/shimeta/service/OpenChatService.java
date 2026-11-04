@@ -172,8 +172,8 @@ public class OpenChatService {
             auditRecorder.record("chat.invoke", "AGENT", agent.getId(), "SUCCESS", null, "LOW", null);
             usageRecorder.record("chat", agent.getId(), chatResp.getConversationId(), 200, null,
                     chatResp.getLatencyMs() != null ? chatResp.getLatencyMs().intValue() : 0,
-                    chatResp.getTokensUsed() != null ? chatResp.getTokensUsed() : 0,
-                    0, chatResp.getModel() != null ? chatResp.getModel() : agent.getModelName());
+                    tokens(chatResp.getPromptTokens()), tokens(chatResp.getCompletionTokens()),
+                    chatResp.getModel() != null ? chatResp.getModel() : agent.getModelName());
             return ResponseEntity.ok(ApiResponse.ok("success", data));
         } catch (IllegalStateException e) {
             return error(HttpStatus.FORBIDDEN, "dependency_invalid", e.getMessage());
@@ -233,8 +233,8 @@ public class OpenChatService {
                 }
                 usageRecorder.record("chat", agent.getId(), chatResp.getConversationId(), writer.blocked ? 422 : 200, null,
                         chatResp.getLatencyMs() != null ? chatResp.getLatencyMs().intValue() : 0,
-                        chatResp.getTokensUsed() != null ? chatResp.getTokensUsed() : 0,
-                        0, chatResp.getModel() != null ? chatResp.getModel() : agent.getModelName());
+                        tokens(chatResp.getPromptTokens()), tokens(chatResp.getCompletionTokens()),
+                        chatResp.getModel() != null ? chatResp.getModel() : agent.getModelName());
             } catch (Exception e) {
                 log.error("Open SSE error: {}", e.getMessage(), e);
                 writer.fail();
@@ -244,6 +244,10 @@ public class OpenChatService {
             }
         });
         return emitter;
+    }
+
+    private static int tokens(Integer value) {
+        return value != null ? value : 0;
     }
 
     /** 单次流式响应的输出状态：经输出护栏后写出 message 事件，命中拦截时发送 guardrail 事件并停止后续输出 */

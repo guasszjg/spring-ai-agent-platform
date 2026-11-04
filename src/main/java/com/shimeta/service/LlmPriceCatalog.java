@@ -6,6 +6,7 @@ import java.util.Map;
 /**
  * Official list prices in CNY per 1 million tokens (cache miss / standard).
  * DeepSeek uses weekday peak rates so the estimate is conservative.
+ * 价格表里没有的模型按 DEFAULT 估算；智谱按输入 32K 以内的档位。
  */
 public final class LlmPriceCatalog {
 
@@ -14,24 +15,57 @@ public final class LlmPriceCatalog {
 
     private static final Rate DEFAULT = new Rate(3.0, 9.0);
 
+    /** 智谱型号相近（glm-5 / glm-5.1 / glm-5.3-flash），按完整型号匹配；中转通道的 ZHIPU/GLM-5.1 取斜杠后的部分 */
+    private static final Map<String, Rate> ZHIPU_RATES = Map.of(
+            "glm-5.3-flashx", new Rate(2.0, 7.0),
+            "glm-5.3-flash", new Rate(0.8, 2.8),
+            "glm-5.1", new Rate(6.0, 24.0),
+            "glm-5", new Rate(4.0, 18.0),
+            "glm-4.7", new Rate(3.0, 14.0),
+            "glm-4.7-flashx", new Rate(0.5, 3.0),
+            "glm-4.7-flash", new Rate(0.0, 0.0),
+            "glm-4.5-air", new Rate(0.8, 6.0));
+
     private LlmPriceCatalog() {
     }
 
     public static Rate rateFor(String modelName) {
         String name = modelName == null ? "" : modelName.toLowerCase(Locale.ROOT);
+        Rate zhipu = ZHIPU_RATES.get(name.substring(name.lastIndexOf('/') + 1));
+        if (zhipu != null) {
+            return zhipu;
+        }
         if (name.contains("deepseek") && (name.contains("pro") || name.contains("reasoner"))) {
             return new Rate(9.0, 27.0);
         }
         if (name.contains("deepseek") || name.contains("v4-flash")) {
-            return new Rate(3.0, 9.0);
+            return new Rate(2.0, 8.0);
         }
-        if (name.contains("qwen-max") || name.contains("qwen3-max") || name.contains("qwen3.max")) {
+        if (name.contains("qwen3.8-max")) {
+            return new Rate(12.0, 36.0);
+        }
+        if (name.contains("qwen3.7-plus")) {
+            return new Rate(2.0, 8.0);
+        }
+        if (name.contains("qwen3.7-flash")) {
+            return new Rate(0.2, 0.8);
+        }
+        if (name.contains("qwen-flash")) {
+            return new Rate(0.15, 1.5);
+        }
+        if (name.contains("qwen-max")) {
+            return new Rate(2.4, 9.6);
+        }
+        if (name.contains("qwen3-max") || name.contains("qwen3.max")) {
             return new Rate(2.5, 10.0);
         }
-        if (name.contains("qwen-plus") || name.contains("qwen3.5-plus") || name.contains("qwen3-plus")) {
+        if (name.contains("qwen-plus")) {
+            return new Rate(0.8, 2.0);
+        }
+        if (name.contains("qwen3.5-plus") || name.contains("qwen3-plus")) {
             return new Rate(0.8, 4.8);
         }
-        if (name.contains("qwen-turbo") || name.contains("qwen-flash") || name.contains("qwen3.5-flash")) {
+        if (name.contains("qwen-turbo") || name.contains("qwen3.5-flash")) {
             return new Rate(0.2, 2.0);
         }
         if (name.contains("qwen") || name.contains("qianwen") || name.contains("tongyi")) {
@@ -84,8 +118,11 @@ public final class LlmPriceCatalog {
             long completion = Math.max(0, tokens - prompt);
             sum += cost(rateFor(entry.getKey()), prompt, completion);
         }
-        if (accounted == 0 && total > 0) {
-            sum = cost(DEFAULT, promptTokens, completionTokens);
+        // 分不到模型的部分（会话已删除、流式中断的估算值）按默认价计入
+        long unaccounted = total - accounted;
+        if (unaccounted > 0) {
+            long prompt = Math.round(unaccounted * promptShare);
+            sum += cost(DEFAULT, prompt, unaccounted - prompt);
         }
         return round(sum);
     }

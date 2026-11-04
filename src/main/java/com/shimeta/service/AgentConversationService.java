@@ -245,30 +245,19 @@ public class AgentConversationService {
     public Map<String, Long> tokenUsageByModel(String agentId, java.util.Set<String> allowedAgentIds, LocalDate start, LocalDate end) {
         LocalDateTime from = (start == null ? LocalDate.of(2020, 1, 1) : start).atStartOfDay();
         LocalDateTime to = (end == null ? LocalDate.now() : end).plusDays(1).atStartOfDay();
-        Map<String, Long> usage = new LinkedHashMap<>();
-        List<AgentConversationMessage> messages = messageRepository
-                .findByRoleAndCreatedAtGreaterThanEqualAndCreatedAtLessThan("assistant", from, to);
-
-        final java.util.Set<String> finalTargetAgentIds = (agentId != null && !agentId.isBlank())
+        final java.util.Set<String> targetAgentIds = (agentId != null && !agentId.isBlank())
                 ? java.util.Set.of(agentId)
                 : allowedAgentIds;
-
-        if (finalTargetAgentIds != null) {
-            java.util.Set<String> validConvIds = conversationRepository.findAll().stream()
-                    .filter(c -> finalTargetAgentIds.contains(c.getAgentId()))
-                    .map(AgentConversation::getId)
-                    .collect(Collectors.toSet());
-            messages = messages.stream().filter(item -> validConvIds.contains(item.getConversationId())).collect(Collectors.toList());
+        Map<String, Long> usage = new LinkedHashMap<>();
+        if (targetAgentIds != null && targetAgentIds.isEmpty()) {
+            return usage;
         }
-
-        for (AgentConversationMessage message : messages) {
-            if (message.getTokensUsed() == null || message.getTokensUsed() <= 0) {
-                continue;
-            }
-            String model = message.getModel() == null || message.getModel().isBlank()
-                    ? "未指定"
-                    : message.getModel().trim();
-            usage.merge(model, message.getTokensUsed().longValue(), Long::sum);
+        List<Object[]> rows = targetAgentIds == null
+                ? messageRepository.sumTokensByModel(from, to)
+                : messageRepository.sumTokensByModelForAgents(targetAgentIds, from, to);
+        for (Object[] row : rows) {
+            String model = row[0] == null || row[0].toString().isBlank() ? "未指定" : row[0].toString().trim();
+            usage.merge(model, ((Number) row[1]).longValue(), Long::sum);
         }
         return usage;
     }
