@@ -779,7 +779,10 @@ public class OpenAiCompatibleClient {
                     && !"text".equalsIgnoreCase(generation.getResponseFormat())) {
                 payload.put("response_format", Map.of("type", generation.getResponseFormat()));
             }
-            if (generation.getThinking() != null) {
+            // 始终思考的模型收到"关闭思考"会直接返回 400，这时不传参数，让模型按默认方式回答
+            boolean rejectsThinkingOff = Boolean.FALSE.equals(generation.getThinking())
+                    && alwaysThinks(String.valueOf(payload.get("model")));
+            if (generation.getThinking() != null && !rejectsThinkingOff) {
                 boolean thinkingOn = Boolean.TRUE.equals(generation.getThinking());
                 payload.put("enable_thinking", thinkingOn);
                 payload.put("thinking", Map.of("type", thinkingOn ? "enabled" : "disabled"));
@@ -806,6 +809,11 @@ public class OpenAiCompatibleClient {
             searchOptions.put("user_location", location);
             payload.put("web_search_options", searchOptions);
         }
+    }
+
+    /** 智谱 GLM-5.3 系列始终思考（含中转通道的 ZHIPU/GLM-5.3-Flash 这类名称） */
+    static boolean alwaysThinks(String model) {
+        return model != null && model.toLowerCase(java.util.Locale.ROOT).contains("glm-5.3");
     }
 
     private void applyExtraHeaders(HttpRequest.Builder builder, ChatGeneration generation) {
