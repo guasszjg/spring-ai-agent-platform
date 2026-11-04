@@ -207,6 +207,66 @@ class AgentServiceTest {
         assertThat(asAdmin.getTotalCalls()).isEqualTo(1009L);
     }
 
+    private static com.shimeta.model.AgentDailyStat dailyStat(String agentId, long calls, long tokens, long failovers) {
+        com.shimeta.model.AgentDailyStat row = new com.shimeta.model.AgentDailyStat();
+        row.setAgentId(agentId);
+        row.setStatDate(java.time.LocalDate.now());
+        row.setCallCount(calls);
+        row.setSuccessCount(calls);
+        row.setPromptTokens(tokens);
+        row.setFailoverCount(failovers);
+        return row;
+    }
+
+    @Test
+    void dashboardStats_countsDeletedAgentsForSuperAdminOnly_andRanksByPeriodCalls() {
+        Agent mine = new Agent();
+        mine.setId("mine-1");
+        mine.setName("累计多但本期少");
+        mine.setOwnerId("user-dev");
+        mine.setCallCount(999L);
+        mine.setStatus(AgentStatus.RUNNING);
+
+        Agent other = new Agent();
+        other.setId("other-1");
+        other.setName("本期多");
+        other.setOwnerId("user-other");
+        other.setCallCount(5L);
+        other.setStatus(AgentStatus.RUNNING);
+
+        Agent idle = new Agent();
+        idle.setId("idle-1");
+        idle.setName("本期没调用");
+        idle.setOwnerId("user-other");
+        idle.setCallCount(500L);
+        idle.setStatus(AgentStatus.RUNNING);
+
+        when(agentRepository.findAll()).thenReturn(List.of(mine, other, idle));
+        when(dailyStatRepository.findByStatDateBetween(any(), any())).thenAnswer(inv ->
+                inv.getArgument(1, java.time.LocalDate.class).equals(java.time.LocalDate.now())
+                        ? List.of(dailyStat("mine-1", 1, 100, 0), dailyStat("other-1", 5, 200, 2), dailyStat("deleted-1", 3, 700, 1))
+                        : List.of());
+        when(conversationService.tokenUsageByModel(any(), any(), any(), any())).thenReturn(Map.of());
+        when(conversationService.latestModelByAgent(any())).thenReturn(Map.of());
+
+        com.shimeta.model.DashboardStats asAdmin = agentService.getDashboardStats("today",
+                new com.shimeta.security.CurrentActor("admin-1", "admin", com.shimeta.model.UserRole.SUPER_ADMIN));
+        assertThat(asAdmin.getPromptTokens()).isEqualTo(1000L);
+        assertThat(asAdmin.getDeletedAgentTokens()).isEqualTo(700L);
+        assertThat(asAdmin.getPeriodCalls()).isEqualTo(9L);
+        assertThat(asAdmin.getFailoverCount()).isEqualTo(3L);
+        assertThat(asAdmin.getRanking()).extracting(com.shimeta.model.DashboardStats.RankingItem::getName)
+                .containsExactly("本期多", "累计多但本期少");
+        assertThat(asAdmin.getRanking().get(0).getCalls()).isEqualTo(5L);
+        org.mockito.Mockito.verify(conversationService).tokenUsageByModel(any(), org.mockito.ArgumentMatchers.isNull(), any(), any());
+
+        com.shimeta.model.DashboardStats asDev = agentService.getDashboardStats("today",
+                new com.shimeta.security.CurrentActor("user-dev", "guass", com.shimeta.model.UserRole.DEVELOPER));
+        assertThat(asDev.getPromptTokens()).isEqualTo(100L);
+        assertThat(asDev.getDeletedAgentTokens()).isZero();
+        assertThat(asDev.getFailoverCount()).isZero();
+    }
+
     @Test
     void updateRecordsPromptVersionWithClientSourceFilteredAndNote() {
         AgentPromptVersionService versions = org.mockito.Mockito.mock(AgentPromptVersionService.class);

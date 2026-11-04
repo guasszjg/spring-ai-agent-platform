@@ -30,6 +30,9 @@ public class AgentDailyStat {
     private long completionTokens;
     private long totalLatencyMs;
     private long successCount;
+    /** 主通道失败、切到备用通道的次数（这些调用仍可能计入 successCount） */
+    @Column(nullable = false)
+    private long failoverCount;
 
     public AgentDailyStat() {
     }
@@ -88,6 +91,14 @@ public class AgentDailyStat {
 
     public void setTotalLatencyMs(long totalLatencyMs) {
         this.totalLatencyMs = totalLatencyMs;
+    }
+
+    public long getFailoverCount() {
+        return failoverCount;
+    }
+
+    public void setFailoverCount(long failoverCount) {
+        this.failoverCount = failoverCount;
     }
 
     public long getSuccessCount() {

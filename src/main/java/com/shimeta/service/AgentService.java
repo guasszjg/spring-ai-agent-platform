@@ -429,7 +429,8 @@ public class AgentService {
         return base + "_copy_" + idx;
     }
 
-    public void recordInvocation(String id, long latencyMs, long promptTokens, long completionTokens, boolean success) {
+    public void recordInvocation(String id, long latencyMs, long promptTokens, long completionTokens, boolean success,
+                                 boolean failedOver) {
         LocalDate today = LocalDate.now();
         AgentDailyStat stat = dailyStatRepository.findByAgentIdAndStatDate(id, today)
                 .orElseGet(() -> {
@@ -445,6 +446,9 @@ public class AgentService {
         stat.setTotalLatencyMs(stat.getTotalLatencyMs() + Math.max(0, latencyMs));
         if (success) {
             stat.setSuccessCount(stat.getSuccessCount() + 1);
+        }
+        if (failedOver) {
+            stat.setFailoverCount(stat.getFailoverCount() + 1);
         }
         dailyStatRepository.save(stat);
 
@@ -501,11 +505,13 @@ public class AgentService {
                 .filter(a -> a.getId() != null)
                 .collect(Collectors.toMap(Agent::getId, a -> a, (a, b) -> a));
 
+        // 超管看全站：已删除智能体的用量也算（钱已经花了）。其他角色只能按现存智能体归属，删除后无法再归到本人
+        boolean wholePlatform = actor != null && actor.isSuperAdmin();
         List<AgentDailyStat> current = dailyStatRepository.findByStatDateBetween(start, end).stream()
-                .filter(row -> accessibleIds.contains(row.getAgentId()))
+                .filter(row -> wholePlatform || accessibleIds.contains(row.getAgentId()))
                 .collect(Collectors.toList());
         List<AgentDailyStat> previous = dailyStatRepository.findByStatDateBetween(prevStart, prevEnd).stream()
-                .filter(row -> accessibleIds.contains(row.getAgentId()))
+                .filter(row -> wholePlatform || accessibleIds.contains(row.getAgentId()))
                 .collect(Collectors.toList());
 
         DashboardStats stats = new DashboardStats();
@@ -535,6 +541,11 @@ public class AgentService {
         stats.setCategoryDistribution(categoryCount);
 
         stats.setPeriodCalls(successCalls);
+        stats.setFailoverCount(current.stream().mapToLong(AgentDailyStat::getFailoverCount).sum());
+        stats.setDeletedAgentTokens(current.stream()
+                .filter(row -> !accessibleIds.contains(row.getAgentId()))
+                .mapToLong(row -> row.getPromptTokens() + row.getCompletionTokens())
+                .sum());
 
         // 平台 AI 助手的 token 计入同一口径（范围同样是超管看全站、其余看本人）
         var assistantUsage = assistantUsageService != null
@@ -550,7 +561,7 @@ public class AgentService {
         stats.setPromptTokens(promptTokens);
         stats.setCompletionTokens(completionTokens);
         long totalTokens = promptTokens + completionTokens;
-        Map<String, Long> modelTokens = new LinkedHashMap<>(conversationService.tokenUsageByModel(null, accessibleIds, start, end));
+        Map<String, Long> modelTokens = new LinkedHashMap<>(conversationService.tokenUsageByModel(null, wholePlatform ? null : accessibleIds, start, end));
         assistantUsage.getTokensByModel().forEach((model, tokens) -> modelTokens.merge(model, tokens, Long::sum));
         stats.setModelDistribution(modelTokens);
         stats.setEstimatedCostCny(LlmPriceCatalog.estimateCny(modelTokens, promptTokens, completionTokens));
@@ -584,18 +595,13 @@ public class AgentService {
         stats.setTokenTrend(trend);
 
         Map<String, long[]> rankAgg = new HashMap<>();
-        for (Agent agent : accessible) {
-            long calls = agent.getCallCount() == null ? 0 : agent.getCallCount();
-            if (calls <= 0) {
+        for (AgentDailyStat row : current) {
+            if (!agentById.containsKey(row.getAgentId()) || row.getCallCount() <= 0) {
                 continue;
             }
-            rankAgg.put(agent.getId(), new long[]{calls, 0L});
-        }
-        for (AgentDailyStat row : current) {
-            long[] agg = rankAgg.get(row.getAgentId());
-            if (agg != null) {
-                agg[1] += row.getPromptTokens() + row.getCompletionTokens();
-            }
+            long[] agg = rankAgg.computeIfAbsent(row.getAgentId(), k -> new long[]{0L, 0L});
+            agg[0] += row.getCallCount();
+            agg[1] += row.getPromptTokens() + row.getCompletionTokens();
         }
         Map<String, String> latestModels = conversationService.latestModelByAgent(accessibleIds);
         List<DashboardStats.RankingItem> ranking = rankAgg.entrySet().stream()
@@ -620,7 +626,10 @@ public class AgentService {
         Map<String, long[]> latencyAgg = new LinkedHashMap<>();
         for (AgentDailyStat row : current) {
             Agent agent = agentById.get(row.getAgentId());
-            String category = agent != null && agent.getCategory() != null ? agent.getCategory() : "其它";
+            if (agent == null) {
+                continue;
+            }
+            String category = agent.getCategory() != null ? agent.getCategory() : "其它";
             long[] agg = latencyAgg.computeIfAbsent(category, k -> new long[]{0L, 0L});
             agg[0] += row.getTotalLatencyMs();
             agg[1] += row.getCallCount();
@@ -685,6 +694,7 @@ public class AgentService {
         long calls = current.stream().mapToLong(AgentDailyStat::getCallCount).sum();
         long latencySum = current.stream().mapToLong(AgentDailyStat::getTotalLatencyMs).sum();
         stats.setCallCount(calls);
+        stats.setFailoverCount(current.stream().mapToLong(AgentDailyStat::getFailoverCount).sum());
         stats.setAvgResponseTimeMs(calls == 0 ? 0 : Math.round(latencySum * 10.0 / calls) / 10.0);
 
         List<AgentConversation> sessions = conversationService.listInRange(agentId, range);

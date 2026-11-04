@@ -12,10 +12,19 @@ public class AgentMonitorStats {
     private long sessionCount;
     private long messageCount;
     private long callCount;
+    private long failoverCount;
     private double avgResponseTimeMs;
     private double estimatedCostUsd;
     private double estimatedCostCny;
     private List<DashboardStats.TrendPoint> tokenTrend = new ArrayList<>();
+
+    public long getFailoverCount() {
+        return failoverCount;
+    }
+
+    public void setFailoverCount(long failoverCount) {
+        this.failoverCount = failoverCount;
+    }
 
     public long getPromptTokens() {
         return promptTokens;

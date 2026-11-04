@@ -27,8 +27,28 @@ public class DashboardStats {
     /** 统计区间内平台 AI 助手消耗的 token，已计入 promptTokens / completionTokens 与趋势 */
     private long assistantPromptTokens;
     private long assistantCompletionTokens;
+    /** 统计区间内切到备用通道的调用次数 */
+    private long failoverCount;
+    /** 统计区间内已删除智能体消耗的 token，已计入 promptTokens / completionTokens 与趋势（只有超管看全站时不为 0） */
+    private long deletedAgentTokens;
 
     public DashboardStats() {
+    }
+
+    public long getFailoverCount() {
+        return failoverCount;
+    }
+
+    public void setFailoverCount(long failoverCount) {
+        this.failoverCount = failoverCount;
+    }
+
+    public long getDeletedAgentTokens() {
+        return deletedAgentTokens;
+    }
+
+    public void setDeletedAgentTokens(long deletedAgentTokens) {
+        this.deletedAgentTokens = deletedAgentTokens;
     }
 
     public long getPeriodCalls() {

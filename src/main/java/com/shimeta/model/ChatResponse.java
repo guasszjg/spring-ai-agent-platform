@@ -16,6 +16,10 @@ public class ChatResponse {
     private LocalDateTime timestamp;
     /** 命中的 FAQ 回答附图（相对地址，如 /uploads/knowledge/xxx.png），没有时为空列表 */
     private java.util.List<String> images = java.util.List.of();
+    private Integer promptTokens;
+    private Integer completionTokens;
+    /** 本次主通道失败、改由备用通道回答时，主通道的名称；正常时为 null */
+    private String failoverFrom;
 
     public ChatResponse() {
         this.timestamp = LocalDateTime.now();
@@ -29,6 +33,30 @@ public class ChatResponse {
         this.model = model;
         this.tokensUsed = tokensUsed;
         this.timestamp = LocalDateTime.now();
+    }
+
+    public Integer getPromptTokens() {
+        return promptTokens;
+    }
+
+    public void setPromptTokens(Integer promptTokens) {
+        this.promptTokens = promptTokens;
+    }
+
+    public Integer getCompletionTokens() {
+        return completionTokens;
+    }
+
+    public void setCompletionTokens(Integer completionTokens) {
+        this.completionTokens = completionTokens;
+    }
+
+    public String getFailoverFrom() {
+        return failoverFrom;
+    }
+
+    public void setFailoverFrom(String failoverFrom) {
+        this.failoverFrom = failoverFrom;
     }
 
     public String getAgentId() {
