@@ -152,6 +152,69 @@ class SpringAiKnowledgeBaseProviderRerankTest {
         verify(rerankConfigService, never()).rerank(any(), anyString(), anyList());
     }
 
+    private static KnowledgeDocumentChunkRepository.ChunkText text(String id, String content) {
+        return new KnowledgeDocumentChunkRepository.ChunkText() {
+            @Override
+            public String getId() { return id; }
+
+            @Override
+            public String getContent() { return content; }
+        };
+    }
+
+    /** 向量排 a、b 两个切片，只有 b 含有问题里的词；数据库的关键词查询按传入结果返回 */
+    private SpringAiKnowledgeBaseProvider providerWithPg(com.shimeta.rag.pipeline.PgChunkSearch pg, List<com.shimeta.rag.pipeline.PgChunkSearch.Hit> keywordHits) {
+        LocalEmbeddingService embeddingService = new LocalEmbeddingService(null);
+        KnowledgeDocumentChunk a = chunk("a", "打印机墨盒更换说明", embeddingService);
+        KnowledgeDocumentChunk b = chunk("b", "退款流程说明", embeddingService);
+        when(pg.vectorSearch(anyString(), any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of(new com.shimeta.rag.pipeline.PgChunkSearch.Hit("a", 0.1), new com.shimeta.rag.pipeline.PgChunkSearch.Hit("b", 0.2)));
+        when(pg.keywordSearch(anyString(), anyString(), org.mockito.ArgumentMatchers.anyInt())).thenReturn(keywordHits);
+        when(chunkRepository.findAllById(any())).thenReturn(List.of(a, b));
+        when(chunkRepository.findTextByKnowledgeBaseId(KB_ID)).thenReturn(List.of(text("a", a.getContent()), text("b", b.getContent())));
+        return new SpringAiKnowledgeBaseProvider(chunkRepository, knowledgeBaseRepository, new DocumentChunker(),
+                embeddingService, new KeywordRetriever(), new QueryTransformer(null), new ContextBudgetPruner(),
+                null, null, null, pg, null);
+    }
+
+    private static RetrievalRequest hybridRequest(String method, double vectorWeight, double keywordWeight) {
+        return RetrievalRequest.builder().knowledgeBaseId(KB_ID).query("退款流程怎么走").topK(3).scoreThreshold(0.0)
+                .searchMethod(method).vectorWeight(vectorWeight).keywordWeight(keywordWeight).build();
+    }
+
+    @Test
+    void hybridFillsKeywordRouteWhenDatabaseFindsNothing() {
+        com.shimeta.rag.pipeline.PgChunkSearch pg = org.mockito.Mockito.mock(com.shimeta.rag.pipeline.PgChunkSearch.class);
+        SpringAiKnowledgeBaseProvider withPg = providerWithPg(pg, List.of());
+
+        List<RetrievedChunk> keywordHeavy = withPg.retrieve(KB_ID, hybridRequest("hybrid_search", 0.1, 0.9));
+
+        assertThat(keywordHeavy).extracting(RetrievedChunk::chunkId).containsExactly("b", "a");
+        assertThat(keywordHeavy.get(0).keywordScore()).isGreaterThan(0.2);
+        // 切片 a 没有问题里的词，不进关键词这一路，权重全给向量时排序回到向量结果
+        assertThat(withPg.retrieve(KB_ID, hybridRequest("hybrid_search", 1.0, 0.0)))
+                .extracting(RetrievedChunk::chunkId).containsExactly("a", "b");
+    }
+
+    @Test
+    void databaseKeywordHitsAreUsedWithoutScanningChunks() {
+        com.shimeta.rag.pipeline.PgChunkSearch pg = org.mockito.Mockito.mock(com.shimeta.rag.pipeline.PgChunkSearch.class);
+        SpringAiKnowledgeBaseProvider withPg = providerWithPg(pg, List.of(new com.shimeta.rag.pipeline.PgChunkSearch.Hit("a", 1.0)));
+
+        assertThat(withPg.retrieve(KB_ID, hybridRequest("hybrid_search", 0.1, 0.9)).get(0).chunkId()).isEqualTo("a");
+        verify(chunkRepository, never()).findTextByKnowledgeBaseId(anyString());
+    }
+
+    @Test
+    void otherSearchMethodsDoNotScanChunks() {
+        com.shimeta.rag.pipeline.PgChunkSearch pg = org.mockito.Mockito.mock(com.shimeta.rag.pipeline.PgChunkSearch.class);
+        SpringAiKnowledgeBaseProvider withPg = providerWithPg(pg, List.of());
+
+        withPg.retrieve(KB_ID, hybridRequest("semantic_search", 0.7, 0.3));
+
+        verify(chunkRepository, never()).findTextByKnowledgeBaseId(anyString());
+    }
+
     @Test
     void fullTextSearchUsesKeywordRouteOnly() {
         RetrievalRequest.Builder builder = RetrievalRequest.builder()
