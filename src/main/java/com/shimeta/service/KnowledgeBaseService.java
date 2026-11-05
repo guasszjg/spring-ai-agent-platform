@@ -428,7 +428,7 @@ public class KnowledgeBaseService {
                         .keywordWeight(kb.getKeywordWeight())
                         .expandParent(true)
                         .rewriteEnabled(true)
-                        .maxContextTokens(3000)
+                        .maxContextTokens(ContextBudgetPruner.DEFAULT_MAX_CONTEXT_TOKENS)
                         .build();
                 List<RetrievedChunk> chunks = provider.retrieve(datasetId, req);
                 allChunks.addAll(chunks);
@@ -440,7 +440,7 @@ public class KnowledgeBaseService {
         // P2 阶段：Token 预算裁剪 (修复 F4 缺陷)
         if (budgetPruner != null) {
             allChunks.sort(Comparator.comparingDouble(RetrievedChunk::score).reversed());
-            allChunks = budgetPruner.prune(allChunks, 3000).prunedChunks();
+            allChunks = budgetPruner.prune(allChunks, ContextBudgetPruner.DEFAULT_MAX_CONTEXT_TOKENS).prunedChunks();
         }
 
         List<String> faqImages = topFaqImages(allChunks, knowledgeBaseIds);
