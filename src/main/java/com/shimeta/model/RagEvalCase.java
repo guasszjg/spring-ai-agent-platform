@@ -32,6 +32,10 @@ public class RagEvalCase {
     @Column(columnDefinition = "TEXT")
     private String expectedDocumentIds;
 
+    /** 答案原文片段，一行一段 */
+    @Column(columnDefinition = "TEXT")
+    private String expectedTexts;
+
     private LocalDateTime createdAt;
 
     @PrePersist
@@ -52,6 +56,9 @@ public class RagEvalCase {
     public void setQuery(String query) { this.query = query; }
     public String getExpectedChunkIds() { return expectedChunkIds; }
     public void setExpectedChunkIds(String expectedChunkIds) { this.expectedChunkIds = expectedChunkIds; }
+    public String getExpectedTexts() { return expectedTexts; }
+    public void setExpectedTexts(String expectedTexts) { this.expectedTexts = expectedTexts; }
+
     public String getExpectedDocumentIds() { return expectedDocumentIds; }
     public void setExpectedDocumentIds(String expectedDocumentIds) { this.expectedDocumentIds = expectedDocumentIds; }
     public LocalDateTime getCreatedAt() { return createdAt; }

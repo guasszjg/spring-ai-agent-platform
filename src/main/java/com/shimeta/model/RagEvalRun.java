@@ -35,6 +35,30 @@ public class RagEvalRun {
     @Column(columnDefinition = "TEXT")
     private String detailJson;
 
+    @Column(length = 200)
+    private String label;
+
+    @Column(columnDefinition = "TEXT")
+    private String configJson;
+
+    @Column(length = 64)
+    private String casesFingerprint;
+
+    @Column(nullable = false, length = 16)
+    private String status = "DONE";
+
+    @Column(nullable = false)
+    private Integer completedCount = 0;
+
+    @Column(nullable = false)
+    private Integer errorCount = 0;
+
+    @Column(nullable = false)
+    private Integer rerankFallbackCount = 0;
+
+    @Column(length = 500)
+    private String errorMessage;
+
     private LocalDateTime createdAt;
 
     @PrePersist
@@ -63,6 +87,30 @@ public class RagEvalRun {
     public void setNdcgAt10(Double ndcgAt10) { this.ndcgAt10 = ndcgAt10; }
     public Double getAvgLatencyMs() { return avgLatencyMs; }
     public void setAvgLatencyMs(Double avgLatencyMs) { this.avgLatencyMs = avgLatencyMs; }
+    public String getLabel() { return label; }
+    public void setLabel(String label) { this.label = label; }
+
+    public String getConfigJson() { return configJson; }
+    public void setConfigJson(String configJson) { this.configJson = configJson; }
+
+    public String getCasesFingerprint() { return casesFingerprint; }
+    public void setCasesFingerprint(String casesFingerprint) { this.casesFingerprint = casesFingerprint; }
+
+    public String getStatus() { return status; }
+    public void setStatus(String status) { this.status = status; }
+
+    public Integer getCompletedCount() { return completedCount; }
+    public void setCompletedCount(Integer completedCount) { this.completedCount = completedCount; }
+
+    public Integer getErrorCount() { return errorCount; }
+    public void setErrorCount(Integer errorCount) { this.errorCount = errorCount; }
+
+    public Integer getRerankFallbackCount() { return rerankFallbackCount; }
+    public void setRerankFallbackCount(Integer rerankFallbackCount) { this.rerankFallbackCount = rerankFallbackCount; }
+
+    public String getErrorMessage() { return errorMessage; }
+    public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
+
     public String getDetailJson() { return detailJson; }
     public void setDetailJson(String detailJson) { this.detailJson = detailJson; }
     public LocalDateTime getCreatedAt() { return createdAt; }
