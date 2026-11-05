@@ -312,7 +312,7 @@ public class EmbeddingConfigService {
     }
 
     /** 从常见的错误结构中取出说明：{"code":201,"msg":"..."}、{"message":"..."}、{"error":{"message":"..."}} */
-    private static String businessError(JsonNode root) {
+    static String businessError(JsonNode root) {
         List<String> parts = new ArrayList<>();
         if (root.hasNonNull("code")) {
             parts.add("code=" + root.get("code").asText());
@@ -331,7 +331,7 @@ public class EmbeddingConfigService {
         return parts.isEmpty() ? abbreviate(root.toString()) : abbreviate(String.join(" ", parts));
     }
 
-    private static String abbreviate(String s) {
+    static String abbreviate(String s) {
         return s.length() > 200 ? s.substring(0, 200) + "…" : s;
     }
 

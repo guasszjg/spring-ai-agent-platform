@@ -29,7 +29,8 @@ public record RetrievalRequest(
         String queryType,            // P4: 查询类型 TEXT / IMAGE / MULTIMODAL (默认 TEXT)
         String queryImageUrl,        // P4: 以图搜图时的图片 URL
         Boolean injectImagesToLlm,   // P4: 原图是否注入 LLM 上下文 (默认 false, 遵循第18章)
-        Boolean graphSearchEnabled   // P4: 是否开启 GraphRAG 实体多跳检索 (默认 false)
+        Boolean graphSearchEnabled,  // P4: 是否开启 GraphRAG 实体多跳检索 (默认 false)
+        String rerankMode            // 排序方式：weighted_score（权重融合）/ reranking_model（调用 Rerank 模型）
 ) {
     /**
      * 兼容旧 15 参数构造器 (P1~P3)
@@ -41,7 +42,7 @@ public record RetrievalRequest(
                             Integer maxContextTokens, Map<String, Object> extraParams) {
         this(knowledgeBaseId, query, topK, scoreThreshold, searchMethod, rerankEnabled, rerankModel,
                 vectorWeight, keywordWeight, engineOverride, indexVersionId, rewriteEnabled, expandParent,
-                maxContextTokens, extraParams, true, "TEXT", null, false, false);
+                maxContextTokens, extraParams, true, "TEXT", null, false, false, null);
     }
 
     public static Builder builder() {
@@ -69,6 +70,7 @@ public record RetrievalRequest(
         private String queryImageUrl;
         private Boolean injectImagesToLlm = false;
         private Boolean graphSearchEnabled = false;
+        private String rerankMode;
 
         public Builder knowledgeBaseId(String knowledgeBaseId) { this.knowledgeBaseId = knowledgeBaseId; return this; }
         public Builder query(String query) { this.query = query; return this; }
@@ -90,6 +92,7 @@ public record RetrievalRequest(
         public Builder queryImageUrl(String queryImageUrl) { this.queryImageUrl = queryImageUrl; return this; }
         public Builder injectImagesToLlm(Boolean injectImagesToLlm) { this.injectImagesToLlm = injectImagesToLlm; return this; }
         public Builder graphSearchEnabled(Boolean graphSearchEnabled) { this.graphSearchEnabled = graphSearchEnabled; return this; }
+        public Builder rerankMode(String rerankMode) { this.rerankMode = rerankMode; return this; }
 
         public RetrievalRequest build() {
             return new RetrievalRequest(
@@ -104,7 +107,8 @@ public record RetrievalRequest(
                     queryType != null ? queryType : "TEXT",
                     queryImageUrl,
                     injectImagesToLlm != null ? injectImagesToLlm : false,
-                    graphSearchEnabled != null ? graphSearchEnabled : false
+                    graphSearchEnabled != null ? graphSearchEnabled : false,
+                    rerankMode
             );
         }
     }

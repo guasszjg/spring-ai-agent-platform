@@ -15,9 +15,12 @@ import com.shimeta.model.EmbeddingConfigRequest;
 import com.shimeta.model.EmbeddingConfigView;
 import com.shimeta.model.OcrConfigRequest;
 import com.shimeta.model.OcrConfigView;
+import com.shimeta.model.RerankConfigRequest;
+import com.shimeta.model.RerankConfigView;
 import com.shimeta.service.DifyConfigService;
 import com.shimeta.service.EmbeddingConfigService;
 import com.shimeta.service.OcrConfigService;
+import com.shimeta.service.RerankConfigService;
 import com.shimeta.service.LlmGatewayService;
 import com.shimeta.service.LlmVendorCatalog;
 import org.springframework.http.HttpStatus;
@@ -46,15 +49,18 @@ public class ModelGatewayController {
     private final EmbeddingConfigService embeddingConfigService;
     private final DifyConfigService difyConfigService;
     private final OcrConfigService ocrConfigService;
+    private final RerankConfigService rerankConfigService;
 
     public ModelGatewayController(LlmGatewayService gatewayService,
                                   EmbeddingConfigService embeddingConfigService,
                                   DifyConfigService difyConfigService,
-                                  OcrConfigService ocrConfigService) {
+                                  OcrConfigService ocrConfigService,
+                                  RerankConfigService rerankConfigService) {
         this.gatewayService = gatewayService;
         this.embeddingConfigService = embeddingConfigService;
         this.difyConfigService = difyConfigService;
         this.ocrConfigService = ocrConfigService;
+        this.rerankConfigService = rerankConfigService;
     }
 
     private boolean checkAdmin() {
@@ -313,6 +319,120 @@ public class ModelGatewayController {
         }
         try {
             Map<String, Object> result = embeddingConfigService.probe(id);
+            boolean success = Boolean.TRUE.equals(result.get("success"));
+            String msg = (String) result.get("message");
+            return ResponseEntity.ok(success ? ApiResponse.ok(msg, result) : ApiResponse.error(msg, result));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    // ==========================================
+    // Rerank 重排模型管理接口
+    // ==========================================
+    @GetMapping("/reranks")
+    public ResponseEntity<ApiResponse<List<RerankConfigView>>> listReranks() {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可查看 Rerank 配置"));
+        }
+        return ResponseEntity.ok(ApiResponse.ok(rerankConfigService.listViews()));
+    }
+
+    /**
+     * 当前生效的 Rerank 模型摘要（任意登录用户可读，用于知识库页面判断能否选择 Rerank 模式）。
+     * 只返回名称和模型，不含接口地址与密钥。
+     */
+    @GetMapping("/reranks/active")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> activeRerank() {
+        Map<String, Object> view = new java.util.LinkedHashMap<>();
+        rerankConfigService.getActiveConfig().ifPresentOrElse(cfg -> {
+            view.put("configured", true);
+            view.put("name", cfg.getName());
+            view.put("modelName", cfg.getModelName());
+        }, () -> view.put("configured", false));
+        return ResponseEntity.ok(ApiResponse.ok(view));
+    }
+
+    @PostMapping("/reranks")
+    public ResponseEntity<ApiResponse<RerankConfigView>> createRerank(@RequestBody RerankConfigRequest request) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可配置 Rerank 模型"));
+        }
+        try {
+            return ResponseEntity.ok(ApiResponse.ok("Rerank 配置已创建", rerankConfigService.create(request)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PutMapping("/reranks/{id}")
+    public ResponseEntity<ApiResponse<RerankConfigView>> updateRerank(@PathVariable String id,
+                                                                      @RequestBody RerankConfigRequest request) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可更新 Rerank 模型"));
+        }
+        try {
+            return ResponseEntity.ok(ApiResponse.ok("Rerank 配置已更新", rerankConfigService.update(id, request)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/reranks/{id}/activate")
+    public ResponseEntity<ApiResponse<Void>> activateRerank(@PathVariable String id) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可切换 Rerank 模型"));
+        }
+        try {
+            rerankConfigService.activate(id);
+            return ResponseEntity.ok(ApiResponse.ok("Rerank 模型已设为当前生效", null));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/reranks/{id}")
+    public ResponseEntity<ApiResponse<Void>> deleteRerank(@PathVariable String id) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可删除 Rerank 模型"));
+        }
+        try {
+            rerankConfigService.delete(id);
+            return ResponseEntity.ok(ApiResponse.ok("Rerank 配置已删除", null));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/reranks/test-connection")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> testRerankConnection(@RequestBody RerankConfigRequest request) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可测试 Rerank 连通性"));
+        }
+        try {
+            Map<String, Object> result = rerankConfigService.probeDraft(request);
+            boolean success = Boolean.TRUE.equals(result.get("success"));
+            String msg = (String) result.get("message");
+            return ResponseEntity.ok(success ? ApiResponse.ok(msg, result) : ApiResponse.error(msg, result));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/reranks/{id}/probe")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> probeRerank(@PathVariable String id) {
+        if (!checkAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：仅超级管理员可测试 Rerank 连通性"));
+        }
+        try {
+            Map<String, Object> result = rerankConfigService.probe(id);
             boolean success = Boolean.TRUE.equals(result.get("success"));
             String msg = (String) result.get("message");
             return ResponseEntity.ok(success ? ApiResponse.ok(msg, result) : ApiResponse.error(msg, result));

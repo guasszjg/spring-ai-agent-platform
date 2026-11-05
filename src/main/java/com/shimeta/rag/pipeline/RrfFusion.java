@@ -16,10 +16,16 @@ public final class RrfFusion {
     }
 
     public static List<String> fuse(List<String> vectorIds, List<String> keywordIds, int rrfK) {
+        return fuse(vectorIds, keywordIds, rrfK, 1.0, 1.0);
+    }
+
+    /** 带权融合：两路的排名得分分别乘以各自的权重 */
+    public static List<String> fuse(List<String> vectorIds, List<String> keywordIds, int rrfK,
+                                    double vectorWeight, double keywordWeight) {
         int k = rrfK > 0 ? rrfK : DEFAULT_K;
         Map<String, Double> scores = new LinkedHashMap<>();
-        addRanks(scores, vectorIds, k);
-        addRanks(scores, keywordIds, k);
+        addRanks(scores, vectorIds, k, vectorWeight);
+        addRanks(scores, keywordIds, k, keywordWeight);
         List<Map.Entry<String, Double>> ranked = new ArrayList<>(scores.entrySet());
         ranked.sort((a, b) -> Double.compare(b.getValue(), a.getValue()));
         List<String> ids = new ArrayList<>(ranked.size());
@@ -30,20 +36,25 @@ public final class RrfFusion {
     }
 
     public static double scoreOf(String id, List<String> vectorIds, List<String> keywordIds, int rrfK) {
+        return scoreOf(id, vectorIds, keywordIds, rrfK, 1.0, 1.0);
+    }
+
+    public static double scoreOf(String id, List<String> vectorIds, List<String> keywordIds, int rrfK,
+                                 double vectorWeight, double keywordWeight) {
         int k = rrfK > 0 ? rrfK : DEFAULT_K;
         double score = 0;
         int v = vectorIds != null ? vectorIds.indexOf(id) : -1;
         int w = keywordIds != null ? keywordIds.indexOf(id) : -1;
         if (v >= 0) {
-            score += 1.0 / (k + v + 1);
+            score += vectorWeight / (k + v + 1);
         }
         if (w >= 0) {
-            score += 1.0 / (k + w + 1);
+            score += keywordWeight / (k + w + 1);
         }
         return score;
     }
 
-    private static void addRanks(Map<String, Double> scores, List<String> ids, int k) {
+    private static void addRanks(Map<String, Double> scores, List<String> ids, int k, double weight) {
         if (ids == null) {
             return;
         }
@@ -52,7 +63,7 @@ public final class RrfFusion {
             if (id == null || id.isBlank()) {
                 continue;
             }
-            scores.merge(id, 1.0 / (k + i + 1), Double::sum);
+            scores.merge(id, weight / (k + i + 1), Double::sum);
         }
     }
 }

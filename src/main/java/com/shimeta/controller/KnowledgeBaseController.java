@@ -112,6 +112,8 @@ public class KnowledgeBaseController {
             return ResponseEntity.ok(ApiResponse.ok("知识库信息更新成功", kb));
         } catch (IllegalStateException e) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
         }
     }
 

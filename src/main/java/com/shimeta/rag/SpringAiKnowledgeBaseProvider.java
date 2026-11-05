@@ -3,9 +3,12 @@ package com.shimeta.rag;
 import com.shimeta.model.KnowledgeBase;
 import com.shimeta.model.KnowledgeDocumentChunk;
 import com.shimeta.model.KnowledgeGraphTriplet;
+import com.shimeta.model.RerankConfig;
 import com.shimeta.rag.cache.SemanticCacheService;
 import com.shimeta.rag.dto.DifyDatasetDto;
 import com.shimeta.rag.dto.DifyDocumentDto;
+import com.shimeta.rag.dto.KnowledgeCostStatsDto;
+import com.shimeta.service.RerankConfigService;
 import com.shimeta.rag.engine.RetrievalRequest;
 import com.shimeta.rag.graph.GraphRagService;
 import com.shimeta.rag.pipeline.ContextBudgetPruner;
@@ -51,6 +54,10 @@ import java.util.UUID;
 public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
 
     private static final Logger log = LoggerFactory.getLogger(SpringAiKnowledgeBaseProvider.class);
+    private static final String RERANK_MODE_MODEL = "reranking_model";
+    private static final int RERANK_MIN_CANDIDATES = 20;
+    private static final int RERANK_MAX_CANDIDATES = 100;
+    private static final int RERANK_MAX_DOCUMENT_CHARS = 4000;
 
     private final KnowledgeDocumentChunkRepository chunkRepository;
     private final KnowledgeBaseRepository knowledgeBaseRepository;
@@ -63,6 +70,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
     private final SemanticCacheService semanticCacheService;
     private final GraphRagService graphRagService;
     private final PgChunkSearch pgChunkSearch;
+    private final RerankConfigService rerankConfigService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Autowired
@@ -76,7 +84,8 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                                          @Autowired(required = false) DocumentParsingService documentParsingService,
                                          @Autowired(required = false) SemanticCacheService semanticCacheService,
                                          @Autowired(required = false) GraphRagService graphRagService,
-                                         @Autowired(required = false) PgChunkSearch pgChunkSearch) {
+                                         @Autowired(required = false) PgChunkSearch pgChunkSearch,
+                                         @Autowired(required = false) RerankConfigService rerankConfigService) {
         this.chunkRepository = chunkRepository;
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.documentChunker = documentChunker;
@@ -88,6 +97,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         this.semanticCacheService = semanticCacheService;
         this.graphRagService = graphRagService;
         this.pgChunkSearch = pgChunkSearch;
+        this.rerankConfigService = rerankConfigService;
     }
 
     public SpringAiKnowledgeBaseProvider(KnowledgeDocumentChunkRepository chunkRepository,
@@ -98,7 +108,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                                          QueryTransformer queryTransformer,
                                          ContextBudgetPruner budgetPruner,
                                          DocumentParsingService documentParsingService) {
-        this(chunkRepository, knowledgeBaseRepository, documentChunker, embeddingService, keywordRetriever, queryTransformer, budgetPruner, documentParsingService, null, null, null);
+        this(chunkRepository, knowledgeBaseRepository, documentChunker, embeddingService, keywordRetriever, queryTransformer, budgetPruner, documentParsingService, null, null, null, null);
     }
 
     public SpringAiKnowledgeBaseProvider(KnowledgeDocumentChunkRepository chunkRepository,
@@ -108,7 +118,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                                          KeywordRetriever keywordRetriever,
                                          QueryTransformer queryTransformer,
                                          ContextBudgetPruner budgetPruner) {
-        this(chunkRepository, knowledgeBaseRepository, documentChunker, embeddingService, keywordRetriever, queryTransformer, budgetPruner, null, null, null, null);
+        this(chunkRepository, knowledgeBaseRepository, documentChunker, embeddingService, keywordRetriever, queryTransformer, budgetPruner, null, null, null, null, null);
     }
 
     @Override
@@ -293,9 +303,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 KnowledgeBase kb = kbOpt.get();
                 long curEmbedTokens = kb.getEmbeddingTokens() != null ? kb.getEmbeddingTokens() : 0L;
                 kb.setEmbeddingTokens(curEmbedTokens + totalTokens);
-                double embedCost = kb.getEmbeddingTokens() * 0.0000005;
-                double rkCost = (kb.getRerankCalls() != null ? kb.getRerankCalls() : 0L) * 0.003;
-                kb.setEstimatedCost(Math.round((embedCost + rkCost) * 10000.0) / 10000.0);
+                kb.setEstimatedCost(KnowledgeCostStatsDto.estimateCost(kb.getEmbeddingTokens(), kb.getRerankTokens()));
                 knowledgeBaseRepository.save(kb);
             }
         } catch (Exception e) {
@@ -460,7 +468,12 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         int topK = request.topK() != null && request.topK() > 0 ? request.topK() : 3;
         double threshold = request.scoreThreshold() != null ? request.scoreThreshold() : 0.3;
         String searchMethod = request.searchMethod() != null ? request.searchMethod().toLowerCase() : "hybrid_search";
-        boolean rerankEnabled = Boolean.TRUE.equals(request.rerankEnabled());
+        // 只有明确选了 Rerank 模型模式才调用：开关默认开启，不能据此产生费用
+        boolean rerankRequested = Boolean.TRUE.equals(request.rerankEnabled())
+                && RERANK_MODE_MODEL.equals(request.rerankMode());
+        double[] weights = "hybrid_search".equals(searchMethod)
+                ? fusionWeights(request.vectorWeight(), request.keywordWeight())
+                : new double[]{1.0, 1.0};
 
         // P4: 多模态查询支持 (以文搜图、以图搜图)
         boolean isImageQuery = "IMAGE".equalsIgnoreCase(request.queryType())
@@ -498,7 +511,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
 
         List<KnowledgeDocumentChunk> rankedChunks;
         if (usedPg) {
-            List<String> fused = fuseIds(searchMethod, vectorIds, keywordIds);
+            List<String> fused = fuseIds(searchMethod, vectorIds, keywordIds, weights);
             rankedChunks = loadInOrder(fused);
         } else {
             List<KnowledgeDocumentChunk> allChunks = chunkRepository.findByKnowledgeBaseIdAndEnabledTrueOrderByChunkIndexAsc(kbId);
@@ -513,8 +526,8 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 double keywordScore = keywordRetriever.computeScore(effectiveQuery, chunk.getContent());
                 vectorScoreById.put(chunk.getId(), vectorScore);
                 keywordScoreById.put(chunk.getId(), keywordScore);
-                vectorRanked.add(new ScoredChunk(chunk, vectorScore, vectorScore, keywordScore, vectorScore, "TEXT_ONLY"));
-                keywordRanked.add(new ScoredChunk(chunk, keywordScore, vectorScore, keywordScore, keywordScore, "TEXT_ONLY"));
+                vectorRanked.add(new ScoredChunk(chunk, vectorScore, vectorScore, keywordScore, null, "TEXT_ONLY"));
+                keywordRanked.add(new ScoredChunk(chunk, keywordScore, vectorScore, keywordScore, null, "TEXT_ONLY"));
             }
             vectorRanked.sort(Comparator.comparingDouble(ScoredChunk::finalScore).reversed());
             keywordRanked.sort(Comparator.comparingDouble(ScoredChunk::finalScore).reversed());
@@ -523,7 +536,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 vectorIds.add(vectorRanked.get(i).chunk().getId());
                 keywordIds.add(keywordRanked.get(i).chunk().getId());
             }
-            List<String> fused = fuseIds(searchMethod, vectorIds, keywordIds);
+            List<String> fused = fuseIds(searchMethod, vectorIds, keywordIds, weights);
             Map<String, KnowledgeDocumentChunk> byId = new LinkedHashMap<>();
             for (KnowledgeDocumentChunk chunk : allChunks) {
                 byId.put(chunk.getId(), chunk);
@@ -545,7 +558,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
             double vectorScore = vectorScoreById.getOrDefault(chunk.getId(), 0.0);
             double keywordScore = keywordScoreById.getOrDefault(chunk.getId(),
                     keywordRetriever.computeScore(effectiveQuery, chunk.getContent()));
-            double rrf = RrfFusion.scoreOf(chunk.getId(), vectorIds, keywordIds, RrfFusion.DEFAULT_K);
+            double rrf = RrfFusion.scoreOf(chunk.getId(), vectorIds, keywordIds, RrfFusion.DEFAULT_K, weights[0], weights[1]);
             boolean isChunkImage = "IMAGE".equalsIgnoreCase(chunk.getChunkType())
                     || (chunk.getImageUrl() != null && !chunk.getImageUrl().isBlank());
             String matchedBy = "TEXT_ONLY";
@@ -566,8 +579,23 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
             if (!keep) {
                 continue;
             }
-            candidates.add(new ScoredChunk(chunk, rrf > 0 ? rrf : Math.max(vectorScore, keywordScore),
-                    vectorScore, keywordScore, rrf, matchedBy));
+            // 融合分只和融合分比较：权重为 0 的一路融合分也是 0，不能回退成向量分，否则会排到真实命中的前面
+            boolean fused = vectorIds.contains(chunk.getId()) || keywordIds.contains(chunk.getId());
+            candidates.add(new ScoredChunk(chunk, fused ? rrf : Math.max(vectorScore, keywordScore),
+                    vectorScore, keywordScore, null, matchedBy));
+        }
+
+        // 排序调用 Rerank 模型；失败时保留融合排序，这次结果也不写缓存，避免降级的排序被复用
+        long rerankedTokens = -1;
+        boolean rerankFailed = false;
+        if (rerankRequested && !isImageQuery && rerankConfigService != null) {
+            Reranked reranked = rerankCandidates(effectiveQuery, candidates, topK);
+            if (reranked != null) {
+                candidates = reranked.chunks();
+                rerankedTokens = reranked.tokens();
+            } else {
+                rerankFailed = true;
+            }
         }
 
         // 3. 父子切片回溯展开与跨段去重 (P2 阶段)
@@ -640,7 +668,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                     .score(round4(sc.finalScore()))
                     .vectorScore(round4(sc.vectorScore()))
                     .keywordScore(round4(sc.keywordScore()))
-                    .rerankScore(round4(sc.rerankScore()))
+                    .rerankScore(sc.rerankScore() != null ? round4(sc.rerankScore()) : null)
                     .matchType("hybrid_search".equals(searchMethod) ? "HYBRID" : ("keyword_search".equals(searchMethod) ? "KEYWORD" : "VECTOR"))
                     .tokenCount((int) finalTokens)
                     .imageUrl(ch.getImageUrl())
@@ -679,7 +707,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         long latencyMs = System.currentTimeMillis() - retrievalStart;
 
         // 6. P4: 异步或同步写入语义缓存 (以备下次快速命中)
-        if (cacheEnabled && semanticCacheService != null && !finalChunks.isEmpty()) {
+        if (cacheEnabled && !rerankFailed && semanticCacheService != null && !finalChunks.isEmpty()) {
             semanticCacheService.put(kbId, request.indexVersionId(), request.query(), queryVec, finalChunks, latencyMs, null);
         }
 
@@ -691,13 +719,11 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 int retTokens = finalChunks.stream().mapToInt(c -> c.tokenCount() != null ? c.tokenCount() : 0).sum();
                 long curRet = kb.getRetrievalTokens() != null ? kb.getRetrievalTokens() : 0L;
                 kb.setRetrievalTokens(curRet + retTokens);
-                if (rerankEnabled) {
-                    long curRk = kb.getRerankCalls() != null ? kb.getRerankCalls() : 0L;
-                    kb.setRerankCalls(curRk + 1);
+                if (rerankedTokens >= 0) {
+                    kb.setRerankCalls(kb.getRerankCalls() + 1);
+                    kb.setRerankTokens(kb.getRerankTokens() + rerankedTokens);
                 }
-                double embedCost = (kb.getEmbeddingTokens() != null ? kb.getEmbeddingTokens() : 0L) * 0.0000005;
-                double rkCost = (kb.getRerankCalls() != null ? kb.getRerankCalls() : 0L) * 0.003;
-                kb.setEstimatedCost(Math.round((embedCost + rkCost) * 10000.0) / 10000.0);
+                kb.setEstimatedCost(KnowledgeCostStatsDto.estimateCost(kb.getEmbeddingTokens(), kb.getRerankTokens()));
                 knowledgeBaseRepository.save(kb);
             }
         } catch (Exception e) {
@@ -738,14 +764,56 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         chunk.setEmbeddingDim(vector != null ? vector.length : null);
     }
 
-    private List<String> fuseIds(String searchMethod, List<String> vectorIds, List<String> keywordIds) {
+    /** 调用当前生效的 Rerank 模型重排候选切片；没有生效配置或调用失败时返回 null */
+    private Reranked rerankCandidates(String query, List<ScoredChunk> candidates, int topK) {
+        Optional<RerankConfig> config = rerankConfigService.getActiveConfig();
+        if (config.isEmpty()) {
+            log.warn("知识库选择了 Rerank 模型模式，但模型网关没有生效的 Rerank 配置，退回融合排序");
+            return null;
+        }
+        if (candidates.isEmpty()) {
+            return new Reranked(candidates, 0);
+        }
+        // 候选越多费用越高，只重排融合排序靠前的部分
+        int limit = Math.min(RERANK_MAX_CANDIDATES, Math.max(RERANK_MIN_CANDIDATES, topK * 4));
+        List<ScoredChunk> inputs = candidates.subList(0, Math.min(limit, candidates.size()));
+        List<String> documents = new ArrayList<>(inputs.size());
+        for (ScoredChunk sc : inputs) {
+            String text = sc.chunk().getContent() != null ? sc.chunk().getContent() : "";
+            documents.add(text.length() > RERANK_MAX_DOCUMENT_CHARS ? text.substring(0, RERANK_MAX_DOCUMENT_CHARS) : text);
+        }
+        try {
+            RerankConfigService.Result result = rerankConfigService.rerank(config.get(), query, documents);
+            List<ScoredChunk> ranked = new ArrayList<>(result.hits().size());
+            for (RerankConfigService.Hit hit : result.hits()) {
+                ScoredChunk sc = inputs.get(hit.index());
+                ranked.add(new ScoredChunk(sc.chunk(), hit.score(), sc.vectorScore(), sc.keywordScore(), hit.score(), sc.matchedBy()));
+            }
+            long tokens = result.totalTokens() > 0 ? result.totalTokens()
+                    : documents.stream().mapToLong(documentChunker::estimateTokens).sum() + documentChunker.estimateTokens(query);
+            return new Reranked(ranked, tokens);
+        } catch (Exception e) {
+            log.warn("调用 Rerank 模型失败，退回融合排序: model={}, err={}", config.get().getModelName(), e.getMessage());
+            return null;
+        }
+    }
+
+    /** 权重换算成总和为 2：语义和关键词各占 50% 时与未加权的 RRF 得分相同 */
+    private static double[] fusionWeights(Double vectorWeight, Double keywordWeight) {
+        double vector = vectorWeight != null ? Math.max(0, vectorWeight) : 0.7;
+        double keyword = keywordWeight != null ? Math.max(0, keywordWeight) : 0.3;
+        double sum = vector + keyword;
+        return sum > 0 ? new double[]{vector / sum * 2, keyword / sum * 2} : new double[]{1.0, 1.0};
+    }
+
+    private List<String> fuseIds(String searchMethod, List<String> vectorIds, List<String> keywordIds, double[] weights) {
         if ("semantic_search".equals(searchMethod)) {
             return vectorIds;
         }
         if ("keyword_search".equals(searchMethod)) {
             return keywordIds;
         }
-        return RrfFusion.fuse(vectorIds, keywordIds, RrfFusion.DEFAULT_K);
+        return RrfFusion.fuse(vectorIds, keywordIds, RrfFusion.DEFAULT_K, weights[0], weights[1]);
     }
 
     private List<KnowledgeDocumentChunk> loadInOrder(List<String> ids) {
@@ -811,7 +879,9 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
             double finalScore,
             double vectorScore,
             double keywordScore,
-            double rerankScore,
+            Double rerankScore,
             String matchedBy
     ) {}
+
+    private record Reranked(List<ScoredChunk> chunks, long tokens) {}
 }

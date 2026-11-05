@@ -441,7 +441,8 @@ class KnowledgeBaseServiceTest {
         kb.setProvider("SPRING_AI");
         kb.setEmbeddingTokens(1_000_000L); // 1M tokens -> 0.5元
         kb.setRetrievalTokens(20_000L);
-        kb.setRerankCalls(200L);           // 200 calls -> 0.6元
+        kb.setRerankCalls(200L);
+        kb.setRerankTokens(1_200_000L);    // 1.2M tokens -> 0.6元
         when(knowledgeBaseRepository.findById("kb-cost-1")).thenReturn(Optional.of(kb));
 
         com.shimeta.rag.dto.KnowledgeCostStatsDto stats =
