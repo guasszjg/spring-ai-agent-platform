@@ -108,6 +108,9 @@ public class KnowledgeBase {
     @Column(name = "rerank_calls")
     private Long rerankCalls = 0L;
 
+    @Column(name = "rerank_tokens")
+    private Long rerankTokens = 0L;
+
     @Column(name = "estimated_cost")
     private Double estimatedCost = 0.0;
 
@@ -463,6 +466,14 @@ public class KnowledgeBase {
 
     public void setRerankCalls(Long rerankCalls) {
         this.rerankCalls = rerankCalls;
+    }
+
+    public Long getRerankTokens() {
+        return rerankTokens != null ? rerankTokens : 0L;
+    }
+
+    public void setRerankTokens(Long rerankTokens) {
+        this.rerankTokens = rerankTokens;
     }
 
     public Double getEstimatedCost() {

@@ -17,15 +17,15 @@ class CustomHttpLlmClientTest {
 
     @Test
     void testCustomHttpProbeAndChat() {
-        String endpoint = "http://82.157.197.25:9540/api/modelConfig/modelLlmModel";
+        String endpoint = "http://gateway.example.com:9540/api/modelConfig/modelLlmModel";
         String customConfigJson = """
                 {
-                  "endpointUrl": "http://82.157.197.25:9540/api/modelConfig/modelLlmModel",
+                  "endpointUrl": "http://gateway.example.com:9540/api/modelConfig/modelLlmModel",
                   "httpMethod": "POST",
                   "headers": {
                     "Content-Type": "application/json;charset=utf-8"
                   },
-                  "bodyTemplate": "{\\n  \\"appId\\": \\"EM7C8J0FKC\\",\\n  \\"deviceMac\\": \\"8CFCA0288618\\",\\n  \\"prompt\\": \\"{{prompt}}\\"\\n}",
+                  "bodyTemplate": "{\\n  \\"appId\\": \\"your-app-id\\",\\n  \\"deviceMac\\": \\"your-device-mac\\",\\n  \\"prompt\\": \\"{{prompt}}\\"\\n}",
                   "successCode": 200,
                   "resultPath": "data.result",
                   "errorCodePath": "code",

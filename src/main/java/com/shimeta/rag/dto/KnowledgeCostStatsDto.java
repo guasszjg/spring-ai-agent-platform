@@ -13,6 +13,7 @@ public record KnowledgeCostStatsDto(
         long embeddingTokens,
         long retrievalTokens,
         long rerankCalls,
+        long rerankTokens,
         double estimatedCostYuan,
         double embeddingCostYuan,
         double rerankCostYuan,
@@ -20,6 +21,17 @@ public record KnowledgeCostStatsDto(
         Map<String, Object> formatSupport,
         Map<String, Object> ocrStatus
 ) {
+    /** 嵌入与重排都按约 0.5 元 / 1M Tokens 估算，实际价格以所配模型的厂商为准 */
+    private static final double YUAN_PER_TOKEN = 0.0000005;
+
+    public static double estimateCost(long embeddingTokens, long rerankTokens) {
+        return round4((embeddingTokens + rerankTokens) * YUAN_PER_TOKEN);
+    }
+
+    private static double round4(double value) {
+        return Math.round(value * 10000.0) / 10000.0;
+    }
+
     public static KnowledgeCostStatsDto of(
             String id,
             String name,
@@ -27,14 +39,13 @@ public record KnowledgeCostStatsDto(
             long embeddingTokens,
             long retrievalTokens,
             long rerankCalls,
+            long rerankTokens,
             boolean ocrAvailable,
             String ocrProvider
     ) {
-        // 嵌入成本: 约 0.5 元 / 1M Tokens (0.0000005 元/token)
-        double embedCost = Math.round((embeddingTokens * 0.0000005) * 10000.0) / 10000.0;
-        // 重排成本: 约 0.003 元 / 次调用
-        double rkCost = Math.round((rerankCalls * 0.003) * 10000.0) / 10000.0;
-        double totalCost = Math.round((embedCost + rkCost) * 10000.0) / 10000.0;
+        double embedCost = estimateCost(embeddingTokens, 0);
+        double rkCost = estimateCost(0, rerankTokens);
+        double totalCost = estimateCost(embeddingTokens, rerankTokens);
 
         // 估算 Token 预算制节省的 Token 数量 (原先 12块*1500字符 = ~23400 Tokens，现在预算为 3000)
         long savedTokens = Math.max(0, retrievalTokens * 3);
@@ -54,7 +65,7 @@ public record KnowledgeCostStatsDto(
 
         return new KnowledgeCostStatsDto(
                 id, name, provider,
-                embeddingTokens, retrievalTokens, rerankCalls,
+                embeddingTokens, retrievalTokens, rerankCalls, rerankTokens,
                 totalCost, embedCost, rkCost, savedTokens,
                 formatSupport, ocr
         );

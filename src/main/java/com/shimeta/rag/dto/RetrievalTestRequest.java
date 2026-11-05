@@ -14,6 +14,7 @@ public class RetrievalTestRequest {
     private String searchMethod;
     private Boolean rerankEnabled;
     private String rerankModel;
+    private String rerankMode;       // weighted_score / reranking_model（为空时用知识库的设置）
     private Double vectorWeight;
     private Double keywordWeight;
     private String engineOverride;   // DIFY, SPRING_AI (可为空)
@@ -71,6 +72,14 @@ public class RetrievalTestRequest {
 
     public void setRerankEnabled(Boolean rerankEnabled) {
         this.rerankEnabled = rerankEnabled;
+    }
+
+    public String getRerankMode() {
+        return rerankMode;
+    }
+
+    public void setRerankMode(String rerankMode) {
+        this.rerankMode = rerankMode;
     }
 
     public String getRerankModel() {

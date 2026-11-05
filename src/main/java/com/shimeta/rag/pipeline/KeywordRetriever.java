@@ -11,7 +11,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 平台内置全文关键词匹配与 BM25 分数评估器
+ * 平台内置全文关键词匹配：按问题词的覆盖率和词频打分（不是 BM25）
  */
 @Component
 public class KeywordRetriever {

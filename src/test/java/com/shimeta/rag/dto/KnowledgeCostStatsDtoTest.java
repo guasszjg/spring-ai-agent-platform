@@ -17,6 +17,7 @@ class KnowledgeCostStatsDtoTest {
                 2_000_000L, // 2M embedding tokens
                 50_000L,    // 50k retrieval tokens
                 100L,       // 100 rerank calls
+                600_000L,   // 600k rerank tokens
                 true,
                 "LOCAL_PADDLE_OCR"
         );
@@ -30,7 +31,7 @@ class KnowledgeCostStatsDtoTest {
 
         // 2M tokens * 0.5元/M = 1.0 元
         assertThat(stats.embeddingCostYuan()).isEqualTo(1.0);
-        // 100 calls * 0.003元 = 0.3 元
+        // 0.6M tokens * 0.5元/M = 0.3 元，按实际 Token 计费，与调用次数无关
         assertThat(stats.rerankCostYuan()).isEqualTo(0.3);
         // 合计 1.3 元
         assertThat(stats.estimatedCostYuan()).isEqualTo(1.3);

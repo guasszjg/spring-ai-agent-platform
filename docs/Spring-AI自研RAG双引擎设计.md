@@ -61,7 +61,7 @@
 | F12 | FAQ 图片落本地磁盘 `./uploads/knowledge/`，通过 `/uploads/**` 静态映射暴露；校验格式与 10MB 上限 | `KnowledgeBaseService.saveFaqImage` 第 943-977 行、`WebMvcConfig` 第 36-38 行 | ⚠️ 静态目录无鉴权，私有知识库附件**可被直接 URL 访问**，与权限设计原则冲突（对应设计文档中已识别的"附件也需受控"） |
 | F13 | 开放 API 已有检索端点 `POST /open/v1/knowledge-bases/{id}/retrieve`，并记用量 | `OpenKnowledgeBaseController` 第 254-270 行 | 自研引擎需同样满足开放 API 契约与用量记账 |
 | F14 | 已有 24 个测试类，其中 `KnowledgeBaseServiceTest` 已覆盖跨库合并、跳过停用库等场景 | `src/test/.../KnowledgeBaseServiceTest.java` 第 168、242 行 | 有测试护栏，改造具备回归保障，新增引擎可沿用同构测试 |
-| F15 | 数据库为 PostgreSQL（本地便携版 127.0.0.1 / 远程 192.9.51.198），JPA + Flyway 双轨建表 | `doc/info.txt`、`db/migration/V1__baseline.sql` | **PgVector 路线可行性高**，可利用现有 PostgreSQL 实例 |
+| F15 | 数据库为 PostgreSQL（本地便携版 127.0.0.1 / 远程 192 数据库），JPA + Flyway 双轨建表 | `doc/info.txt`、`db/migration/V1__baseline.sql` | **PgVector 路线可行性高**，可利用现有 PostgreSQL 实例 |
 | F16 | 知识库表已含 `provider`、`indexing_technique`、`embedding_model`、`rerank_model`、`search_method`、`vector_weight` 等字段 | `doc/schema.sql` 第 172-204 行 | 配置维度已有承载，缺"版本"与"多引擎并存"维度 |
 
 ### 2.2 待确认项（需人工或环境核实）

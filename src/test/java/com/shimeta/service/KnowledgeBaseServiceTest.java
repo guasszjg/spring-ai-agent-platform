@@ -252,16 +252,16 @@ class KnowledgeBaseServiceTest {
 
     @Test
     void displayHost_readsHostFromDifyBaseUrl() {
-        assertThat(KnowledgeBaseService.displayHost("http://120.79.38.143/v1")).isEqualTo("120.79.38.143");
+        assertThat(KnowledgeBaseService.displayHost("http://dify.example.com/v1")).isEqualTo("dify.example.com");
         assertThat(KnowledgeBaseService.displayHost("")).isEmpty();
     }
 
     @Test
     void getEngineInfo_usesProviderBaseUrl() {
-        when(difyProvider.getBaseUrl()).thenReturn("http://120.79.38.143/v1");
+        when(difyProvider.getBaseUrl()).thenReturn("http://dify.example.com/v1");
         var info = knowledgeBaseService.getEngineInfo();
         assertThat(info.isConfigured()).isTrue();
-        assertThat(info.getHost()).isEqualTo("120.79.38.143");
+        assertThat(info.getHost()).isEqualTo("dify.example.com");
     }
 
     @Test
@@ -441,7 +441,8 @@ class KnowledgeBaseServiceTest {
         kb.setProvider("SPRING_AI");
         kb.setEmbeddingTokens(1_000_000L); // 1M tokens -> 0.5元
         kb.setRetrievalTokens(20_000L);
-        kb.setRerankCalls(200L);           // 200 calls -> 0.6元
+        kb.setRerankCalls(200L);
+        kb.setRerankTokens(1_200_000L);    // 1.2M tokens -> 0.6元
         when(knowledgeBaseRepository.findById("kb-cost-1")).thenReturn(Optional.of(kb));
 
         com.shimeta.rag.dto.KnowledgeCostStatsDto stats =

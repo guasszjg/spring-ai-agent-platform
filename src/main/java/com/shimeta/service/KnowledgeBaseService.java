@@ -76,6 +76,8 @@ import java.util.stream.Collectors;
 public class KnowledgeBaseService {
 
     private static final Logger log = LoggerFactory.getLogger(KnowledgeBaseService.class);
+    private static final String RERANK_MODE_MODEL = "reranking_model";
+    private static final String RERANK_MODE_WEIGHTED = "weighted_score";
 
     /**
      * Dify RAG 官方支持的文件扩展名
@@ -108,6 +110,12 @@ public class KnowledgeBaseService {
     private final GraphRagService graphRagService;
     private final OfflineRagGovernanceService offlineRagGovernanceService;
     private LocalEmbeddingService embeddingService;
+    private RerankConfigService rerankConfigService;
+
+    @Autowired(required = false)
+    public void setRerankConfigService(RerankConfigService rerankConfigService) {
+        this.rerankConfigService = rerankConfigService;
+    }
 
     /** 可选注入（setter 方式，避免改动已有构造器签名）：用于把真实向量维度写入索引版本。 */
     @Autowired(required = false)
@@ -345,6 +353,23 @@ public class KnowledgeBaseService {
         static final RetrievalContext EMPTY = new RetrievalContext("", List.of());
     }
 
+    /** 排序方式的选项只在混合检索时显示，其他检索方式下不按残留的设置调用 Rerank */
+    private static String savedRerankMode(KnowledgeBase kb) {
+        boolean hybrid = kb.getSearchMethod() == null || "hybrid_search".equals(kb.getSearchMethod());
+        return hybrid ? kb.getRerankMode() : RERANK_MODE_WEIGHTED;
+    }
+
+    private static String rankingFingerprint(KnowledgeBase kb) {
+        return kb.getSearchMethod() + "|" + kb.getRerankEnabled() + "|" + kb.getRerankMode()
+                + "|" + kb.getVectorWeight() + "|" + kb.getKeywordWeight();
+    }
+
+    private void requireRerankConfigured(String mode) {
+        if (RERANK_MODE_MODEL.equals(mode) && rerankConfigService != null && rerankConfigService.getActiveConfig().isEmpty()) {
+            throw new IllegalArgumentException("尚未配置 Rerank 模型，请先到「模型网关 → Rerank 模型」添加并设为生效");
+        }
+    }
+
     public RetrievalContext buildRetrieval(List<String> knowledgeBaseIds, String query) {
         if (knowledgeBaseIds == null || knowledgeBaseIds.isEmpty()
                 || query == null || query.isBlank()) {
@@ -373,6 +398,7 @@ public class KnowledgeBaseService {
                         .scoreThreshold(kb.getScoreThreshold())
                         .searchMethod(kb.getSearchMethod())
                         .rerankEnabled(Boolean.TRUE.equals(kb.getRerankEnabled()))
+                        .rerankMode(savedRerankMode(kb))
                         .vectorWeight(kb.getVectorWeight())
                         .keywordWeight(kb.getKeywordWeight())
                         .expandParent(true)
@@ -471,12 +497,11 @@ public class KnowledgeBaseService {
         return chunks;
     }
 
-    @Transactional(readOnly = true)
     public RetrievalResult testRetrieval(String kbId, RetrievalTestRequest req) {
         return testRetrieval(kbId, req, CurrentActor.get());
     }
 
-    @Transactional(readOnly = true)
+    /** 不开事务：与智能体检索一样由各步骤自己提交，否则只读事务下 Rerank 调用的用量统计存不下来 */
     public RetrievalResult testRetrieval(String kbId, RetrievalTestRequest req, CurrentActor actor) {
         KnowledgeBase kb = getKnowledgeBaseById(kbId, actor);
         if (req == null || req.getQuery() == null || req.getQuery().trim().isBlank()) {
@@ -525,6 +550,12 @@ public class KnowledgeBaseService {
                 : (kb.getVectorWeight() != null ? kb.getVectorWeight() : 0.7);
         Double effectiveKeywordWeight = req.getKeywordWeight() != null ? req.getKeywordWeight()
                 : (kb.getKeywordWeight() != null ? kb.getKeywordWeight() : 0.3);
+        String effectiveRerankMode = req.getRerankMode() != null && !req.getRerankMode().isBlank()
+                ? req.getRerankMode() : savedRerankMode(kb);
+        // 语义缓存不区分排序参数：调试时临时改了排序方式或权重就绕过缓存，否则看到的还是旧排序
+        boolean rankingOverridden = !Objects.equals(effectiveRerankMode, savedRerankMode(kb))
+                || !Objects.equals(effectiveVectorWeight, kb.getVectorWeight())
+                || !Objects.equals(effectiveKeywordWeight, kb.getKeywordWeight());
 
         RetrievalRequest internalReq = RetrievalRequest.builder()
                 .knowledgeBaseId(kb.getId())
@@ -534,13 +565,14 @@ public class KnowledgeBaseService {
                 .searchMethod(effectiveSearchMethod)
                 .rerankEnabled(effectiveRerankEnabled)
                 .rerankModel(req.getRerankModel() != null ? req.getRerankModel() : kb.getRerankModel())
+                .rerankMode(effectiveRerankMode)
                 .vectorWeight(effectiveVectorWeight)
                 .keywordWeight(effectiveKeywordWeight)
                 .indexVersionId(activeVersion != null ? activeVersion.getId() : null)
                 .rewriteEnabled(req.getRewriteEnabled() != null ? req.getRewriteEnabled() : false)
                 .expandParent(req.getExpandParent() != null ? req.getExpandParent() : true)
                 .maxContextTokens(req.getMaxContextTokens() != null ? req.getMaxContextTokens() : 3000)
-                .cacheEnabled(req.getCacheEnabled() != null ? req.getCacheEnabled() : true)
+                .cacheEnabled(!rankingOverridden && (req.getCacheEnabled() == null || req.getCacheEnabled()))
                 .queryType(req.getQueryType() != null ? req.getQueryType() : "TEXT")
                 .queryImageUrl(req.getQueryImageUrl())
                 .injectImagesToLlm(req.getInjectImagesToLlm() != null ? req.getInjectImagesToLlm() : false)
@@ -558,6 +590,11 @@ public class KnowledgeBaseService {
         metrics.put("scoreThreshold", effectiveScoreThreshold != null ? effectiveScoreThreshold : 0.0);
         metrics.put("searchMethod", effectiveSearchMethod);
         metrics.put("rerankEnabled", effectiveRerankEnabled);
+        boolean rerankRequested = effectiveEngine == EngineType.SPRING_AI
+                && Boolean.TRUE.equals(effectiveRerankEnabled) && RERANK_MODE_MODEL.equals(effectiveRerankMode);
+        boolean rerankApplied = chunks.stream().anyMatch(c -> !c.isGraph() && c.rerankScore() != null);
+        metrics.put("rerankApplied", rerankRequested && rerankApplied);
+        metrics.put("rerankFallback", rerankRequested && !rerankApplied && !chunks.isEmpty());
         metrics.put("vectorWeight", effectiveVectorWeight);
         metrics.put("keywordWeight", effectiveKeywordWeight);
         metrics.put("rewriteEnabled", req.getRewriteEnabled() != null ? req.getRewriteEnabled() : false);
@@ -588,20 +625,18 @@ public class KnowledgeBaseService {
             }
         }
 
-        // P3: 累加检索 Token 与重排调用统计 (治理可观测性)
-        try {
-            long currentRet = kb.getRetrievalTokens() != null ? kb.getRetrievalTokens() : 0L;
-            kb.setRetrievalTokens(currentRet + totalTokens);
-            if (Boolean.TRUE.equals(effectiveRerankEnabled)) {
-                long currentRk = kb.getRerankCalls() != null ? kb.getRerankCalls() : 0L;
-                kb.setRerankCalls(currentRk + 1);
+        // P3: Dify 引擎累加检索 Token 与重排调用统计；自研引擎在检索时已经统计过，这里再记会重复
+        if (effectiveEngine != EngineType.SPRING_AI) {
+            try {
+                long currentRet = kb.getRetrievalTokens() != null ? kb.getRetrievalTokens() : 0L;
+                kb.setRetrievalTokens(currentRet + totalTokens);
+                if (Boolean.TRUE.equals(effectiveRerankEnabled) && RERANK_MODE_MODEL.equals(effectiveRerankMode)) {
+                    kb.setRerankCalls(kb.getRerankCalls() + 1);
+                }
+                knowledgeBaseRepository.save(kb);
+            } catch (Exception e) {
+                log.warn("更新知识库检索 token 统计失败: {}", e.getMessage());
             }
-            double embedCost = (kb.getEmbeddingTokens() != null ? kb.getEmbeddingTokens() : 0L) * 0.0000005;
-            double rkCost = (kb.getRerankCalls() != null ? kb.getRerankCalls() : 0L) * 0.003;
-            kb.setEstimatedCost(Math.round((embedCost + rkCost) * 10000.0) / 10000.0);
-            knowledgeBaseRepository.save(kb);
-        } catch (Exception e) {
-            log.warn("更新知识库检索 token 统计失败: {}", e.getMessage());
         }
 
         return RetrievalResult.of(query, chunks, resolution, latencyMs, metrics);
@@ -627,6 +662,7 @@ public class KnowledgeBaseService {
                 kb.getEmbeddingTokens() != null ? kb.getEmbeddingTokens() : 0L,
                 kb.getRetrievalTokens() != null ? kb.getRetrievalTokens() : 0L,
                 kb.getRerankCalls() != null ? kb.getRerankCalls() : 0L,
+                kb.getRerankTokens(),
                 ocrAvail,
                 ocrName
         );
@@ -708,6 +744,9 @@ public class KnowledgeBaseService {
         Integer topK = (req.getTopK() != null && req.getTopK() > 0) ? req.getTopK() : 3;
         Boolean rerankEnabled = req.getRerankEnabled() != null ? req.getRerankEnabled() : true;
         String rerankMode = (req.getRerankMode() != null && !req.getRerankMode().isBlank()) ? req.getRerankMode() : "weighted_score";
+        if (isSpringAi) {
+            requireRerankConfigured(rerankMode);
+        }
         String rerankModel = (req.getRerankModel() != null && !req.getRerankModel().isBlank()) ? req.getRerankModel() : "qwen3-rerank";
         String rerankModelProvider = (req.getRerankModelProvider() != null && !req.getRerankModelProvider().isBlank()) ? req.getRerankModelProvider()
                 : (isSpringAi ? "spring_ai" : "langgenius/tongyi/tongyi");
@@ -810,6 +849,12 @@ public class KnowledgeBaseService {
             throw new IllegalStateException("权限不足：您无权修改该知识库");
         }
 
+        boolean springAi = KnowledgeSourcePolicy.engineOf(kb) == EngineType.SPRING_AI;
+        if (springAi && req.getRerankMode() != null && !req.getRerankMode().equals(kb.getRerankMode())) {
+            requireRerankConfigured(req.getRerankMode());
+        }
+        String previousRanking = rankingFingerprint(kb);
+
         if (req.getName() != null && !req.getName().trim().isEmpty()) {
             kb.setName(req.getName().trim());
         }
@@ -845,6 +890,10 @@ public class KnowledgeBaseService {
         }
         if (req.getScoreThreshold() != null) {
             kb.setScoreThreshold(req.getScoreThreshold());
+        }
+        // 语义缓存不区分排序参数，排序设置变了要清掉，否则改完还会返回旧排序
+        if (semanticCacheService != null && !previousRanking.equals(rankingFingerprint(kb))) {
+            semanticCacheService.clearCache(kb.getId());
         }
 
         // 同步更新外部 Dify 数据集元数据及检索模式与权重
@@ -1119,9 +1168,7 @@ public class KnowledgeBaseService {
         kb.setDocumentCount((int) documentRepository.countByKnowledgeBaseId(kb.getId()));
         long currentEmbedTokens = kb.getEmbeddingTokens() != null ? kb.getEmbeddingTokens() : 0L;
         kb.setEmbeddingTokens(currentEmbedTokens + totalBatchTokens);
-        double embedCost = kb.getEmbeddingTokens() * 0.0000005;
-        double rkCost = (kb.getRerankCalls() != null ? kb.getRerankCalls() : 0L) * 0.003;
-        kb.setEstimatedCost(Math.round((embedCost + rkCost) * 10000.0) / 10000.0);
+        kb.setEstimatedCost(KnowledgeCostStatsDto.estimateCost(kb.getEmbeddingTokens(), kb.getRerankTokens()));
         knowledgeBaseRepository.save(kb);
 
         return results;

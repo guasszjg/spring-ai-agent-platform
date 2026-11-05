@@ -87,8 +87,8 @@ class EmbeddingConfigServiceTest {
                 EmbeddingConfigService.resolveEndpoint("https://dashscope.aliyuncs.com/compatible-mode/v1/"));
         assertEquals("https://x.com/v1/embeddings", EmbeddingConfigService.resolveEndpoint("https://x.com/v1/embeddings"));
         // 中转服务的完整接口地址：最后一段以 Embeddings 结尾（不区分大小写）时原样使用
-        assertEquals("http://82.157.197.25:9540/api/modelConfig/textEmbeddings",
-                EmbeddingConfigService.resolveEndpoint("http://82.157.197.25:9540/api/modelConfig/textEmbeddings"));
+        assertEquals("http://gateway.example.com:9540/api/modelConfig/textEmbeddings",
+                EmbeddingConfigService.resolveEndpoint("http://gateway.example.com:9540/api/modelConfig/textEmbeddings"));
     }
 
     @Test
@@ -96,7 +96,7 @@ class EmbeddingConfigServiceTest {
         responseBody = "{\"data\":[{\"index\":0,\"embedding\":[0.1,0.2,0.3],\"object\":\"embedding\"}],\"object\":\"list\"}";
 
         List<float[]> vectors = service.requestEmbeddings(base() + "/api/modelConfig/textEmbeddings", null,
-                Map.of("app_id", "APP1", "device_mac", "8CFCA02881BE"), "kinfra-text-embedding-0.6b",
+                Map.of("app_id", "APP1", "device_mac", "8CFCA02881BE"), "relay-embedding-model",
                 List.of("你好"), Duration.ofSeconds(3), Duration.ofSeconds(5));
 
         assertEquals(1, vectors.size());
@@ -133,7 +133,7 @@ class EmbeddingConfigServiceTest {
         when(repository.count()).thenReturn(1L);
         EmbeddingConfigRequest req = new EmbeddingConfigRequest();
         req.setName("中转向量");
-        req.setModelName("kinfra-text-embedding-0.6b");
+        req.setModelName("relay-embedding-model");
         req.setBaseUrl("http://relay/api/modelConfig/textEmbeddings");
         req.setCustomHeaders(List.of(new HeaderEntry("app_id", "APP1"), new HeaderEntry("device_mac", "MAC1")));
 

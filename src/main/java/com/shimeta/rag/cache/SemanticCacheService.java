@@ -255,6 +255,14 @@ public class SemanticCacheService {
         log.info("已清空知识库语义缓存: kbId={}", kbId);
     }
 
+    /** 清空全部知识库的语义缓存（切换生效的 Rerank 模型后，已缓存的排序不再准确） */
+    @Transactional
+    public void clearAll() {
+        memoryCache.clear();
+        cacheRepository.deleteAllInBatch();
+        log.info("已清空全部知识库语义缓存");
+    }
+
     /**
      * 获取知识库语义缓存统计信息
      */
