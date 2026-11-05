@@ -153,6 +153,18 @@ class SpringAiKnowledgeBaseProviderRerankTest {
     }
 
     @Test
+    void fullTextSearchUsesKeywordRouteOnly() {
+        RetrievalRequest.Builder builder = RetrievalRequest.builder()
+                .knowledgeBaseId(KB_ID).query("流程").topK(3).scoreThreshold(0.5).cacheEnabled(false);
+
+        List<RetrievedChunk> fullText = provider.retrieve(KB_ID, builder.searchMethod("full_text_search").build());
+        assertThat(fullText).extracting(RetrievedChunk::chunkId).containsExactly("b");
+        assertThat(fullText.get(0).matchType()).isEqualTo("KEYWORD");
+
+        assertThat(provider.retrieve(KB_ID, builder.searchMethod("hybrid_search").build())).hasSize(2);
+    }
+
+    @Test
     void sendsOnlyTopCandidatesToModel() {
         LocalEmbeddingService embeddingService = new LocalEmbeddingService(null);
         List<KnowledgeDocumentChunk> many = new java.util.ArrayList<>();

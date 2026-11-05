@@ -468,6 +468,10 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         int topK = request.topK() != null && request.topK() > 0 ? request.topK() : 3;
         double threshold = request.scoreThreshold() != null ? request.scoreThreshold() : 0.3;
         String searchMethod = request.searchMethod() != null ? request.searchMethod().toLowerCase() : "hybrid_search";
+        // 页面和 Dify 的全文检索都叫 full_text_search
+        if ("full_text_search".equals(searchMethod)) {
+            searchMethod = "keyword_search";
+        }
         // 只有明确选了 Rerank 模型模式才调用：开关默认开启，不能据此产生费用
         boolean rerankRequested = Boolean.TRUE.equals(request.rerankEnabled())
                 && RERANK_MODE_MODEL.equals(request.rerankMode());
