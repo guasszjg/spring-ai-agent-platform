@@ -12,6 +12,16 @@ import java.util.List;
 @Repository
 public interface KnowledgeDocumentChunkRepository extends JpaRepository<KnowledgeDocumentChunk, String> {
 
+    /** 只取计算关键词分数要用的字段，不加载向量 */
+    interface ChunkText {
+        String getId();
+        String getContent();
+    }
+
+    @Query("SELECT c.id AS id, c.content AS content FROM KnowledgeDocumentChunk c "
+            + "WHERE c.knowledgeBaseId = :knowledgeBaseId AND c.enabled = TRUE")
+    List<ChunkText> findTextByKnowledgeBaseId(@Param("knowledgeBaseId") String knowledgeBaseId);
+
     List<KnowledgeDocumentChunk> findByKnowledgeBaseIdAndEnabledTrueOrderByChunkIndexAsc(String knowledgeBaseId);
 
     List<KnowledgeDocumentChunk> findByDocumentIdOrderByChunkIndexAsc(String documentId);

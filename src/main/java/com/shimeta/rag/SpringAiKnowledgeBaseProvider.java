@@ -58,6 +58,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
     private static final int RERANK_MIN_CANDIDATES = 20;
     private static final int RERANK_MAX_CANDIDATES = 100;
     private static final int RERANK_MAX_DOCUMENT_CHARS = 4000;
+    private static final double KEYWORD_ROUTE_MIN_SCORE = 0.2;
 
     private final KnowledgeDocumentChunkRepository chunkRepository;
     private final KnowledgeBaseRepository knowledgeBaseRepository;
@@ -509,6 +510,11 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                     keywordIds.add(hit.id());
                     keywordScoreById.put(hit.id(), hit.distanceOrRank());
                 }
+                // 数据库的关键词匹配要求整句包含或字符相似度够高，自然问句经常一条都查不到，
+                // 这时混合检索会退化成只有向量一路，改用按词打分补上关键词这一路
+                if ("hybrid_search".equals(searchMethod) && keywordIds.isEmpty() && !vectorIds.isEmpty()) {
+                    fillKeywordRoute(kbId, effectiveQuery, recallK, keywordIds, keywordScoreById);
+                }
             }
             usedPg = !vectorIds.isEmpty() || !keywordIds.isEmpty();
         }
@@ -800,6 +806,23 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
             log.warn("调用 Rerank 模型失败，退回融合排序: model={}, err={}", config.get().getModelName(), e.getMessage());
             return null;
         }
+    }
+
+    private void fillKeywordRoute(String kbId, String query, int limit, List<String> keywordIds, Map<String, Double> scoreById) {
+        Map<String, Double> scores = new HashMap<>();
+        for (KnowledgeDocumentChunkRepository.ChunkText chunk : chunkRepository.findTextByKnowledgeBaseId(kbId)) {
+            double score = keywordRetriever.computeScore(query, chunk.getContent());
+            if (score >= KEYWORD_ROUTE_MIN_SCORE) {
+                scores.put(chunk.getId(), score);
+            }
+        }
+        scores.entrySet().stream()
+                .sorted(Map.Entry.<String, Double>comparingByValue().reversed().thenComparing(Map.Entry.comparingByKey()))
+                .limit(limit)
+                .forEach(entry -> {
+                    keywordIds.add(entry.getKey());
+                    scoreById.put(entry.getKey(), entry.getValue());
+                });
     }
 
     /** 权重换算成总和为 2：语义和关键词各占 50% 时与未加权的 RRF 得分相同 */
