@@ -131,6 +131,25 @@ class RagEvaluationServiceTest {
     }
 
     @Test
+    void hitAtTopKCountsOnlyWhatFitsTheContextBudget() {
+        addCase("c1", "目标内容", null);
+        // 第 3 名有答案，但前两段已经把 3000 的预算用完
+        RetrievedChunk first = RetrievedChunk.builder().chunkId("a").content("无关一").rawContent("无关一").score(0.9).tokenCount(1600).build();
+        RetrievedChunk second = RetrievedChunk.builder().chunkId("b").content("无关二").rawContent("无关二").score(0.8).tokenCount(1300).build();
+        RetrievedChunk third = RetrievedChunk.builder().chunkId("c").content("目标内容").rawContent("目标内容").score(0.7).tokenCount(1200).build();
+        when(knowledgeBaseService.testRetrieval(eq(KB), any(), any()))
+                .thenReturn(RetrievalResult.of("q", List.of(first, second, third), null, 1L, Map.of()));
+
+        RagEvaluationService.RunView view = service.startRun(KB, null, actor);
+
+        assertThat(view.hitAtTopK()).isZero();
+        assertThat(view.hitAt5()).isEqualTo(1.0);
+        assertThat(json(view.details()).get(0).path("firstHitRank").asInt()).isEqualTo(3);
+        assertThat(json(view.details()).get(0).path("reachesModel").asBoolean()).isFalse();
+        assertThat(json(view.details()).get(0).path("deliveredCount").asInt()).isEqualTo(2);
+    }
+
+    @Test
     void oldRunUsesCurrentTopKAndNewRunKeepsTheRecordedOne() {
         RagEvalRun old = new RagEvalRun();
         old.setId("old");

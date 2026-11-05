@@ -208,6 +208,8 @@ public class DocumentChunker {
                 otherCount++;
             }
         }
-        return Math.max(1L, Math.round(chineseCount * 1.5 + (otherCount / 4.0) * 1.2));
+        // 按模型返回的真实用量校准：中文正文约 0.7 Token/字（含标点和英文），汉字按 0.9 算时总量接近真实值。
+        // 原来按 1.5 算，比真实值高约 1.6 倍，上下文预算会提前用完，排在后面的资料被丢掉
+        return Math.max(1L, Math.round(chineseCount * 0.9 + (otherCount / 4.0) * 1.2));
     }
 }

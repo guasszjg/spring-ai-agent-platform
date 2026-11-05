@@ -431,7 +431,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 .keywordWeight(0.3)
                 .rewriteEnabled(false)
                 .expandParent(true)
-                .maxContextTokens(3000)
+                .maxContextTokens(ContextBudgetPruner.DEFAULT_MAX_CONTEXT_TOKENS)
                 .cacheEnabled(true)
                 .build();
         return retrieve(externalDatasetId, req);

@@ -14,6 +14,7 @@ import com.shimeta.rag.dto.RetrievalTestRequest;
 import com.shimeta.rag.engine.EngineType;
 import com.shimeta.rag.engine.RetrievalResult;
 import com.shimeta.rag.eval.RagEvalScorer;
+import com.shimeta.rag.pipeline.ContextBudgetPruner;
 import com.shimeta.repository.RagEvalCaseRepository;
 import com.shimeta.repository.RagEvalRunRepository;
 import com.shimeta.repository.RagEvalSetRepository;
@@ -59,7 +60,7 @@ public class RagEvaluationService {
     private static final int MIN_TEXT_LENGTH = 2;
     private static final int RETRIEVE_TOP_K = 10;
     private static final int DEFAULT_TOP_K = 5;
-    /** 看的是排名，不让 Token 预算把靠后的切片裁掉 */
+    /** 名次指标要看到前 10 名，检索时不裁剪；能否交给模型另外按线上预算计算 */
     private static final int EVAL_MAX_CONTEXT_TOKENS = 100_000;
     private static final String RERANK_MODEL_MODE = "reranking_model";
     private static final Set<String> SEARCH_METHODS = Set.of("hybrid_search", "semantic_search", "full_text_search");
@@ -70,6 +71,7 @@ public class RagEvaluationService {
     private final RagEvalCaseRepository caseRepository;
     private final RagEvalRunRepository runRepository;
     private final ObjectMapper objectMapper;
+    private final ContextBudgetPruner budgetPruner = new ContextBudgetPruner();
     private final Set<String> runningKnowledgeBases = ConcurrentHashMap.newKeySet();
     private Executor executor = Executors.newFixedThreadPool(2, runnable -> {
         Thread thread = new Thread(runnable, "rag-eval");
@@ -271,7 +273,7 @@ public class RagEvaluationService {
             int errors = 0, fallbacks = 0;
             List<Map<String, Object>> details = new ArrayList<>();
             for (RagEvalCase evalCase : cases) {
-                Map<String, Object> row = evaluateCase(run.getKnowledgeBaseId(), evalCase, config, actor);
+                Map<String, Object> row = evaluateCase(run.getKnowledgeBaseId(), evalCase, config, runTopK(parseJson(run.getConfigJson()), null), actor);
                 details.add(row);
                 hitSum += (double) row.get("hitAt5");
                 recallSum += (double) row.get("recallAt10");
@@ -303,7 +305,7 @@ public class RagEvaluationService {
         }
     }
 
-    private Map<String, Object> evaluateCase(String kbId, RagEvalCase evalCase, RagEvalRunRequest config, CurrentActor actor) {
+    private Map<String, Object> evaluateCase(String kbId, RagEvalCase evalCase, RagEvalRunRequest config, int topK, CurrentActor actor) {
         Map<String, Predicate<RetrievedChunk>> targets = buildTargets(evalCase);
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("caseId", evalCase.getId());
@@ -343,6 +345,11 @@ public class RagEvaluationService {
             }
         }
         RagEvalScorer.Score score = RagEvalScorer.score(matchedByRank, targets.size());
+        // 和智能体线上一样：先取前 Top K 段，再按 Token 预算裁剪，剩下的才会交给模型
+        List<RetrievedChunk> delivered = budgetPruner.prune(chunks.subList(0, Math.min(topK, chunks.size())),
+                ContextBudgetPruner.DEFAULT_MAX_CONTEXT_TOKENS).prunedChunks();
+        row.put("deliveredCount", delivered.size());
+        row.put("reachesModel", delivered.stream().anyMatch(chunk -> targets.values().stream().anyMatch(t -> t.test(chunk))));
         row.put("hitAt5", score.hitAt5());
         row.put("recallAt10", round4(score.recallAt10()));
         row.put("ndcgAt10", round4(score.ndcgAt10()));
@@ -429,6 +436,7 @@ public class RagEvaluationService {
     private static Map<String, Object> configMap(RagEvalRunRequest config, String rerankModel, KnowledgeBase kb) {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("topK", savedTopK(kb));
+        map.put("contextBudget", ContextBudgetPruner.DEFAULT_MAX_CONTEXT_TOKENS);
         map.put("searchMethod", config.getSearchMethod());
         map.put("rerankMode", config.getRerankMode());
         map.put("rerankModel", rerankModel);
@@ -541,13 +549,15 @@ public class RagEvaluationService {
         return savedTopK(kb);
     }
 
-    /** 正确内容进入前 Top K 名的题目占比：只有这些内容才会交给模型 */
+    /** 正确内容真正交给模型的题目占比：进入前 Top K 名，且没有被 Token 预算裁掉。更早的记录没有裁剪数据，只看名次 */
     private static Double hitAtTopK(Object details, int topK) {
         if (!(details instanceof List<?> rows) || rows.isEmpty()) {
             return null;
         }
         long hits = rows.stream()
-                .filter(row -> row instanceof Map<?, ?> map && map.get("firstHitRank") instanceof Number rank && rank.intValue() <= topK)
+                .filter(row -> row instanceof Map<?, ?> map && (map.get("reachesModel") instanceof Boolean reached
+                        ? reached
+                        : map.get("firstHitRank") instanceof Number rank && rank.intValue() <= topK))
                 .count();
         return round4(hits / (double) rows.size());
     }
