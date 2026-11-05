@@ -107,7 +107,7 @@ class AiChatServiceUsageStatsTest {
         assertThat(response.getFailoverFrom()).isEqualTo("智谱 GLM");
         assertThat(response.getPromptTokens()).isEqualTo(100);
         assertThat(response.getCompletionTokens()).isEqualTo(20);
-        verify(agentService).recordInvocation(eq("a1"), anyLong(), eq(100L), eq(20L), eq(true), eq(true));
+        verify(agentService).recordInvocation(eq("a1"), anyLong(), eq(100L), eq(20L), eq(true), eq(true), eq(0L));
         verify(agentService, never()).recordExecutedModel(any(), any());
     }
 
@@ -119,7 +119,7 @@ class AiChatServiceUsageStatsTest {
         ChatResponse response = service.chat(request());
 
         assertThat(response.getFailoverFrom()).isNull();
-        verify(agentService).recordInvocation(eq("a1"), anyLong(), eq(100L), eq(20L), eq(true), eq(false));
+        verify(agentService).recordInvocation(eq("a1"), anyLong(), eq(100L), eq(20L), eq(true), eq(false), eq(0L));
         verify(agentService).recordExecutedModel("a1", "glm-5.3-flash");
     }
 
@@ -131,7 +131,7 @@ class AiChatServiceUsageStatsTest {
 
         assertThatThrownBy(() -> service.chat(request())).isInstanceOf(IllegalStateException.class);
 
-        verify(agentService).recordInvocation(eq("a1"), anyLong(), eq(0L), eq(0L), eq(false), eq(true));
+        verify(agentService).recordInvocation(eq("a1"), anyLong(), eq(0L), eq(0L), eq(false), eq(true), eq(0L));
     }
 
     @Test
@@ -146,7 +146,7 @@ class AiChatServiceUsageStatsTest {
         assertThatThrownBy(() -> service.chat(request(), sink(false)))
                 .isInstanceOf(AiChatService.StreamInterruptedException.class);
 
-        verify(agentService).recordInvocation(eq("a1"), anyLong(), longThat(p -> p > 0), eq(4L), eq(false), eq(false));
+        verify(agentService).recordInvocation(eq("a1"), anyLong(), longThat(p -> p > 0), eq(4L), eq(false), eq(false), eq(0L));
     }
 
     @Test
@@ -156,7 +156,7 @@ class AiChatServiceUsageStatsTest {
 
         service.chat(request(), sink(true));
 
-        verify(agentService).recordInvocation(eq("a1"), anyLong(), longThat(p -> p > 0), eq(4L), eq(true), eq(false));
+        verify(agentService).recordInvocation(eq("a1"), anyLong(), longThat(p -> p > 0), eq(4L), eq(true), eq(false), eq(0L));
     }
 
     @Test

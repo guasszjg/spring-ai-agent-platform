@@ -13,10 +13,19 @@ public class AgentMonitorStats {
     private long messageCount;
     private long callCount;
     private long failoverCount;
+    private long cachedPromptTokens;
     private double avgResponseTimeMs;
     private double estimatedCostUsd;
     private double estimatedCostCny;
     private List<DashboardStats.TrendPoint> tokenTrend = new ArrayList<>();
+
+    public long getCachedPromptTokens() {
+        return cachedPromptTokens;
+    }
+
+    public void setCachedPromptTokens(long cachedPromptTokens) {
+        this.cachedPromptTokens = cachedPromptTokens;
+    }
 
     public long getFailoverCount() {
         return failoverCount;

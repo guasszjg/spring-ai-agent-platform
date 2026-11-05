@@ -439,7 +439,7 @@ public class AgentService {
     }
 
     public void recordInvocation(String id, long latencyMs, long promptTokens, long completionTokens, boolean success,
-                                 boolean failedOver) {
+                                 boolean failedOver, long cachedPromptTokens) {
         LocalDate today = LocalDate.now();
         AgentDailyStat stat = dailyStatRepository.findByAgentIdAndStatDate(id, today)
                 .orElseGet(() -> {
@@ -452,6 +452,7 @@ public class AgentService {
         stat.setCallCount(stat.getCallCount() + 1);
         stat.setPromptTokens(stat.getPromptTokens() + Math.max(0, promptTokens));
         stat.setCompletionTokens(stat.getCompletionTokens() + Math.max(0, completionTokens));
+        stat.setCachedPromptTokens(stat.getCachedPromptTokens() + Math.max(0, cachedPromptTokens));
         stat.setTotalLatencyMs(stat.getTotalLatencyMs() + Math.max(0, latencyMs));
         if (success) {
             stat.setSuccessCount(stat.getSuccessCount() + 1);
@@ -705,6 +706,7 @@ public class AgentService {
         stats.setCallCount(calls);
         stats.setFailoverCount(current.stream().mapToLong(AgentDailyStat::getFailoverCount).sum());
         stats.setAvgResponseTimeMs(calls == 0 ? 0 : Math.round(latencySum * 10.0 / calls) / 10.0);
+        stats.setCachedPromptTokens(current.stream().mapToLong(AgentDailyStat::getCachedPromptTokens).sum());
 
         List<AgentConversation> sessions = conversationService.listInRange(agentId, range);
         stats.setSessionCount(sessions.size());

@@ -228,6 +228,7 @@ public class OpenAiCompatibleClient {
         int maxRounds = Math.max(1, maxToolRounds);
         try {
             List<Map<String, Object>> currentMessages = new ArrayList<>(messages);
+            int cachedTokens = 0;
             int promptTokens = 0;
             int completionTokens = 0;
             int totalTokens = 0;
@@ -269,6 +270,7 @@ public class OpenAiCompatibleClient {
                 JsonNode messageNode = choice.path("message");
 
                 promptTokens += root.path("usage").path("prompt_tokens").asInt(0);
+                cachedTokens += cachedPromptTokens(root.path("usage"));
                 completionTokens += root.path("usage").path("completion_tokens").asInt(0);
                 totalTokens = promptTokens + completionTokens;
 
@@ -307,9 +309,9 @@ public class OpenAiCompatibleClient {
                     log.warn("工具调用达到 {} 轮且模型未给出回答，返回兜底回复", maxRounds);
                     content = TOOL_LIMIT_FALLBACK;
                 }
-                return new ChatResult(content, promptTokens, completionTokens, totalTokens, toolCalled);
+                return new ChatResult(content, promptTokens, completionTokens, totalTokens, toolCalled, cachedTokens);
             }
-            return new ChatResult(TOOL_LIMIT_FALLBACK, promptTokens, completionTokens, totalTokens, toolCalled);
+            return new ChatResult(TOOL_LIMIT_FALLBACK, promptTokens, completionTokens, totalTokens, toolCalled, cachedTokens);
         } catch (IllegalStateException e) {
             throw e;
         } catch (Exception e) {
@@ -349,6 +351,7 @@ public class OpenAiCompatibleClient {
                                              int maxToolRounds) {
         int maxRounds = Math.max(1, maxToolRounds);
         List<Map<String, Object>> currentMessages = new ArrayList<>(messages);
+        int cachedTokens = 0;
         int promptTokens = 0;
         int completionTokens = 0;
         String toolCalled = null;
@@ -361,6 +364,7 @@ public class OpenAiCompatibleClient {
                     finalTurn ? null : tools, generation, timeoutMs,
                     finalTurn ? finalBuffer::append : onContent, cancelled, turn > 0);
             promptTokens += result.promptTokens();
+            cachedTokens += result.cachedPromptTokens();
             completionTokens += result.completionTokens();
             boolean stop = cancelled != null && cancelled.getAsBoolean();
             if (!result.hasToolCalls() || toolRegistry == null || stop || finalTurn) {
@@ -377,7 +381,7 @@ public class OpenAiCompatibleClient {
                     }
                 }
                 return new ChatResult(content, promptTokens, completionTokens,
-                        promptTokens + completionTokens, toolCalled);
+                        promptTokens + completionTokens, toolCalled, cachedTokens);
             }
             Map<String, Object> assistantMsg = new LinkedHashMap<>();
             assistantMsg.put("role", "assistant");
@@ -404,7 +408,7 @@ public class OpenAiCompatibleClient {
             }
             toolCalled = appendToolSummary(toolCalled, summaries);
         }
-        return new ChatResult(TOOL_LIMIT_FALLBACK, promptTokens, completionTokens, promptTokens + completionTokens, toolCalled);
+        return new ChatResult(TOOL_LIMIT_FALLBACK, promptTokens, completionTokens, promptTokens + completionTokens, toolCalled, cachedTokens);
     }
 
     /**
@@ -547,6 +551,7 @@ public class OpenAiCompatibleClient {
         java.util.TreeMap<Integer, String[]> toolParts = new java.util.TreeMap<>(); // index -> [id, name, arguments]
         int promptTokens = 0;
         int completionTokens = 0;
+        int cachedTokens = 0;
         boolean sawEvent = false;
         String line;
         while ((line = reader.readLine()) != null) {
@@ -584,6 +589,7 @@ public class OpenAiCompatibleClient {
             if (usage.isObject()) {
                 promptTokens = Math.max(promptTokens, usage.path("prompt_tokens").asInt(0));
                 completionTokens = Math.max(completionTokens, usage.path("completion_tokens").asInt(0));
+                cachedTokens = Math.max(cachedTokens, cachedPromptTokens(usage));
             }
             JsonNode delta = chunk.path("choices").path(0).path("delta");
             JsonNode text = delta.path("content");
@@ -623,7 +629,7 @@ public class OpenAiCompatibleClient {
                 toolCalls.add(new ToolCall(id, parts[1], parts[2].isBlank() ? "{}" : parts[2]));
             }
         });
-        return new StreamResult(content.toString(), toolCalls, promptTokens, completionTokens);
+        return new StreamResult(content.toString(), toolCalls, promptTokens, completionTokens, cachedTokens);
     }
 
     private StreamResult parseCompletion(String body, java.util.function.Consumer<String> onContent) throws java.io.IOException {
@@ -648,7 +654,8 @@ public class OpenAiCompatibleClient {
         }
         return new StreamResult(content, toolCalls,
                 root.path("usage").path("prompt_tokens").asInt(0),
-                root.path("usage").path("completion_tokens").asInt(0));
+                root.path("usage").path("completion_tokens").asInt(0),
+                cachedPromptTokens(root.path("usage")));
     }
 
     /**
@@ -738,6 +745,12 @@ public class OpenAiCompatibleClient {
         }
     }
 
+    /** 提示词缓存命中的 Token 数：DeepSeek 用 prompt_cache_hit_tokens，OpenAI 兼容格式用 prompt_tokens_details.cached_tokens */
+    static int cachedPromptTokens(JsonNode usage) {
+        int deepSeek = usage.path("prompt_cache_hit_tokens").asInt(0);
+        return deepSeek > 0 ? deepSeek : usage.path("prompt_tokens_details").path("cached_tokens").asInt(0);
+    }
+
     /** 通道不支持 stream_options 参数（仅内部用于去掉该参数重试） */
     private static class StreamOptionsRejected extends RuntimeException {
         StreamOptionsRejected() {
@@ -748,7 +761,12 @@ public class OpenAiCompatibleClient {
     public record ToolCall(String id, String name, String arguments) {
     }
 
-    public record StreamResult(String content, List<ToolCall> toolCalls, int promptTokens, int completionTokens) {
+    public record StreamResult(String content, List<ToolCall> toolCalls, int promptTokens, int completionTokens,
+                               int cachedPromptTokens) {
+        public StreamResult(String content, List<ToolCall> toolCalls, int promptTokens, int completionTokens) {
+            this(content, toolCalls, promptTokens, completionTokens, 0);
+        }
+
         public boolean hasToolCalls() {
             return toolCalls != null && !toolCalls.isEmpty();
         }
@@ -945,9 +963,14 @@ public class OpenAiCompatibleClient {
         }
     }
 
-    public record ChatResult(String content, int promptTokens, int completionTokens, int totalTokens, String toolCalled) {
+    public record ChatResult(String content, int promptTokens, int completionTokens, int totalTokens, String toolCalled,
+                             int cachedPromptTokens) {
+        public ChatResult(String content, int promptTokens, int completionTokens, int totalTokens, String toolCalled) {
+            this(content, promptTokens, completionTokens, totalTokens, toolCalled, 0);
+        }
+
         public ChatResult(String content, int promptTokens, int completionTokens, int totalTokens) {
-            this(content, promptTokens, completionTokens, totalTokens, null);
+            this(content, promptTokens, completionTokens, totalTokens, null, 0);
         }
     }
 

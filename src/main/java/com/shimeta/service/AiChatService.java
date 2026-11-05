@@ -142,6 +142,7 @@ public class AiChatService {
                 ? agent.getModelName()
                 : "未指定";
         int promptTokens = 0;
+        int cachedPromptTokens = 0;
         int completionTokens = 0;
         boolean realModelReply = false;
         String[] routedModel = { executionModel };
@@ -188,6 +189,7 @@ public class AiChatService {
                 reply = routed.content();
                 executionModel = routedModel[0];
                 promptTokens = Math.max(0, routed.promptTokens());
+                cachedPromptTokens = Math.max(0, routed.cachedPromptTokens());
                 completionTokens = Math.max(0, routed.completionTokens());
                 if (promptTokens + completionTokens == 0 && routed.totalTokens() > 0) {
                     completionTokens = routed.totalTokens();
@@ -206,9 +208,9 @@ public class AiChatService {
             } else if (chatClient != null) {
                 log.info("Invoking Spring AI ChatClient for Agent: [{}] with model: [{}]", agent.getName(), executionModel);
                 
-                String instruction = buildEffectiveInstruction(request.getPrompt(), agent, userMessage, request.getEnabledTools());
+                PromptLayout layout = buildPromptLayout(request.getPrompt(), agent, userMessage, request.getEnabledTools());
                 var clientRequest = chatClient.prompt()
-                        .system(instruction);
+                        .system(layout.system());
 
                 // 添加历史记录
                 if (request.getHistory() != null && !request.getHistory().isEmpty()) {
@@ -219,7 +221,7 @@ public class AiChatService {
                     }
                 }
 
-                clientRequest = clientRequest.user(userMessage);
+                clientRequest = clientRequest.user(layout.user());
                 var aiResponse = clientRequest.call().chatResponse();
 
                 if (aiResponse != null && aiResponse.getResult() != null && aiResponse.getResult().getOutput() != null) {
@@ -239,14 +241,14 @@ public class AiChatService {
         } catch (StreamInterruptedException ex) {
             // 输出到一半中断：拿不到用量，按文本长度估算后计入，算一次失败调用
             agentService.recordInvocation(agent.getId(), System.currentTimeMillis() - startTime,
-                    trace.estimatedPromptTokens, estimateTokens(streamedText.toString()), false, trace.failoverFrom != null);
+                    trace.estimatedPromptTokens, estimateTokens(streamedText.toString()), false, trace.failoverFrom != null, 0);
             throw ex;
         } catch (Exception ex) {
             log.warn("模型调用失败: {}", ex.getMessage());
             if (!simulationFallbackEnabled) {
                 // 下面会直接抛错，走不到末尾的统计，这里先记一次失败调用
                 agentService.recordInvocation(agent.getId(), System.currentTimeMillis() - startTime,
-                        0, 0, false, trace.failoverFrom != null);
+                        0, 0, false, trace.failoverFrom != null, 0);
             }
             reply = fallbackReply(agent, userMessage, request.getHistory(), toolCalledHolder, ex);
         } finally {
@@ -260,7 +262,7 @@ public class AiChatService {
         long latencyMs = System.currentTimeMillis() - startTime;
         int tokens = promptTokens + completionTokens;
         agentService.recordInvocation(agent.getId(), latencyMs, promptTokens, completionTokens, realModelReply,
-                trace.failoverFrom != null);
+                trace.failoverFrom != null, cachedPromptTokens);
         // 备用通道只是临时顶替，不能把智能体自己的模型设置改成备用模型
         if (realModelReply && trace.failoverFrom == null) {
             agentService.recordExecutedModel(agent.getId(), executionModel);
@@ -277,6 +279,7 @@ public class AiChatService {
         response.setToolCalled(toolCalledHolder[0]);
         response.setImages(faqImages);
         response.setPromptTokens(promptTokens);
+        response.setCachedPromptTokens(cachedPromptTokens);
         response.setCompletionTokens(completionTokens);
         response.setFailoverFrom(realModelReply ? trace.failoverFrom : null);
         response.setDegraded(!realModelReply);
@@ -380,11 +383,11 @@ public class AiChatService {
                                                                List<String> enabledTools,
                                                                String[] routedModel, StreamSink sink, RouteTrace trace) {
         ChatGeneration effective = generation != null ? generation : fromAgent(agent);
-        final String instruction = buildEffectiveInstruction(livePrompt, agent, userMessage, enabledTools);
+        final PromptLayout layout = buildPromptLayout(livePrompt, agent, userMessage, enabledTools);
         return gatewayService.resolveRoute(agent.getModelName()).map(route -> {
             var messages = OpenAiCompatibleClient.toMessages(
-                    instruction,
-                    userMessage,
+                    layout.system(),
+                    layout.user(),
                     history
             );
             trace.estimatedPromptTokens = messages.stream()
@@ -406,11 +409,13 @@ public class AiChatService {
         }).orElse(null);
     }
 
-    public String buildEffectiveInstruction(String rawPrompt, Agent agent, String userMessage) {
-        return buildEffectiveInstruction(rawPrompt, agent, userMessage, null);
-    }
+    /**
+     * 一次请求的提示词。模型的提示词缓存按前缀匹配，所以固定内容放 system，
+     * 每次都会变的当前时间和检索结果放到最后一条 user 消息里，否则 system 和历史消息都复用不上。
+     */
+    public record PromptLayout(String system, String user) {}
 
-    public String buildEffectiveInstruction(String rawPrompt, Agent agent, String userMessage, List<String> enabledTools) {
+    public PromptLayout buildPromptLayout(String rawPrompt, Agent agent, String userMessage, List<String> enabledTools) {
         String base = firstNonBlank(rawPrompt, agent.getSystemPrompt(), "你是一个通用智能助手。");
 
         // 1. 获取当前系统真实时间与星期 (标准北京时间 Asia/Shanghai)
@@ -430,15 +435,12 @@ public class AiChatService {
                 .replace("{{today}}", dateStr + " " + weekday)
                 .replace("{{input}}", userMessage != null ? userMessage : "");
 
-        // 3. 构建高优先级系统基准时间环境约束（Grounding Time Context）
-        StringBuilder timeContext = new StringBuilder(String.format(
+        // 3. 构建高优先级系统基准时间环境约束（Grounding Time Context），这里不放具体时间，保持 system 固定
+        StringBuilder timeContext = new StringBuilder(
                 "【系统基准环境】\n" +
-                "- 当前日期：%s（%s）\n" +
-                "- 当前时间：%s\n" +
                 "- 所在时区：Asia/Shanghai (GMT+8 / 北京时间)\n" +
-                "【时效性准则】以上为您所在物理世界的绝对真实系统时间。在处理涉及“今天”、“现在”、“当前”、“今年”、“本月”或日期相对计算时，必须严格以此时间为准。若调用了联网检索工具（如博查搜索），检索到的互联网文章可能包含历史发布的旧快照，切勿将历史网页的发布时间误认为当前的真实日期！",
-                dateStr, weekday, timeStr
-        ));
+                "【时效性准则】用户消息开头的【当前时间】是您所在物理世界的绝对真实系统时间。在处理涉及“今天”、“现在”、“当前”、“今年”、“本月”或日期相对计算时，必须严格以此时间为准。若调用了联网检索工具（如博查搜索），检索到的互联网文章可能包含历史发布的旧快照，切勿将历史网页的发布时间误认为当前的真实日期！"
+        );
 
         // 若挂载了扩展工具，注入工具调用路由规范，消除模型对时间工具与联网搜索的二义性竞争
         if (enabledTools != null && !enabledTools.isEmpty()) {
@@ -470,25 +472,27 @@ public class AiChatService {
         }
 
         // 注入到系统指令头部，赋予模型确定性的时序与工具调度认知
-        String combined = timeContext + "\n\n" + processed;
+        String system = timeContext + "\n\n" + processed;
 
-        // 4. 追加知识库检索片段（RAG 上下文）
-        return appendKnowledgeContext(combined, agent, userMessage);
+        // 4. 当前时间和知识库检索片段（RAG 上下文）每次都会变，放进 user 消息
+        String currentTime = String.format("【当前时间】%s（%s），北京时间 %s", dateStr, weekday, timeStr);
+        return new PromptLayout(system, buildUserContent(currentTime, retrieveKnowledge(agent, userMessage), userMessage));
     }
 
-    private String appendKnowledgeContext(String instruction, Agent agent, String userMessage) {
+    private static String buildUserContent(String currentTime, String knowledge, String userMessage) {
+        StringBuilder content = new StringBuilder(currentTime).append("\n\n");
+        if (knowledge != null && !knowledge.isBlank()) {
+            content.append(knowledge.trim()).append("\n\n");
+        }
+        return content.append("【用户问题】\n").append(userMessage).toString();
+    }
+
+    private String retrieveKnowledge(Agent agent, String userMessage) {
         KnowledgeBaseService.RetrievalContext retrieval = knowledgeBaseService.buildRetrieval(agent.getKnowledgeBaseIds(), userMessage);
         if (retrieval.faqImages() != null && !retrieval.faqImages().isEmpty()) {
             RETRIEVED_FAQ_IMAGES.set(retrieval.faqImages());
         }
-        String rag = retrieval.text();
-        if (rag == null || rag.isBlank()) {
-            return instruction;
-        }
-        if (instruction == null || instruction.isBlank()) {
-            return rag;
-        }
-        return instruction + "\n\n" + rag;
+        return retrieval.text();
     }
 
     private ChatGeneration fromAgent(Agent agent) {
