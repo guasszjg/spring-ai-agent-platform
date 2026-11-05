@@ -33,6 +33,9 @@ public class AgentDailyStat {
     /** 主通道失败、切到备用通道的次数（这些调用仍可能计入 successCount） */
     @Column(nullable = false)
     private long failoverCount;
+    /** 输入 Token 中命中提示词缓存的部分 */
+    @Column(nullable = false)
+    private long cachedPromptTokens;
 
     public AgentDailyStat() {
     }
@@ -91,6 +94,14 @@ public class AgentDailyStat {
 
     public void setTotalLatencyMs(long totalLatencyMs) {
         this.totalLatencyMs = totalLatencyMs;
+    }
+
+    public long getCachedPromptTokens() {
+        return cachedPromptTokens;
+    }
+
+    public void setCachedPromptTokens(long cachedPromptTokens) {
+        this.cachedPromptTokens = cachedPromptTokens;
     }
 
     public long getFailoverCount() {

@@ -17,6 +17,8 @@ public class ChatResponse {
     /** 命中的 FAQ 回答附图（相对地址，如 /uploads/knowledge/xxx.png），没有时为空列表 */
     private java.util.List<String> images = java.util.List.of();
     private Integer promptTokens;
+    /** 输入 Token 中命中提示词缓存的部分；通道不返回时为 0 */
+    private Integer cachedPromptTokens;
     private Integer completionTokens;
     /** 本次主通道失败、改由备用通道回答时，主通道的名称；正常时为 null */
     private String failoverFrom;
@@ -33,6 +35,14 @@ public class ChatResponse {
         this.model = model;
         this.tokensUsed = tokensUsed;
         this.timestamp = LocalDateTime.now();
+    }
+
+    public Integer getCachedPromptTokens() {
+        return cachedPromptTokens;
+    }
+
+    public void setCachedPromptTokens(Integer cachedPromptTokens) {
+        this.cachedPromptTokens = cachedPromptTokens;
     }
 
     public Integer getPromptTokens() {
