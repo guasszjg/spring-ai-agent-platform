@@ -71,7 +71,9 @@ class RagEvaluationServiceTest {
         kb.setRerankMode("weighted_score");
         kb.setVectorWeight(0.7);
         kb.setKeywordWeight(0.3);
+        kb.setTopK(3);
         when(knowledgeBaseService.requireManageable(eq(KB), any())).thenReturn(kb);
+        when(knowledgeBaseService.getKnowledgeBaseById(eq(KB), any())).thenReturn(kb);
 
         RagEvalSet set = new RagEvalSet();
         set.setId("set-1");
@@ -111,6 +113,45 @@ class RagEvaluationServiceTest {
     private void retrievalReturns(Map<String, Object> metrics, RetrievedChunk... chunks) {
         when(knowledgeBaseService.testRetrieval(eq(KB), any(), any()))
                 .thenReturn(RetrievalResult.of("q", List.of(chunks), null, 1L, metrics));
+    }
+
+    @Test
+    void hitAtTopKUsesTheKnowledgeBaseTopK() {
+        addCase("c1", "内容", null);
+        addCase("c2", "内容", null);
+        when(knowledgeBaseService.testRetrieval(eq(KB), any(), any()))
+                .thenReturn(RetrievalResult.of("q", List.of(chunk("a", "d", "无关"), chunk("b", "d", "内容")), null, 1L, Map.of()))
+                .thenReturn(RetrievalResult.of("q", List.of(chunk("a", "d", "无关"), chunk("b", "d", "无关"), chunk("c", "d", "无关"), chunk("e", "d", "内容")), null, 1L, Map.of()));
+
+        RagEvaluationService.RunView view = service.startRun(KB, null, actor);
+
+        assertThat(view.topK()).isEqualTo(3);
+        assertThat(view.hitAtTopK()).isEqualTo(0.5);
+        assertThat(view.hitAt5()).isEqualTo(1.0);
+    }
+
+    @Test
+    void oldRunUsesCurrentTopKAndNewRunKeepsTheRecordedOne() {
+        RagEvalRun old = new RagEvalRun();
+        old.setId("old");
+        old.setKnowledgeBaseId(KB);
+        old.setStatus(RagEvaluationService.STATUS_DONE);
+        old.setDetailJson("[{\"firstHitRank\":2},{\"firstHitRank\":4},{\"firstHitRank\":null}]");
+        RagEvalRun recorded = new RagEvalRun();
+        recorded.setId("recorded");
+        recorded.setKnowledgeBaseId(KB);
+        recorded.setStatus(RagEvaluationService.STATUS_DONE);
+        recorded.setConfigJson("{\"topK\":5}");
+        recorded.setDetailJson("[{\"firstHitRank\":2},{\"firstHitRank\":4}]");
+        when(runRepository.findByKnowledgeBaseIdOrderByCreatedAtDesc(KB)).thenReturn(List.of(old, recorded));
+
+        List<RagEvaluationService.RunView> views = service.listRuns(KB, actor);
+
+        assertThat(views.get(0).topK()).isEqualTo(3);
+        assertThat(views.get(0).hitAtTopK()).isEqualTo(0.3333);
+        assertThat(views.get(0).details()).isNull();
+        assertThat(views.get(1).topK()).isEqualTo(5);
+        assertThat(views.get(1).hitAtTopK()).isEqualTo(1.0);
     }
 
     @Test

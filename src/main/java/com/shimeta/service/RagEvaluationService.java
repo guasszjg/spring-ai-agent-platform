@@ -58,6 +58,7 @@ public class RagEvaluationService {
     private static final int MAX_RUNS_PER_KB = 50;
     private static final int MIN_TEXT_LENGTH = 2;
     private static final int RETRIEVE_TOP_K = 10;
+    private static final int DEFAULT_TOP_K = 5;
     /** 看的是排名，不让 Token 预算把靠后的切片裁掉 */
     private static final int EVAL_MAX_CONTEXT_TOKENS = 100_000;
     private static final String RERANK_MODEL_MODE = "reranking_model";
@@ -80,7 +81,7 @@ public class RagEvaluationService {
     public record RunView(String id, String knowledgeBaseId, String engine, String label, Object config,
                           String casesFingerprint, String status, Integer caseCount, Integer completedCount,
                           Integer errorCount, Integer rerankFallbackCount, String errorMessage,
-                          Double hitAt5, Double recallAt10, Double ndcgAt10, Double avgLatencyMs,
+                          Integer topK, Double hitAtTopK, Double hitAt5, Double recallAt10, Double ndcgAt10, Double avgLatencyMs,
                           LocalDateTime createdAt, Object details) {}
 
     public RagEvaluationService(KnowledgeBaseService knowledgeBaseService,
@@ -249,7 +250,7 @@ public class RagEvaluationService {
             run.setKnowledgeBaseId(kbId);
             run.setEngine(KnowledgeSourcePolicy.engineOf(kb).name());
             run.setLabel(buildLabel(request, effective, rerankModel));
-            run.setConfigJson(toJson(configMap(effective, rerankModel)));
+            run.setConfigJson(toJson(configMap(effective, rerankModel, kb)));
             run.setCasesFingerprint(fingerprint(cases));
             run.setStatus(STATUS_RUNNING);
             run.setCaseCount(cases.size());
@@ -260,7 +261,7 @@ public class RagEvaluationService {
             runningKnowledgeBases.remove(kbId);
             throw e;
         }
-        return toView(runRepository.findById(run.getId()).orElse(run), true);
+        return toView(runRepository.findById(run.getId()).orElse(run), kb, true);
     }
 
     private void execute(RagEvalRun run, List<RagEvalCase> cases, RagEvalRunRequest config, CurrentActor actor) {
@@ -425,8 +426,9 @@ public class RagEvaluationService {
         return out;
     }
 
-    private static Map<String, Object> configMap(RagEvalRunRequest config, String rerankModel) {
+    private static Map<String, Object> configMap(RagEvalRunRequest config, String rerankModel, KnowledgeBase kb) {
         Map<String, Object> map = new LinkedHashMap<>();
+        map.put("topK", savedTopK(kb));
         map.put("searchMethod", config.getSearchMethod());
         map.put("rerankMode", config.getRerankMode());
         map.put("rerankModel", rerankModel);
@@ -477,16 +479,16 @@ public class RagEvaluationService {
     // ==================== 运行记录 ====================
 
     public List<RunView> listRuns(String kbId, CurrentActor actor) {
-        knowledgeBaseService.getKnowledgeBaseById(kbId, actor);
+        KnowledgeBase kb = knowledgeBaseService.getKnowledgeBaseById(kbId, actor);
         return runRepository.findByKnowledgeBaseIdOrderByCreatedAtDesc(kbId).stream()
                 .map(this::markInterrupted)
-                .map(run -> toView(run, false))
+                .map(run -> toView(run, kb, false))
                 .toList();
     }
 
     public RunView getRun(String kbId, String runId, CurrentActor actor) {
-        knowledgeBaseService.getKnowledgeBaseById(kbId, actor);
-        return toView(markInterrupted(findRun(kbId, runId)), true);
+        KnowledgeBase kb = knowledgeBaseService.getKnowledgeBaseById(kbId, actor);
+        return toView(markInterrupted(findRun(kbId, runId)), kb, true);
     }
 
     public void deleteRun(String kbId, String runId, CurrentActor actor) {
@@ -514,12 +516,40 @@ public class RagEvaluationService {
                 .orElseThrow(() -> new IllegalArgumentException("评测记录不存在"));
     }
 
-    private RunView toView(RagEvalRun run, boolean withDetails) {
+    private RunView toView(RagEvalRun run, KnowledgeBase kb, boolean withDetails) {
+        Object config = parseJson(run.getConfigJson());
+        Object details = parseJson(run.getDetailJson());
+        int topK = runTopK(config, kb);
         return new RunView(run.getId(), run.getKnowledgeBaseId(), run.getEngine(), run.getLabel(),
-                parseJson(run.getConfigJson()), run.getCasesFingerprint(), run.getStatus(), run.getCaseCount(),
+                config, run.getCasesFingerprint(), run.getStatus(), run.getCaseCount(),
                 run.getCompletedCount(), run.getErrorCount(), run.getRerankFallbackCount(), run.getErrorMessage(),
-                run.getHitAt5(), run.getRecallAt10(), run.getNdcgAt10(), run.getAvgLatencyMs(), run.getCreatedAt(),
-                withDetails ? parseJson(run.getDetailJson()) : null);
+                topK, hitAtTopK(details, topK), run.getHitAt5(), run.getRecallAt10(), run.getNdcgAt10(),
+                run.getAvgLatencyMs(), run.getCreatedAt(), withDetails ? details : null);
+    }
+
+    /** 智能体实际拿到的段数。评测只取前 10 名，Top K 更大时也只能算到 10 */
+    private static int savedTopK(KnowledgeBase kb) {
+        int topK = kb != null && kb.getTopK() != null && kb.getTopK() > 0 ? kb.getTopK() : DEFAULT_TOP_K;
+        return Math.min(topK, RETRIEVE_TOP_K);
+    }
+
+    /** 用运行时记录的 Top K，之后改知识库设置不影响旧分数；更早的记录没有保存，只能用当前设置 */
+    private static int runTopK(Object config, KnowledgeBase kb) {
+        if (config instanceof Map<?, ?> map && map.get("topK") instanceof Number recorded && recorded.intValue() > 0) {
+            return Math.min(recorded.intValue(), RETRIEVE_TOP_K);
+        }
+        return savedTopK(kb);
+    }
+
+    /** 正确内容进入前 Top K 名的题目占比：只有这些内容才会交给模型 */
+    private static Double hitAtTopK(Object details, int topK) {
+        if (!(details instanceof List<?> rows) || rows.isEmpty()) {
+            return null;
+        }
+        long hits = rows.stream()
+                .filter(row -> row instanceof Map<?, ?> map && map.get("firstHitRank") instanceof Number rank && rank.intValue() <= topK)
+                .count();
+        return round4(hits / (double) rows.size());
     }
 
     /** 解析成 Map / List 再返回：接口的序列化器和这里的 ObjectMapper 不是同一个 Jackson 版本，不能直接返回 JsonNode */
