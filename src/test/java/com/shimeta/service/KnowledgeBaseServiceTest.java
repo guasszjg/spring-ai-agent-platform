@@ -252,16 +252,16 @@ class KnowledgeBaseServiceTest {
 
     @Test
     void displayHost_readsHostFromDifyBaseUrl() {
-        assertThat(KnowledgeBaseService.displayHost("http://120.79.38.143/v1")).isEqualTo("120.79.38.143");
+        assertThat(KnowledgeBaseService.displayHost("http://dify.example.com/v1")).isEqualTo("dify.example.com");
         assertThat(KnowledgeBaseService.displayHost("")).isEmpty();
     }
 
     @Test
     void getEngineInfo_usesProviderBaseUrl() {
-        when(difyProvider.getBaseUrl()).thenReturn("http://120.79.38.143/v1");
+        when(difyProvider.getBaseUrl()).thenReturn("http://dify.example.com/v1");
         var info = knowledgeBaseService.getEngineInfo();
         assertThat(info.isConfigured()).isTrue();
-        assertThat(info.getHost()).isEqualTo("120.79.38.143");
+        assertThat(info.getHost()).isEqualTo("dify.example.com");
     }
 
     @Test
