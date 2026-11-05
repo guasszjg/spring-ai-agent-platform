@@ -80,6 +80,7 @@ public class AgentChatStreamService {
                 end.put("model", response.getModel());
                 end.put("latencyMs", response.getLatencyMs());
                 end.put("tokensUsed", response.getTokensUsed());
+                end.put("cachedPromptTokens", response.getCachedPromptTokens());
                 end.put("toolCalled", response.getToolCalled());
                 end.put("images", response.getImages());
                 end.put("failoverFrom", response.getFailoverFrom());
