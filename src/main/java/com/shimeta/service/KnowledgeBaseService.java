@@ -16,6 +16,9 @@ import com.shimeta.rag.dto.KnowledgeEngineInfo;
 import com.shimeta.rag.dto.UpdateFaqRequest;
 import com.shimeta.rag.dto.UpdateKnowledgeBaseRequest;
 import com.shimeta.repository.KnowledgeBaseRepository;
+import com.shimeta.repository.RagEvalCaseRepository;
+import com.shimeta.repository.RagEvalRunRepository;
+import com.shimeta.repository.RagEvalSetRepository;
 import com.shimeta.repository.KnowledgeDocumentRepository;
 import com.shimeta.repository.KnowledgeFaqRepository;
 import com.shimeta.model.KnowledgeIndexVersion;
@@ -111,6 +114,18 @@ public class KnowledgeBaseService {
     private final OfflineRagGovernanceService offlineRagGovernanceService;
     private LocalEmbeddingService embeddingService;
     private RerankConfigService rerankConfigService;
+    private RagEvalCaseRepository evalCaseRepository;
+    private RagEvalRunRepository evalRunRepository;
+    private RagEvalSetRepository evalSetRepository;
+
+    @Autowired(required = false)
+    public void setEvalRepositories(RagEvalCaseRepository evalCaseRepository,
+                                    RagEvalRunRepository evalRunRepository,
+                                    RagEvalSetRepository evalSetRepository) {
+        this.evalCaseRepository = evalCaseRepository;
+        this.evalRunRepository = evalRunRepository;
+        this.evalSetRepository = evalSetRepository;
+    }
 
     @Autowired(required = false)
     public void setRerankConfigService(RerankConfigService rerankConfigService) {
@@ -354,7 +369,7 @@ public class KnowledgeBaseService {
     }
 
     /** 排序方式的选项只在混合检索时显示，其他检索方式下不按残留的设置调用 Rerank */
-    private static String savedRerankMode(KnowledgeBase kb) {
+    static String savedRerankMode(KnowledgeBase kb) {
         boolean hybrid = kb.getSearchMethod() == null || "hybrid_search".equals(kb.getSearchMethod());
         return hybrid ? kb.getRerankMode() : RERANK_MODE_WEIGHTED;
     }
@@ -364,7 +379,17 @@ public class KnowledgeBaseService {
                 + "|" + kb.getVectorWeight() + "|" + kb.getKeywordWeight();
     }
 
-    private void requireRerankConfigured(String mode) {
+    /** 修改知识库内容或产生费用的操作要有管理权限，只能查看的用户不行 */
+    public KnowledgeBase requireManageable(String id, CurrentActor actor) {
+        KnowledgeBase kb = knowledgeBaseRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("知识库不存在: " + id));
+        if (!resourceAuthorizationService.canManageKnowledgeBase(actor, kb)) {
+            throw new IllegalStateException("权限不足：您无权管理该知识库");
+        }
+        return kb;
+    }
+
+    public void requireRerankConfigured(String mode) {
         if (RERANK_MODE_MODEL.equals(mode) && rerankConfigService != null && rerankConfigService.getActiveConfig().isEmpty()) {
             throw new IllegalArgumentException("尚未配置 Rerank 模型，请先到「模型网关 → Rerank 模型」添加并设为生效");
         }
@@ -941,6 +966,11 @@ public class KnowledgeBaseService {
         }
         documentRepository.deleteByKnowledgeBaseId(kb.getId());
         faqRepository.deleteByKnowledgeBaseId(kb.getId());
+        if (evalCaseRepository != null) {
+            evalCaseRepository.deleteByKnowledgeBaseId(kb.getId());
+            evalRunRepository.deleteByKnowledgeBaseId(kb.getId());
+            evalSetRepository.deleteByKnowledgeBaseId(kb.getId());
+        }
 
         // 3. 删除知识库本体
         knowledgeBaseRepository.delete(kb);

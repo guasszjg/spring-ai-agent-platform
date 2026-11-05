@@ -9,4 +9,5 @@ import java.util.Optional;
 public interface RagEvalSetRepository extends JpaRepository<RagEvalSet, String> {
     Optional<RagEvalSet> findFirstByKnowledgeBaseIdAndName(String knowledgeBaseId, String name);
     List<RagEvalSet> findByKnowledgeBaseIdOrderByCreatedAtDesc(String knowledgeBaseId);
+    void deleteByKnowledgeBaseId(String knowledgeBaseId);
 }

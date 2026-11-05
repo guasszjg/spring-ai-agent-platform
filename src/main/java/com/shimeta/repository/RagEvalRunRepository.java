@@ -7,4 +7,5 @@ import java.util.List;
 
 public interface RagEvalRunRepository extends JpaRepository<RagEvalRun, String> {
     List<RagEvalRun> findByKnowledgeBaseIdOrderByCreatedAtDesc(String knowledgeBaseId);
+    void deleteByKnowledgeBaseId(String knowledgeBaseId);
 }

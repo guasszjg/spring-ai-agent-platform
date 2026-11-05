@@ -8,4 +8,6 @@ import java.util.List;
 public interface RagEvalCaseRepository extends JpaRepository<RagEvalCase, String> {
     List<RagEvalCase> findBySetIdOrderByCreatedAtAsc(String setId);
     List<RagEvalCase> findByKnowledgeBaseIdOrderByCreatedAtDesc(String knowledgeBaseId);
+    long countByKnowledgeBaseId(String knowledgeBaseId);
+    void deleteByKnowledgeBaseId(String knowledgeBaseId);
 }
