@@ -159,6 +159,86 @@ class AiChatServiceUsageStatsTest {
         verify(agentService).recordInvocation(eq("a1"), anyLong(), longThat(p -> p > 0), eq(4L), eq(true), eq(false), eq(0L));
     }
 
+    private AiChatService serviceWithDefaultClient(org.springframework.ai.chat.model.ChatModel chatModel,
+                                                   OpenAiCompatibleClient client) {
+        return new AiChatService(agentService, conversationService, gatewayService, client,
+                mock(CustomHttpLlmClient.class), mock(com.shimeta.tool.AgentToolRegistry.class), mock(AgentToolSecretService.class),
+                null, knowledgeBaseService, mock(ResourceAuthorizationService.class), chatModel, false);
+    }
+
+    @Test
+    @DisplayName("通道返回空内容：提示模型没有返回内容，不回退到默认客户端，记一次失败调用")
+    void emptyReplyDoesNotFallBackToDefaultClient() {
+        var chatModel = mock(org.springframework.ai.chat.model.ChatModel.class);
+        streamingCall("k1").thenReturn(new OpenAiCompatibleClient.ChatResult("", 10, 20, 30));
+
+        assertThatThrownBy(() -> serviceWithDefaultClient(chatModel, openAiClient).chat(request(), sink(false)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("模型没有返回内容");
+
+        verify(chatModel, never()).call(any(org.springframework.ai.chat.prompt.Prompt.class));
+        verify(agentService).recordInvocation(eq("a1"), anyLong(), eq(0L), eq(0L), eq(false), eq(false), eq(0L));
+    }
+
+    @Test
+    @DisplayName("主备通道都失败：提示通道调用失败，不回退到默认客户端")
+    void channelFailureDoesNotFallBackToDefaultClient() {
+        var chatModel = mock(org.springframework.ai.chat.model.ChatModel.class);
+        blockingCall("k1").thenThrow(new IllegalStateException("HTTP 500"));
+        blockingCall("k2").thenThrow(new IllegalStateException("HTTP 500"));
+
+        assertThatThrownBy(() -> serviceWithDefaultClient(chatModel, openAiClient).chat(request()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("模型通道调用失败");
+
+        verify(chatModel, never()).call(any(org.springframework.ai.chat.prompt.Prompt.class));
+    }
+
+    @Test
+    @DisplayName("没有配置任何通道：仍可使用默认客户端")
+    void noRouteStillUsesDefaultClient() {
+        var chatModel = mock(org.springframework.ai.chat.model.ChatModel.class);
+        when(gatewayService.resolveRoute(any())).thenReturn(Optional.empty());
+        when(chatModel.getOptions()).thenReturn(org.springframework.ai.chat.prompt.ChatOptions.builder().build());
+        when(chatModel.call(any(org.springframework.ai.chat.prompt.Prompt.class))).thenReturn(
+                new org.springframework.ai.chat.model.ChatResponse(List.of(new org.springframework.ai.chat.model.Generation(
+                        new org.springframework.ai.chat.messages.AssistantMessage("默认客户端的回答")))));
+
+        ChatResponse response = serviceWithDefaultClient(chatModel, openAiClient).chat(request());
+
+        assertThat(response.getReply()).isEqualTo("默认客户端的回答");
+    }
+
+    @Test
+    @DisplayName("真实客户端读到空的流式响应：提示模型没有返回内容")
+    void emptySseFromRealClientIsReported() throws Exception {
+        var chatModel = mock(org.springframework.ai.chat.model.ChatModel.class);
+        byte[] sse = ("data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n"
+                + "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                + "data: [DONE]\n\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, sse.length);
+            exchange.getResponseBody().write(sse);
+            exchange.close();
+        });
+        server.start();
+        try {
+            primary.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort() + "/v1");
+            OpenAiCompatibleClient realClient = new OpenAiCompatibleClient(mock(com.shimeta.config.OutboundUrlValidator.class));
+
+            assertThatThrownBy(() -> serviceWithDefaultClient(chatModel, realClient).chat(request(), sink(false)))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("模型没有返回内容");
+
+            verify(chatModel, never()).call(any(org.springframework.ai.chat.prompt.Prompt.class));
+        } finally {
+            server.stop(0);
+        }
+    }
+
     @Test
     @DisplayName("Token 估算：中文每字约 1 个，其余每 4 个字符约 1 个")
     void estimateTokens() {

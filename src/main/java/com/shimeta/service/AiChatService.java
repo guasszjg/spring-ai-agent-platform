@@ -97,8 +97,16 @@ public class AiChatService {
         return chat(request, null);
     }
 
-    /** 一次智能体对话的路由情况：是否切到了备用通道，以及拿不到用量时用的输入估算值 */
+    /** 已路由到模型网关的通道，但通道失败或没有返回内容：消息里带具体原因，不能再回退到 Spring AI 默认客户端 */
+    private static class ChannelCallException extends IllegalStateException {
+        ChannelCallException(String message) {
+            super(message);
+        }
+    }
+
+    /** 一次智能体对话的路由情况：是否走了网关通道、是否切到了备用通道，以及拿不到用量时用的输入估算值 */
     private static class RouteTrace {
+        boolean routed;
         String failoverFrom;
         int estimatedPromptTokens;
     }
@@ -205,6 +213,10 @@ public class AiChatService {
                 }
             } else if (trackedSink != null && trackedSink.cancelled()) {
                 throw new StreamInterruptedException("调用方已断开连接", null);
+            } else if (trace.routed) {
+                throw new ChannelCallException(routed == null
+                        ? "模型通道调用失败，请到「模型网关」检查通道连通性或稍后重试"
+                        : "模型没有返回内容，请重试或换一种问法；如果持续出现，请到「模型网关」检查该通道");
             } else if (chatClient != null) {
                 log.info("Invoking Spring AI ChatClient for Agent: [{}] with model: [{}]", agent.getName(), executionModel);
                 
@@ -385,6 +397,7 @@ public class AiChatService {
         ChatGeneration effective = generation != null ? generation : fromAgent(agent);
         final PromptLayout layout = buildPromptLayout(livePrompt, agent, userMessage, enabledTools);
         return gatewayService.resolveRoute(agent.getModelName()).map(route -> {
+            trace.routed = true;
             var messages = OpenAiCompatibleClient.toMessages(
                     layout.system(),
                     layout.user(),
@@ -696,7 +709,8 @@ public class AiChatService {
     private String fallbackReply(Agent agent, String userMessage, List<ChatMessage> history,
                                  String[] toolCalledHolder, Exception cause) {
         if (!simulationFallbackEnabled) {
-            throw new IllegalStateException("当前没有可用的模型通道，请检查模型网关配置", cause);
+            String message = cause instanceof ChannelCallException ? cause.getMessage() : "当前没有可用的模型通道，请检查模型网关配置";
+            throw new IllegalStateException(message, cause);
         }
         log.warn("Simulation fallback is enabled; returning a clearly marked non-model response");
         return generateSmartSimulationReply(agent, userMessage, history, toolCalledHolder);
