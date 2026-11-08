@@ -243,6 +243,7 @@ public class OpenAiCompatibleClient {
                     payload.put("tools", tools);
                 }
                 applyGeneration(payload, generation, defaultWebSearch);
+                applyOllamaThinking(payload, generation);
                 String body = objectMapper.writeValueAsString(payload);
                 HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                         .timeout(Duration.ofMillis(Math.max(5000, timeoutMs)))
@@ -479,6 +480,7 @@ public class OpenAiCompatibleClient {
                 payload.put("tools", tools);
             }
             applyGeneration(payload, generation, defaultWebSearch);
+            applyOllamaThinking(payload, generation);
             payload.put("stream", true);
             if (includeUsage) {
                 payload.put("stream_options", Map.of("include_usage", true));
@@ -770,6 +772,22 @@ public class OpenAiCompatibleClient {
         public boolean hasToolCalls() {
             return toolCalls != null && !toolCalls.isEmpty();
         }
+    }
+
+    // Ollama's OpenAI endpoint uses reasoning_effort. Select the adapter from
+    // the explicit channel protocol, independently of address, port or model name.
+    static void applyOllamaThinking(Map<String, Object> payload, ChatGeneration generation) {
+        if (generation == null || generation.getThinking() == null
+                || generation.getProviderProtocol() != com.shimeta.model.LlmProtocolType.OLLAMA) {
+            return;
+        }
+        if (Boolean.FALSE.equals(generation.getThinking())
+                && alwaysThinks(String.valueOf(payload.get("model")))) {
+            return;
+        }
+        payload.remove("enable_thinking");
+        payload.remove("thinking");
+        payload.put("reasoning_effort", Boolean.TRUE.equals(generation.getThinking()) ? "low" : "none");
     }
 
     private void applyGeneration(Map<String, Object> payload, ChatGeneration generation) {

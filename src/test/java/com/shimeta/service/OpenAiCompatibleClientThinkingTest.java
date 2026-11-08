@@ -53,10 +53,56 @@ class OpenAiCompatibleClientThinkingTest {
     }
 
     private JsonNode send(String model, Boolean thinking) {
+        return send(model, thinking, com.shimeta.model.LlmProtocolType.OPENAI);
+    }
+
+    private JsonNode send(String model, Boolean thinking, com.shimeta.model.LlmProtocolType protocol) {
         ChatGeneration generation = new ChatGeneration();
         generation.setThinking(thinking);
+        generation.setProviderProtocol(protocol);
         client.chat(baseUrl, "sk", model, List.of(Map.of("role", "user", "content", "hi")), generation, 10_000);
         return lastBody.get();
+    }
+
+    @Test
+    void explicitOllamaChannelWorksOnAnArbitraryPort() {
+        JsonNode body = send("qwen3:1.7b", false, com.shimeta.model.LlmProtocolType.OLLAMA);
+        assertThat(body.path("reasoning_effort").asText()).isEqualTo("none");
+        assertThat(body.has("thinking")).isFalse();
+        assertThat(body.has("enable_thinking")).isFalse();
+        body = send("deepseek-flash", false);
+        assertThat(body.path("thinking").path("type").asText()).isEqualTo("disabled");
+        assertThat(body.has("reasoning_effort")).isFalse();
+    }
+
+    @Test
+    void ollamaUsesSupportedThinkingControl() {
+        for (boolean enabled : List.of(false, true)) {
+            ChatGeneration generation = new ChatGeneration();
+            generation.setThinking(enabled);
+            generation.setProviderProtocol(com.shimeta.model.LlmProtocolType.OLLAMA);
+            var body = new java.util.LinkedHashMap<String, Object>();
+            body.put("model", "qwen3:1.7b");
+            body.put("enable_thinking", enabled);
+            body.put("thinking", Map.of("type", enabled ? "enabled" : "disabled"));
+            OpenAiCompatibleClient.applyOllamaThinking(body, generation);
+            assertThat(body.get("reasoning_effort")).isEqualTo(enabled ? "low" : "none");
+            assertThat(body).doesNotContainKeys("thinking", "enable_thinking");
+        }
+    }
+
+    @Test
+    void ollamaControlLeavesDefaultAndOtherProvidersAlone() {
+        ChatGeneration generation = new ChatGeneration();
+        var body = new java.util.LinkedHashMap<String, Object>();
+        body.put("model", "qwen3:4b");
+        generation.setProviderProtocol(com.shimeta.model.LlmProtocolType.OLLAMA);
+        OpenAiCompatibleClient.applyOllamaThinking(body, generation);
+        assertThat(body).doesNotContainKey("reasoning_effort");
+        generation.setThinking(false);
+        generation.setProviderProtocol(com.shimeta.model.LlmProtocolType.OPENAI);
+        OpenAiCompatibleClient.applyOllamaThinking(body, generation);
+        assertThat(body).doesNotContainKey("reasoning_effort");
     }
 
     @Test

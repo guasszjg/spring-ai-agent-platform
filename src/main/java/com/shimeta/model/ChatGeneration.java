@@ -10,6 +10,17 @@ public class ChatGeneration {
     private Boolean webSearch;
     private Boolean thinking;
     private String extraHeaders;
+    // Set by the selected server-side channel, never trusted from a chat request.
+    private LlmProtocolType providerProtocol = LlmProtocolType.OPENAI;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    public LlmProtocolType getProviderProtocol() {
+        return providerProtocol;
+    }
+
+    public void setProviderProtocol(LlmProtocolType providerProtocol) {
+        this.providerProtocol = providerProtocol;
+    }
 
     public Double getTemperature() {
         return temperature;

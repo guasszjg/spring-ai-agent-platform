@@ -402,6 +402,7 @@ public class AssistantService {
                                                           List<Map<String, Object>> tools, ChatGeneration generation,
                                                           Turn turn, Sink sink) {
         LlmProvider provider = channel.provider();
+        generation.setProviderProtocol(provider.getProtocol());
         if (provider.getProtocol() == LlmProtocolType.CUSTOM_HTTP) {
             // 自定义 HTTP 协议不支持工具调用与流式：一次性取回后整段推送
             turn.toolsUnsupported = true;

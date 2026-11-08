@@ -530,6 +530,7 @@ public class AiChatService {
         java.util.concurrent.atomic.AtomicBoolean emitted = new java.util.concurrent.atomic.AtomicBoolean(false);
         for (int i = 0; i < attempts; i++) {
             try {
+                generation.setProviderProtocol(provider.getProtocol());
                 if (provider.getProtocol() == com.shimeta.model.LlmProtocolType.CUSTOM_HTTP) {
                     log.info("Gateway routing agent chat via custom HTTP endpoint [{}]", provider.getName());
                     return customHttpClient.chat(provider, messages, generation, timeoutMs);
