@@ -96,6 +96,9 @@ public class LlmGatewayService {
         Map<String, String> route = new LinkedHashMap<>();
         route.put("channel", primary != null && primary.getName() != null ? primary.getName() : "");
         route.put("model", primary != null && primary.getDefaultModel() != null ? primary.getDefaultModel() : "");
+        route.put("supportsTools", String.valueOf(primary == null || supportsTools(primary)));
+        route.put("contextWindow", primary != null && primary.getContextWindow() != null
+                ? String.valueOf(primary.getContextWindow()) : "");
         return route;
     }
 
@@ -439,6 +442,12 @@ public class LlmGatewayService {
         if (request.getRemark() != null) {
             provider.setRemark(request.getRemark().trim());
         }
+        if (request.getSupportsTools() != null) {
+            provider.setSupportsTools(request.getSupportsTools());
+        }
+        if (request.getContextWindow() != null) {
+            provider.setContextWindow(normalizeContextWindow(request.getContextWindow()));
+        }
         if (request.getProtocol() != null) {
             provider.setProtocol(request.getProtocol());
         } else if (creating && provider.getProtocol() == null) {
@@ -504,6 +513,8 @@ public class LlmGatewayService {
         view.setTimeoutMs(provider.getTimeoutMs());
         view.setMaxRetries(provider.getMaxRetries());
         view.setRemark(provider.getRemark());
+        view.setSupportsTools(supportsTools(provider));
+        view.setContextWindow(provider.getContextWindow());
         view.setLastProbeStatus(provider.getLastProbeStatus());
         view.setLastProbeMessage(provider.getLastProbeMessage());
         view.setLastProbeAt(provider.getLastProbeAt());
@@ -686,6 +697,32 @@ public class LlmGatewayService {
             }
         }
         return 30000;
+    }
+
+    /** 允许的最小上下文窗口；更小的值留不出输出空间，按不限制处理会更糟，所以抬到这个值 */
+    static final int MIN_CONTEXT_WINDOW = 1024;
+    static final int MAX_CONTEXT_WINDOW = 2_000_000;
+
+    /** 0 或负数表示清空（不限制） */
+    static Integer normalizeContextWindow(Integer value) {
+        if (value == null || value <= 0) {
+            return null;
+        }
+        return Math.max(MIN_CONTEXT_WINDOW, Math.min(MAX_CONTEXT_WINDOW, value));
+    }
+
+    /**
+     * 通道是否支持工具调用。管理员明确设置过的以设置为准；没设置过的（升级前就有的通道）保持原来的行为：
+     * 自定义 HTTP 通道本来就不发工具，其余照常发送。新建的自定义通道由页面默认不勾选。
+     */
+    public static boolean supportsTools(LlmProvider provider) {
+        if (provider == null) {
+            return false;
+        }
+        if (provider.getSupportsTools() != null) {
+            return provider.getSupportsTools();
+        }
+        return provider.getProtocol() != LlmProtocolType.CUSTOM_HTTP;
     }
 
     public record ResolvedRoute(
