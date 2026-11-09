@@ -22,6 +22,19 @@ public interface KnowledgeDocumentChunkRepository extends JpaRepository<Knowledg
             + "WHERE c.knowledgeBaseId = :knowledgeBaseId AND c.enabled = TRUE")
     List<ChunkText> findTextByKnowledgeBaseId(@Param("knowledgeBaseId") String knowledgeBaseId);
 
+    /** 知识库启用切片的概况：任何切片新增、删除、启停或内容变化都会让它变化，BM25 索引据此判断要不要重建 */
+    interface ChunkFingerprint {
+        Long getCount();
+        Long getTotalLength();
+        String getMinId();
+        String getMaxId();
+    }
+
+    @Query("SELECT COUNT(c) AS count, COALESCE(SUM(LENGTH(c.content)), 0) AS totalLength, "
+            + "MIN(c.id) AS minId, MAX(c.id) AS maxId FROM KnowledgeDocumentChunk c "
+            + "WHERE c.knowledgeBaseId = :knowledgeBaseId AND c.enabled = TRUE")
+    ChunkFingerprint fingerprintByKnowledgeBaseId(@Param("knowledgeBaseId") String knowledgeBaseId);
+
     List<KnowledgeDocumentChunk> findByKnowledgeBaseIdAndEnabledTrueOrderByChunkIndexAsc(String knowledgeBaseId);
 
     List<KnowledgeDocumentChunk> findByDocumentIdOrderByChunkIndexAsc(String documentId);
