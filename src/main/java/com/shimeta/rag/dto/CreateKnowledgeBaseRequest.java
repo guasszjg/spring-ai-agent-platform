@@ -15,8 +15,8 @@ public class CreateKnowledgeBaseRequest {
     private String rerankMode = "weighted_score";
     private String rerankModel = "qwen3-rerank";
     private String rerankModelProvider;
-    private Double vectorWeight = 0.7;
-    private Double keywordWeight = 0.3;
+    private Double vectorWeight = 0.5;
+    private Double keywordWeight = 0.5;
     private Double scoreThreshold = 0.5;
 
     public String getName() {

@@ -11,6 +11,7 @@ import com.shimeta.rag.dto.KnowledgeCostStatsDto;
 import com.shimeta.service.RerankConfigService;
 import com.shimeta.rag.engine.RetrievalRequest;
 import com.shimeta.rag.graph.GraphRagService;
+import com.shimeta.rag.pipeline.Bm25KeywordIndex;
 import com.shimeta.rag.pipeline.ContextBudgetPruner;
 import com.shimeta.rag.pipeline.DocumentChunker;
 import com.shimeta.rag.pipeline.KeywordRetriever;
@@ -73,6 +74,13 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
     private final PgChunkSearch pgChunkSearch;
     private final RerankConfigService rerankConfigService;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private Bm25KeywordIndex bm25Index;
+
+    /** BM25 关键词索引；没有注入时（部分单元测试）沿用数据库的关键词匹配 */
+    @Autowired(required = false)
+    public void setBm25Index(Bm25KeywordIndex bm25Index) {
+        this.bm25Index = bm25Index;
+    }
 
     @Autowired
     public SpringAiKnowledgeBaseProvider(KnowledgeDocumentChunkRepository chunkRepository,
@@ -427,8 +435,8 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 .scoreThreshold(scoreThreshold != null ? scoreThreshold : 0.3)
                 .searchMethod("hybrid_search")
                 .rerankEnabled(false)
-                .vectorWeight(0.7)
-                .keywordWeight(0.3)
+                .vectorWeight(0.5)
+                .keywordWeight(0.5)
                 .rewriteEnabled(false)
                 .expandParent(true)
                 .maxContextTokens(ContextBudgetPruner.DEFAULT_MAX_CONTEXT_TOKENS)
@@ -504,7 +512,19 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                     vectorScoreById.put(hit.id(), 1.0 - hit.distanceOrRank());
                 }
             }
-            if (!"semantic_search".equals(searchMethod)) {
+            List<Bm25KeywordIndex.Hit> bm25Hits = !"semantic_search".equals(searchMethod) && bm25Index != null
+                    ? bm25Index.search(kbId, effectiveQuery, recallK) : List.of();
+            if ("hybrid_search".equals(searchMethod) && !bm25Hits.isEmpty()) {
+                double minScore = bm25Index.fusionMinScore();
+                bm25Hits = bm25Hits.stream().filter(hit -> hit.score() >= minScore).toList();
+            }
+            if (!bm25Hits.isEmpty()) {
+                // BM25：按 jieba 分词后的词频和稀有程度打分，问题里只有部分词出现在资料中也能排出先后
+                for (Bm25KeywordIndex.Hit hit : bm25Hits) {
+                    keywordIds.add(hit.id());
+                    keywordScoreById.put(hit.id(), hit.score());
+                }
+            } else if (!"semantic_search".equals(searchMethod)) {
                 List<PgChunkSearch.Hit> kHits = pgChunkSearch.keywordSearch(kbId, effectiveQuery, recallK);
                 for (PgChunkSearch.Hit hit : kHits) {
                     keywordIds.add(hit.id());
@@ -827,8 +847,8 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
 
     /** 权重换算成总和为 2：语义和关键词各占 50% 时与未加权的 RRF 得分相同 */
     private static double[] fusionWeights(Double vectorWeight, Double keywordWeight) {
-        double vector = vectorWeight != null ? Math.max(0, vectorWeight) : 0.7;
-        double keyword = keywordWeight != null ? Math.max(0, keywordWeight) : 0.3;
+        double vector = vectorWeight != null ? Math.max(0, vectorWeight) : 0.5;
+        double keyword = keywordWeight != null ? Math.max(0, keywordWeight) : 0.5;
         double sum = vector + keyword;
         return sum > 0 ? new double[]{vector / sum * 2, keyword / sum * 2} : new double[]{1.0, 1.0};
     }

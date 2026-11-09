@@ -240,7 +240,7 @@ public class DifyKnowledgeBaseProvider implements KnowledgeBaseProvider {
             retrievalModel.put("reranking_model", rerankModelMap);
 
             // 2. 权重设置 (vector_weight + keyword_weight)
-            double vWeight = (vectorWeight != null && vectorWeight >= 0 && vectorWeight <= 1.0) ? vectorWeight : 0.7;
+            double vWeight = (vectorWeight != null && vectorWeight >= 0 && vectorWeight <= 1.0) ? vectorWeight : 0.5;
             double kWeight = (keywordWeight != null && keywordWeight >= 0 && keywordWeight <= 1.0) ? keywordWeight : Math.round((1.0 - vWeight) * 10.0) / 10.0;
 
             Map<String, Object> weightsMap = new HashMap<>();

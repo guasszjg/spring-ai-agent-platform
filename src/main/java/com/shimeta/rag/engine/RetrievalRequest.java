@@ -57,8 +57,8 @@ public record RetrievalRequest(
         private String searchMethod = "hybrid_search";
         private Boolean rerankEnabled = false;
         private String rerankModel;
-        private Double vectorWeight = 0.7;
-        private Double keywordWeight = 0.3;
+        private Double vectorWeight = 0.5;
+        private Double keywordWeight = 0.5;
         private EngineType engineOverride;
         private String indexVersionId;
         private Boolean rewriteEnabled = false;
