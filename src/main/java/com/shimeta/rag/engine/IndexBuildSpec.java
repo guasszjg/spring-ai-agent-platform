@@ -46,8 +46,8 @@ public record IndexBuildSpec(
         private String rerankMode = "weighted_score";
         private String rerankModel = "qwen3-rerank";
         private String rerankModelProvider = "langgenius/tongyi/tongyi";
-        private Double vectorWeight = 0.7;
-        private Double keywordWeight = 0.3;
+        private Double vectorWeight = 0.5;
+        private Double keywordWeight = 0.5;
         private Map<String, Object> extraConfig;
 
         public Builder knowledgeBaseId(String knowledgeBaseId) { this.knowledgeBaseId = knowledgeBaseId; return this; }

@@ -435,8 +435,8 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 .scoreThreshold(scoreThreshold != null ? scoreThreshold : 0.3)
                 .searchMethod("hybrid_search")
                 .rerankEnabled(false)
-                .vectorWeight(0.7)
-                .keywordWeight(0.3)
+                .vectorWeight(0.5)
+                .keywordWeight(0.5)
                 .rewriteEnabled(false)
                 .expandParent(true)
                 .maxContextTokens(ContextBudgetPruner.DEFAULT_MAX_CONTEXT_TOKENS)
@@ -847,8 +847,8 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
 
     /** 权重换算成总和为 2：语义和关键词各占 50% 时与未加权的 RRF 得分相同 */
     private static double[] fusionWeights(Double vectorWeight, Double keywordWeight) {
-        double vector = vectorWeight != null ? Math.max(0, vectorWeight) : 0.7;
-        double keyword = keywordWeight != null ? Math.max(0, keywordWeight) : 0.3;
+        double vector = vectorWeight != null ? Math.max(0, vectorWeight) : 0.5;
+        double keyword = keywordWeight != null ? Math.max(0, keywordWeight) : 0.5;
         double sum = vector + keyword;
         return sum > 0 ? new double[]{vector / sum * 2, keyword / sum * 2} : new double[]{1.0, 1.0};
     }

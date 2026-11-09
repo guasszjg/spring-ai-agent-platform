@@ -78,10 +78,10 @@ public class KnowledgeIndexVersion {
     private Double scoreThreshold = 0.5;
 
     @Column(name = "vector_weight")
-    private Double vectorWeight = 0.7;
+    private Double vectorWeight = 0.5;
 
     @Column(name = "keyword_weight")
-    private Double keywordWeight = 0.3;
+    private Double keywordWeight = 0.5;
 
     @Column(name = "source_snapshot_no")
     private Integer sourceSnapshotNo = 1;

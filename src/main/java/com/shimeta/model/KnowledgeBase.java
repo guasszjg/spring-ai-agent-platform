@@ -77,9 +77,9 @@ public class KnowledgeBase {
     @Column(length = 64)
     private String rerankModelProvider = "langgenius/tongyi/tongyi";
 
-    private Double vectorWeight = 0.7;
+    private Double vectorWeight = 0.5;
 
-    private Double keywordWeight = 0.3;
+    private Double keywordWeight = 0.5;
 
     @Column(name = "score_threshold")
     private Double scoreThreshold = 0.5;
@@ -172,10 +172,10 @@ public class KnowledgeBase {
             this.rerankModelProvider = "langgenius/tongyi/tongyi";
         }
         if (this.vectorWeight == null || this.vectorWeight <= 0) {
-            this.vectorWeight = 0.7;
+            this.vectorWeight = 0.5;
         }
         if (this.keywordWeight == null || this.keywordWeight <= 0) {
-            this.keywordWeight = 0.3;
+            this.keywordWeight = 0.5;
         }
         if (this.scoreThreshold == null || this.scoreThreshold <= 0) {
             this.scoreThreshold = 0.5;

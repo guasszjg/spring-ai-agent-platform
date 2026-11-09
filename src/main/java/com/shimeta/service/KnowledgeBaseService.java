@@ -583,9 +583,9 @@ public class KnowledgeBaseService {
         Boolean effectiveRerankEnabled = req.getRerankEnabled() != null ? req.getRerankEnabled()
                 : Boolean.TRUE.equals(kb.getRerankEnabled());
         Double effectiveVectorWeight = req.getVectorWeight() != null ? req.getVectorWeight()
-                : (kb.getVectorWeight() != null ? kb.getVectorWeight() : 0.7);
+                : (kb.getVectorWeight() != null ? kb.getVectorWeight() : 0.5);
         Double effectiveKeywordWeight = req.getKeywordWeight() != null ? req.getKeywordWeight()
-                : (kb.getKeywordWeight() != null ? kb.getKeywordWeight() : 0.3);
+                : (kb.getKeywordWeight() != null ? kb.getKeywordWeight() : 0.5);
         String effectiveRerankMode = req.getRerankMode() != null && !req.getRerankMode().isBlank()
                 ? req.getRerankMode() : savedRerankMode(kb);
         // 语义缓存不区分排序参数：调试时临时改了排序方式或权重就绕过缓存，否则看到的还是旧排序
@@ -786,8 +786,8 @@ public class KnowledgeBaseService {
         String rerankModel = (req.getRerankModel() != null && !req.getRerankModel().isBlank()) ? req.getRerankModel() : "qwen3-rerank";
         String rerankModelProvider = (req.getRerankModelProvider() != null && !req.getRerankModelProvider().isBlank()) ? req.getRerankModelProvider()
                 : (isSpringAi ? "spring_ai" : "langgenius/tongyi/tongyi");
-        Double vectorWeight = req.getVectorWeight() != null ? req.getVectorWeight() : 0.7;
-        Double keywordWeight = req.getKeywordWeight() != null ? req.getKeywordWeight() : 0.3;
+        Double vectorWeight = req.getVectorWeight() != null ? req.getVectorWeight() : 0.5;
+        Double keywordWeight = req.getKeywordWeight() != null ? req.getKeywordWeight() : 0.5;
 
         // 1. 调用底层 RAG 引擎（Dify）同步创建数据集（带完整权重与重排配置）
         DifyDatasetDto externalDataset = provider.createDataset(

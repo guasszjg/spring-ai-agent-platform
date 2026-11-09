@@ -420,9 +420,9 @@ public class RagEvaluationService {
             rerankMode = "weighted_score";
         }
         double vector = req.getVectorWeight() != null ? req.getVectorWeight()
-                : (kb.getVectorWeight() != null ? kb.getVectorWeight() : 0.7);
+                : (kb.getVectorWeight() != null ? kb.getVectorWeight() : 0.5);
         double keyword = req.getKeywordWeight() != null ? req.getKeywordWeight()
-                : (kb.getKeywordWeight() != null ? kb.getKeywordWeight() : 0.3);
+                : (kb.getKeywordWeight() != null ? kb.getKeywordWeight() : 0.5);
         if (vector < 0 || keyword < 0 || vector > 1 || keyword > 1 || vector + keyword <= 0) {
             throw new IllegalArgumentException("权重要在 0 到 1 之间，且不能都是 0");
         }
