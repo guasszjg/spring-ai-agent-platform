@@ -395,31 +395,85 @@ public class AiChatService {
                                                                List<String> enabledTools,
                                                                String[] routedModel, StreamSink sink, RouteTrace trace) {
         ChatGeneration effective = generation != null ? generation : fromAgent(agent);
-        final PromptLayout layout = buildPromptLayout(livePrompt, agent, userMessage, enabledTools);
         return gatewayService.resolveRoute(agent.getModelName()).map(route -> {
             trace.routed = true;
+            com.shimeta.model.LlmProvider fallback = route.fallback() != null && gatewayService.hasKey(route.fallback())
+                    ? route.fallback() : null;
+            // 通道不支持工具调用时不发工具定义，也不在提示词里写工具指引；主备通道分别判断
+            boolean primaryTools = LlmGatewayService.supportsTools(route.primary());
+            List<java.util.Map<String, Object>> primaryToolDefs = primaryTools || tools == null ? tools : List.of();
+            List<java.util.Map<String, Object>> fallbackToolDefs = fallback != null && LlmGatewayService.supportsTools(fallback)
+                    ? tools : List.of();
+            if (!primaryTools && tools != null && !tools.isEmpty()) {
+                log.info("Channel [{}] does not support tool calls, skipping {} tool definitions",
+                        route.primary().getName(), tools.size());
+            }
+            List<String> layoutTools = primaryTools ? enabledTools : null;
+
+            // 主备通道都配置了上下文窗口时取较小的那个，切到备用通道时同一份消息也放得下
+            ContextWindowPlanner.Plan plan = ContextWindowPlanner.plan(
+                    smallerWindow(route.primary(), fallback), effective.getMaxTokens());
+            ChatGeneration callGeneration = effective;
+            List<ChatMessage> fittedHistory = history;
+            PromptLayout layout;
+            if (plan == null) {
+                layout = buildPromptLayout(livePrompt, agent, userMessage, layoutTools);
+            } else {
+                int toolTokens = Math.max(estimateTokens(toolsJson(primaryToolDefs)), estimateTokens(toolsJson(fallbackToolDefs)));
+                layout = buildPromptLayout(livePrompt, agent, userMessage, layoutTools,
+                        bare -> plan.inputBudget() - toolTokens
+                                - ContextWindowPlanner.messageTokens(bare.system())
+                                - ContextWindowPlanner.messageTokens(bare.user())
+                                - KNOWLEDGE_FRAME_TOKENS);
+                int used = toolTokens + ContextWindowPlanner.messageTokens(layout.system())
+                        + ContextWindowPlanner.messageTokens(layout.user());
+                fittedHistory = ContextWindowPlanner.fitHistory(history, plan.inputBudget() - used);
+                callGeneration = effective.copy();
+                callGeneration.setMaxTokens(plan.outputTokens());
+                log.info("Context window {}: output {} tokens, input ~{} / {} tokens, history {} -> {} messages",
+                        plan.window(), plan.outputTokens(), used + ContextWindowPlanner.historyTokens(fittedHistory),
+                        plan.inputBudget(), history == null ? 0 : history.size(), fittedHistory == null ? 0 : fittedHistory.size());
+            }
             var messages = OpenAiCompatibleClient.toMessages(
                     layout.system(),
                     layout.user(),
-                    history
+                    fittedHistory
             );
             trace.estimatedPromptTokens = messages.stream()
                     .mapToInt(m -> estimateTokens(String.valueOf(m.get("content"))))
-                    .sum() + estimateTokens(String.valueOf(tools));
+                    .sum() + estimateTokens(toolsJson(primaryToolDefs));
             OpenAiCompatibleClient.ChatResult result = callProvider(route.primary(), route.primaryKey(),
-                    agent.getModelName(), effective, route.timeoutMs(), route.maxRetries(), messages, tools, routedModel, sink);
+                    agent.getModelName(), callGeneration, route.timeoutMs(), route.maxRetries(), messages, primaryToolDefs,
+                    routedModel, sink);
             if (result != null) {
                 return result;
             }
-            if (route.fallback() != null && gatewayService.hasKey(route.fallback())) {
+            if (fallback != null) {
                 log.warn("Primary LLM channel [{}] failed, switching to fallback [{}]",
-                        route.primary().getName(), route.fallback().getName());
+                        route.primary().getName(), fallback.getName());
                 trace.failoverFrom = route.primary().getName();
-                return callProvider(route.fallback(), route.fallbackKey(),
-                        agent.getModelName(), effective, route.timeoutMs(), route.maxRetries(), messages, tools, routedModel, sink);
+                return callProvider(fallback, route.fallbackKey(),
+                        agent.getModelName(), callGeneration, route.timeoutMs(), route.maxRetries(), messages, fallbackToolDefs,
+                        routedModel, sink);
             }
             return null;
         }).orElse(null);
+    }
+
+    /** 知识库内容外面的说明文字和每条资料的序号、来源，检索预算里不包含这部分 */
+    static final int KNOWLEDGE_FRAME_TOKENS = 150;
+
+    private static Integer smallerWindow(com.shimeta.model.LlmProvider primary, com.shimeta.model.LlmProvider fallback) {
+        Integer a = primary != null ? primary.getContextWindow() : null;
+        Integer b = fallback != null ? fallback.getContextWindow() : null;
+        if (a == null || a <= 0) {
+            return b != null && b > 0 ? b : null;
+        }
+        return b != null && b > 0 ? Math.min(a, b) : a;
+    }
+
+    private static String toolsJson(List<java.util.Map<String, Object>> tools) {
+        return tools == null || tools.isEmpty() ? "" : String.valueOf(tools);
     }
 
     /**
@@ -429,6 +483,15 @@ public class AiChatService {
     public record PromptLayout(String system, String user) {}
 
     public PromptLayout buildPromptLayout(String rawPrompt, Agent agent, String userMessage, List<String> enabledTools) {
+        return buildPromptLayout(rawPrompt, agent, userMessage, enabledTools, null);
+    }
+
+    /**
+     * @param knowledgeBudget 给定不带知识库内容的提示词，返回知识库最多能占多少 token；为空时用默认上限。
+     *                        预算太小（放不下一条资料）时不检索
+     */
+    PromptLayout buildPromptLayout(String rawPrompt, Agent agent, String userMessage, List<String> enabledTools,
+                                   java.util.function.ToIntFunction<PromptLayout> knowledgeBudget) {
         String base = firstNonBlank(rawPrompt, agent.getSystemPrompt(), "你是一个通用智能助手。");
 
         // 1. 获取当前系统真实时间与星期 (标准北京时间 Asia/Shanghai)
@@ -489,7 +552,18 @@ public class AiChatService {
 
         // 4. 当前时间和知识库检索片段（RAG 上下文）每次都会变，放进 user 消息
         String currentTime = String.format("【当前时间】%s（%s），北京时间 %s", dateStr, weekday, timeStr);
-        return new PromptLayout(system, buildUserContent(currentTime, retrieveKnowledge(agent, userMessage), userMessage));
+        if (knowledgeBudget == null) {
+            return new PromptLayout(system, buildUserContent(currentTime, retrieveKnowledge(agent, userMessage, null), userMessage));
+        }
+        PromptLayout bare = new PromptLayout(system, buildUserContent(currentTime, null, userMessage));
+        int budget = knowledgeBudget.applyAsInt(bare);
+        if (budget < ContextWindowPlanner.MIN_KNOWLEDGE_TOKENS) {
+            if (agent.getKnowledgeBaseIds() != null && !agent.getKnowledgeBaseIds().isEmpty()) {
+                log.warn("Context window too small for knowledge base content (budget {} tokens), skipping retrieval", budget);
+            }
+            return bare;
+        }
+        return new PromptLayout(system, buildUserContent(currentTime, retrieveKnowledge(agent, userMessage, budget), userMessage));
     }
 
     private static String buildUserContent(String currentTime, String knowledge, String userMessage) {
@@ -500,8 +574,13 @@ public class AiChatService {
         return content.append("【用户问题】\n").append(userMessage).toString();
     }
 
-    private String retrieveKnowledge(Agent agent, String userMessage) {
-        KnowledgeBaseService.RetrievalContext retrieval = knowledgeBaseService.buildRetrieval(agent.getKnowledgeBaseIds(), userMessage);
+    private String retrieveKnowledge(Agent agent, String userMessage, Integer maxContextTokens) {
+        KnowledgeBaseService.RetrievalContext retrieval = maxContextTokens == null
+                ? knowledgeBaseService.buildRetrieval(agent.getKnowledgeBaseIds(), userMessage)
+                : knowledgeBaseService.buildRetrieval(agent.getKnowledgeBaseIds(), userMessage, maxContextTokens);
+        if (retrieval == null) {
+            return "";
+        }
         if (retrieval.faqImages() != null && !retrieval.faqImages().isEmpty()) {
             RETRIEVED_FAQ_IMAGES.set(retrieval.faqImages());
         }

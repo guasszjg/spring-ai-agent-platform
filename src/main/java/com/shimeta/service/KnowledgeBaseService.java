@@ -396,6 +396,17 @@ public class KnowledgeBaseService {
     }
 
     public RetrievalContext buildRetrieval(List<String> knowledgeBaseIds, String query) {
+        return buildRetrieval(knowledgeBaseIds, query, null);
+    }
+
+    /**
+     * @param maxContextTokens 注入模型的知识库内容上限；为空时用默认的 {@link ContextBudgetPruner#DEFAULT_MAX_CONTEXT_TOKENS}。
+     *                         模型通道配置了上下文窗口时，由调用方按剩余空间算出更小的值
+     */
+    public RetrievalContext buildRetrieval(List<String> knowledgeBaseIds, String query, Integer maxContextTokens) {
+        int contextBudget = maxContextTokens != null && maxContextTokens > 0
+                ? Math.min(maxContextTokens, ContextBudgetPruner.DEFAULT_MAX_CONTEXT_TOKENS)
+                : ContextBudgetPruner.DEFAULT_MAX_CONTEXT_TOKENS;
         if (knowledgeBaseIds == null || knowledgeBaseIds.isEmpty()
                 || query == null || query.isBlank()) {
             return RetrievalContext.EMPTY;
@@ -440,7 +451,7 @@ public class KnowledgeBaseService {
         // P2 阶段：Token 预算裁剪 (修复 F4 缺陷)
         if (budgetPruner != null) {
             allChunks.sort(Comparator.comparingDouble(RetrievedChunk::score).reversed());
-            allChunks = budgetPruner.prune(allChunks, ContextBudgetPruner.DEFAULT_MAX_CONTEXT_TOKENS).prunedChunks();
+            allChunks = budgetPruner.prune(allChunks, contextBudget).prunedChunks();
         }
 
         List<String> faqImages = topFaqImages(allChunks, knowledgeBaseIds);

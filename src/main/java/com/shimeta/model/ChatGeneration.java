@@ -13,6 +13,22 @@ public class ChatGeneration {
     // Set by the selected server-side channel, never trusted from a chat request.
     private LlmProtocolType providerProtocol = LlmProtocolType.OPENAI;
 
+    /** 浅拷贝：按通道调整参数（比如 max_tokens）时不改动调用方传进来的对象 */
+    public ChatGeneration copy() {
+        ChatGeneration copy = new ChatGeneration();
+        copy.temperature = temperature;
+        copy.maxTokens = maxTokens;
+        copy.topP = topP;
+        copy.n = n;
+        copy.frequencyPenalty = frequencyPenalty;
+        copy.responseFormat = responseFormat;
+        copy.webSearch = webSearch;
+        copy.thinking = thinking;
+        copy.extraHeaders = extraHeaders;
+        copy.providerProtocol = providerProtocol;
+        return copy;
+    }
+
     @com.fasterxml.jackson.annotation.JsonIgnore
     public LlmProtocolType getProviderProtocol() {
         return providerProtocol;

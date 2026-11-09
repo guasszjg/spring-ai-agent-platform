@@ -12,6 +12,8 @@ public class LlmProviderRequest {
     private Boolean enabled;
     private Integer timeoutMs;
     private Integer maxRetries;
+    private Boolean supportsTools;
+    private Integer contextWindow;
     private String remark;
 
     public LlmProviderType getVendor() {
@@ -84,6 +86,22 @@ public class LlmProviderRequest {
 
     public void setMaxRetries(Integer maxRetries) {
         this.maxRetries = maxRetries;
+    }
+
+    public Boolean getSupportsTools() {
+        return supportsTools;
+    }
+
+    public void setSupportsTools(Boolean supportsTools) {
+        this.supportsTools = supportsTools;
+    }
+
+    public Integer getContextWindow() {
+        return contextWindow;
+    }
+
+    public void setContextWindow(Integer contextWindow) {
+        this.contextWindow = contextWindow;
     }
 
     public String getRemark() {

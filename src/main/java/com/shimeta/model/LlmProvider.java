@@ -54,6 +54,14 @@ public class LlmProvider {
     private Integer timeoutMs;
     private Integer maxRetries;
 
+    /** 是否支持工具调用；为空时按协议和厂商推断，见 LlmGatewayService.supportsTools */
+    @Column(name = "supports_tools")
+    private Boolean supportsTools;
+
+    /** 上下文窗口（输入 + 输出的 token 上限）；为空表示不限制，平台按原来的方式拼装请求 */
+    @Column(name = "context_window")
+    private Integer contextWindow;
+
     @Column(length = 500)
     private String remark;
 
@@ -169,6 +177,22 @@ public class LlmProvider {
 
     public void setMaxRetries(Integer maxRetries) {
         this.maxRetries = maxRetries;
+    }
+
+    public Boolean getSupportsTools() {
+        return supportsTools;
+    }
+
+    public void setSupportsTools(Boolean supportsTools) {
+        this.supportsTools = supportsTools;
+    }
+
+    public Integer getContextWindow() {
+        return contextWindow;
+    }
+
+    public void setContextWindow(Integer contextWindow) {
+        this.contextWindow = contextWindow;
     }
 
     public String getRemark() {

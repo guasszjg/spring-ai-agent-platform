@@ -19,6 +19,8 @@ public class LlmProviderView {
     private boolean builtin;
     private Integer timeoutMs;
     private Integer maxRetries;
+    private boolean supportsTools;
+    private Integer contextWindow;
     private String remark;
     private String lastProbeStatus;
     private String lastProbeMessage;
@@ -143,6 +145,22 @@ public class LlmProviderView {
 
     public void setMaxRetries(Integer maxRetries) {
         this.maxRetries = maxRetries;
+    }
+
+    public boolean getSupportsTools() {
+        return supportsTools;
+    }
+
+    public void setSupportsTools(boolean supportsTools) {
+        this.supportsTools = supportsTools;
+    }
+
+    public Integer getContextWindow() {
+        return contextWindow;
+    }
+
+    public void setContextWindow(Integer contextWindow) {
+        this.contextWindow = contextWindow;
     }
 
     public String getRemark() {
