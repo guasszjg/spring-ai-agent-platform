@@ -221,4 +221,99 @@ class AiChatServiceChannelCapabilityTest {
         assertThat(loaded).contains("已省略");
         assertThat(loaded.length()).isLessThan(2500);
     }
+
+    private java.util.concurrent.atomic.AtomicReference<KnowledgeSearchSession> agenticKnowledge() {
+        agent.setKnowledgeMode(Agent.KNOWLEDGE_AGENTIC);
+        when(knowledgeBaseService.searchableNames(any())).thenReturn(new java.util.LinkedHashMap<>(Map.of("kb1", "售后政策")));
+        java.util.concurrent.atomic.AtomicReference<KnowledgeSearchSession> holder = new java.util.concurrent.atomic.AtomicReference<>();
+        org.mockito.Mockito.doAnswer(inv -> {
+            holder.set(inv.getArgument(0));
+            return null;
+        }).when(toolRegistry).setKnowledgeSession(any());
+        when(toolRegistry.currentKnowledgeSession()).thenAnswer(inv -> holder.get());
+        return holder;
+    }
+
+    @Test
+    @DisplayName("模型自主检索：提问前不检索，多发 search_knowledge 工具，系统提示带检索说明")
+    void agenticKnowledgeSkipsPreRetrieval() {
+        agenticKnowledge();
+
+        service.chat(request(null));
+
+        Call call = capture();
+        assertThat(call.tools()).extracting(t -> (Object) ((Map<?, ?>) t.get("function")).get("name"))
+                .containsExactly((Object) "time_get_current_time", "search_knowledge");
+        assertThat(String.valueOf(call.messages().get(0).get("content"))).contains("【知识库检索】").contains("售后政策");
+        assertThat(call.allContent()).doesNotContain("【知识库检索结果】");
+        verify(knowledgeBaseService, never()).buildRetrieval(any(), any());
+        verify(knowledgeBaseService, never()).buildRetrieval(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("模型自主检索但通道不支持工具调用：退回先检索后回答")
+    void agenticKnowledgeFallsBackWithoutTools() {
+        var holder = agenticKnowledge();
+        primary.setSupportsTools(false);
+
+        service.chat(request(null));
+
+        Call call = capture();
+        assertThat(call.tools()).isEmpty();
+        assertThat(call.allContent()).contains("【知识库检索结果】默认").doesNotContain("search_knowledge");
+        assertThat(holder.get()).isNull();
+    }
+
+    @Test
+    @DisplayName("模型自主检索但备用通道不支持工具调用：主通道也退回先检索后回答，不发 search_knowledge")
+    void agenticKnowledgeNeedsFallbackToolsToo() {
+        agenticKnowledge();
+        LlmProvider fallback = new LlmProvider();
+        fallback.setId("p2");
+        fallback.setName("备用");
+        fallback.setProtocol(LlmProtocolType.OPENAI);
+        fallback.setBaseUrl("http://fallback");
+        fallback.setSupportsTools(false);
+        when(gatewayService.resolveRoute(any())).thenReturn(Optional.of(
+                new LlmGatewayService.ResolvedRoute(primary, fallback, 1000, 0, "k1", "k2")));
+        when(gatewayService.hasKey(fallback)).thenReturn(true);
+
+        service.chat(request(null));
+
+        Call call = capture();
+        assertThat(call.tools()).extracting(t -> (Object) ((Map<?, ?>) t.get("function")).get("name"))
+                .containsExactly((Object) "time_get_current_time");
+        assertThat(call.allContent()).contains("【知识库检索结果】默认");
+    }
+
+    @Test
+    @DisplayName("先检索后回答（默认）：照旧在提问前检索，不发 search_knowledge")
+    void defaultModeKeepsPreRetrieval() {
+        agenticKnowledge();
+        agent.setKnowledgeMode(null);
+
+        service.chat(request(null));
+
+        Call call = capture();
+        assertThat(call.tools()).hasSize(1);
+        assertThat(call.allContent()).contains("【知识库检索结果】默认");
+    }
+
+    @Test
+    @DisplayName("配置了 4096 窗口：给自主检索的资料留出预算")
+    void windowLimitsAgenticSearch() {
+        var holder = agenticKnowledge();
+        primary.setContextWindow(4096);
+        java.util.List<Integer> budgets = new java.util.ArrayList<>();
+        when(knowledgeBaseService.buildRetrieval(any(), any(), any())).thenAnswer(inv -> {
+            budgets.add(inv.getArgument(2));
+            return new KnowledgeBaseService.RetrievalContext("资料", List.of());
+        });
+
+        service.chat(request(null));
+        holder.get().search("退款", null);
+
+        assertThat(budgets).hasSize(1);
+        assertThat(budgets.get(0)).isLessThan(1500).isGreaterThan(100);
+    }
 }

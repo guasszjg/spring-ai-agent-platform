@@ -83,6 +83,7 @@ public class AgentChatStreamService {
                 end.put("cachedPromptTokens", response.getCachedPromptTokens());
                 end.put("toolCalled", response.getToolCalled());
                 end.put("skillsLoaded", response.getSkillsLoaded());
+                end.put("knowledgeSearches", response.getKnowledgeSearches());
                 end.put("images", response.getImages());
                 end.put("failoverFrom", response.getFailoverFrom());
                 end.put("conversationId", response.getConversationId());

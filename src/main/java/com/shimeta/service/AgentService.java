@@ -212,6 +212,7 @@ public class AgentService {
         agent.setToolsConfig(toolConfigSanitizer.sanitize(agent.getToolsConfig()));
         agent.setMemoryTurns(agent.resolveMemoryTurns());
         agent.setThinkingMode(Agent.normalizeThinkingMode(agent.getThinkingMode()));
+        agent.setKnowledgeMode(Agent.normalizeKnowledgeMode(agent.getKnowledgeMode()));
         Agent saved = agentRepository.save(agent);
         if (promptVersionService != null) {
             promptVersionService.recordCreated(saved, AgentPromptVersionService.SOURCE_CREATE, agent.getPromptChangeNote(), actor);
@@ -271,6 +272,9 @@ public class AgentService {
         }
         if (agentUpdate.getThinkingMode() != null) {
             existing.setThinkingMode(Agent.normalizeThinkingMode(agentUpdate.getThinkingMode()));
+        }
+        if (agentUpdate.getKnowledgeMode() != null) {
+            existing.setKnowledgeMode(Agent.normalizeKnowledgeMode(agentUpdate.getKnowledgeMode()));
         }
         if (agentUpdate.getTags() != null) {
             existing.getTags().clear();
@@ -371,6 +375,7 @@ public class AgentService {
         clone.setMaxTokens(source.getMaxTokens());
         clone.setMemoryTurns(source.resolveMemoryTurns());
         clone.setThinkingMode(Agent.normalizeThinkingMode(source.getThinkingMode()));
+        clone.setKnowledgeMode(Agent.normalizeKnowledgeMode(source.getKnowledgeMode()));
         clone.setStatus(source.getStatus() != null ? source.getStatus() : AgentStatus.RUNNING);
         if (source.getTags() != null) {
             clone.setTags(new ArrayList<>(source.getTags()));

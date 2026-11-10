@@ -399,6 +399,24 @@ public class KnowledgeBaseService {
         return buildRetrieval(knowledgeBaseIds, query, null);
     }
 
+    /** 能检索的知识库（存在、启用、已建索引）：ID → 名称，按传入顺序。模型自主检索时用来列出可选的知识库 */
+    public Map<String, String> searchableNames(List<String> knowledgeBaseIds) {
+        Map<String, String> names = new java.util.LinkedHashMap<>();
+        if (knowledgeBaseIds == null) {
+            return names;
+        }
+        for (String kbId : knowledgeBaseIds) {
+            if (kbId == null || kbId.isBlank()) {
+                continue;
+            }
+            knowledgeBaseRepository.findById(kbId.trim())
+                    .filter(kb -> !Boolean.FALSE.equals(kb.getEnabled()))
+                    .filter(kb -> kb.getExternalDatasetId() != null && !kb.getExternalDatasetId().isBlank())
+                    .ifPresent(kb -> names.put(kb.getId(), kb.getName() != null && !kb.getName().isBlank() ? kb.getName() : kb.getId()));
+        }
+        return names;
+    }
+
     /**
      * @param maxContextTokens 注入模型的知识库内容上限；为空时用默认的 {@link ContextBudgetPruner#DEFAULT_MAX_CONTEXT_TOKENS}。
      *                         模型通道配置了上下文窗口时，由调用方按剩余空间算出更小的值
