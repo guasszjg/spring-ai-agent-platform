@@ -538,4 +538,55 @@ class KnowledgeBaseServiceTest {
         faq.setImageUrls(imageUrls);
         return faq;
     }
+
+    @Test
+    void buildRetrievalContext_dropsSameContentFromSeveralKnowledgeBases() {
+        for (String id : List.of("kb-a", "kb-b")) {
+            KnowledgeBase kb = new KnowledgeBase();
+            kb.setId(id);
+            kb.setName(id);
+            kb.setEnabled(true);
+            kb.setProvider("DIFY");
+            kb.setExternalDatasetId("ds-" + id);
+            when(knowledgeBaseRepository.findById(id)).thenReturn(Optional.of(kb));
+        }
+        when(difyProvider.retrieve(eq("ds-kb-a"), any(RetrievalRequest.class))).thenReturn(List.of(
+                new com.shimeta.rag.RetrievedChunk("长按电源键 10 秒", "手册A.pdf", 0.8)));
+        when(difyProvider.retrieve(eq("ds-kb-b"), any(RetrievalRequest.class))).thenReturn(List.of(
+                new com.shimeta.rag.RetrievedChunk("长按电源键  10 秒\n", "手册B.pdf", 0.9),
+                new com.shimeta.rag.RetrievedChunk("恢复出厂设置在系统菜单里", "手册B.pdf", 0.5)));
+
+        String context = knowledgeBaseService.buildRetrievalContext(List.of("kb-a", "kb-b"), "怎么重启设备");
+
+        assertThat(context.split("长按电源键", -1)).hasSize(2);
+        assertThat(context).contains("手册B.pdf").doesNotContain("手册A.pdf").contains("恢复出厂设置");
+    }
+
+    @Test
+    void uploadDocuments_rejectsFilesAlreadyInTheKnowledgeBase() throws Exception {
+        KnowledgeBase kb = new KnowledgeBase();
+        kb.setId("kb-dup");
+        kb.setName("重复测试库");
+        kb.setProvider("DIFY");
+        kb.setExternalDatasetId("ds-dup");
+        when(knowledgeBaseRepository.findById("kb-dup")).thenReturn(Optional.of(kb));
+        when(resourceAuthorizationService.canManageKnowledgeBase(any(), eq(kb))).thenReturn(true);
+        byte[] bytes = "# 手册内容".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        KnowledgeDocument existing = new KnowledgeDocument();
+        existing.setName("手册.md");
+        existing.setSha256(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes)));
+        when(documentRepository.findByKnowledgeBaseId("kb-dup")).thenReturn(List.of(existing));
+
+        MockMultipartFile renamed = new MockMultipartFile("files", "手册-副本.md", "text/markdown", bytes);
+        assertThatThrownBy(() -> knowledgeBaseService.uploadDocuments("kb-dup", List.of(renamed)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("「手册-副本.md」和已有的「手册.md」内容完全相同");
+
+        when(documentRepository.findByKnowledgeBaseId("kb-dup")).thenReturn(List.of());
+        MockMultipartFile a = new MockMultipartFile("files", "a.md", "text/markdown", "同一内容".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        MockMultipartFile b = new MockMultipartFile("files", "b.md", "text/markdown", "同一内容".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertThatThrownBy(() -> knowledgeBaseService.uploadDocuments("kb-dup", List.of(a, b)))
+                .hasMessageContaining("「b.md」和同一批的「a.md」内容完全相同");
+        verify(difyProvider, org.mockito.Mockito.never()).uploadDocument(anyString(), any());
+    }
 }
