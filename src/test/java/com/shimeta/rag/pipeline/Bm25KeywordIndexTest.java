@@ -15,7 +15,10 @@ import static org.mockito.Mockito.when;
 
 class Bm25KeywordIndexTest {
 
-    private record Chunk(String getId, String getContent) implements KnowledgeDocumentChunkRepository.ChunkText {
+    private record Chunk(String getId, String getContent, String getContextTitle) implements KnowledgeDocumentChunkRepository.ChunkText {
+        Chunk(String getId, String getContent) {
+            this(getId, getContent, null);
+        }
     }
 
     private record Fp(Long getCount, Long getTotalLength, String getMinId, String getMaxId)

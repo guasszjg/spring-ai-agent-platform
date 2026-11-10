@@ -440,6 +440,24 @@ public class KnowledgeBaseController {
         });
     }
 
+    private com.shimeta.service.KnowledgeIndexRebuildService rebuildService;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setRebuildService(com.shimeta.service.KnowledgeIndexRebuildService rebuildService) {
+        this.rebuildService = rebuildService;
+    }
+
+    /** 用保存的原件重建自建知识库的索引（解析、切片方式升级后让已有文档生效），后台逐个文档处理 */
+    @PostMapping("/{id}/rebuild-index")
+    public ResponseEntity<ApiResponse<com.shimeta.service.KnowledgeIndexRebuildService.Status>> rebuildIndex(@PathVariable String id) {
+        return evalAction("已开始重建索引", () -> rebuildService.start(id, CurrentActor.get()));
+    }
+
+    @GetMapping("/{id}/rebuild-index")
+    public ResponseEntity<ApiResponse<com.shimeta.service.KnowledgeIndexRebuildService.Status>> rebuildIndexStatus(@PathVariable String id) {
+        return evalAction(null, () -> rebuildService.status(id, CurrentActor.get()));
+    }
+
     private <T> ResponseEntity<ApiResponse<T>> evalAction(String message, java.util.function.Supplier<T> action) {
         try {
             T data = action.get();

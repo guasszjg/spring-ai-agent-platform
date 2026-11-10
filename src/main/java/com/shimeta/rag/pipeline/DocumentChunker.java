@@ -141,6 +141,144 @@ public class DocumentChunker {
         return pieces;
     }
 
+    /** 上下文标题最多带几级章节（只取最深的几级） */
+    static final int MAX_TITLE_LEVELS = 3;
+    static final int MAX_TITLE_CHARS = 200;
+    private static final java.util.regex.Pattern MD_HEADING = java.util.regex.Pattern.compile("^(#{1,6})\\s+(.+?)\\s*#*\\s*$");
+    private static final java.util.regex.Pattern HEADING_NUMBER = java.util.regex.Pattern.compile("^\\d{1,2}(?:\\.\\d{1,3}){0,5}\\s+");
+
+    private record Heading(int offset, int level, String title) {}
+
+    /**
+     * 每个切片的上下文标题：「文档名 › 章 › 节」。按切片在原文里的位置，取它所在的 Markdown 标题路径
+     * （PDF、Word 的章节标题在解析时已标成 Markdown 标题）。切片的切分方式不变，标题只用于检索。
+     *
+     * @param text          切片用的原文（和 {@link #splitParentChild} 收到的一样）
+     * @param documentTitle 文档名（不含扩展名），为空时只用章节路径
+     * @return 和 pieces 一一对应；没有任何标题信息时对应位置为 null
+     */
+    public List<String> contextTitles(String text, List<ParentChildPiece> pieces, String documentTitle) {
+        List<String> titles = new ArrayList<>(pieces.size());
+        if (text == null || text.isBlank()) {
+            pieces.forEach(p -> titles.add(buildTitle(documentTitle, List.of())));
+            return titles;
+        }
+        String normalized = text.replace("\r\n", "\n").replace('\r', '\n').trim();
+        List<Heading> headings = findHeadings(normalized);
+        int cursor = 0;
+        for (ParentChildPiece piece : pieces) {
+            int offset = locate(normalized, piece.childContent(), cursor);
+            if (offset >= 0) {
+                cursor = offset;
+            }
+            titles.add(buildTitle(documentTitle, headingPath(headings, skipLeadingHeadings(normalized, offset >= 0 ? offset : cursor))));
+        }
+        return titles;
+    }
+
+    /** 切片以标题行开头时（如「# 第一章」「## 1.1 概述」接正文），按正文开始的位置算路径，标题都算进去 */
+    private static int skipLeadingHeadings(String text, int offset) {
+        int pos = offset;
+        while (pos < text.length()) {
+            int end = text.indexOf('\n', pos);
+            String line = (end < 0 ? text.substring(pos) : text.substring(pos, end)).trim();
+            if (!line.isEmpty() && !MD_HEADING.matcher(line).matches()) {
+                return pos;
+            }
+            if (end < 0) {
+                return text.length();
+            }
+            pos = end + 1;
+        }
+        return pos;
+    }
+
+    private static List<Heading> findHeadings(String text) {
+        List<Heading> headings = new ArrayList<>();
+        boolean inFence = false;
+        int offset = 0;
+        for (String line : text.split("\n", -1)) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("```")) {
+                inFence = !inFence;
+            } else if (!inFence) {
+                java.util.regex.Matcher m = MD_HEADING.matcher(trimmed);
+                if (m.matches()) {
+                    String title = HEADING_NUMBER.matcher(m.group(2).trim()).replaceFirst("").trim();
+                    if (!title.isEmpty()) {
+                        headings.add(new Heading(offset, m.group(1).length(), title));
+                    }
+                }
+            }
+            offset += line.length() + 1;
+        }
+        return headings;
+    }
+
+    /** 切片正文在原文里的位置：先从上一个切片之后找，找不到再从头找；用开头一段文字定位 */
+    private static int locate(String text, String content, int from) {
+        if (content == null || content.isBlank()) {
+            return -1;
+        }
+        String probe = content.strip();
+        probe = probe.substring(0, Math.min(40, probe.length()));
+        int idx = text.indexOf(probe, Math.max(0, from));
+        return idx >= 0 ? idx : text.indexOf(probe);
+    }
+
+    private static List<String> headingPath(List<Heading> headings, int offset) {
+        List<Heading> stack = new ArrayList<>();
+        for (Heading h : headings) {
+            if (h.offset() > offset) {
+                break;
+            }
+            while (!stack.isEmpty() && stack.get(stack.size() - 1).level() >= h.level()) {
+                stack.remove(stack.size() - 1);
+            }
+            stack.add(h);
+        }
+        List<String> path = new ArrayList<>();
+        for (int i = Math.max(0, stack.size() - MAX_TITLE_LEVELS); i < stack.size(); i++) {
+            path.add(stack.get(i).title());
+        }
+        return path;
+    }
+
+    static String buildTitle(String documentTitle, List<String> path) {
+        List<String> parts = new ArrayList<>();
+        if (documentTitle != null && !documentTitle.isBlank()) {
+            parts.add(documentTitle.trim());
+        }
+        parts.addAll(path);
+        if (parts.isEmpty()) {
+            return null;
+        }
+        String title = String.join(" › ", parts);
+        return title.length() > MAX_TITLE_CHARS ? title.substring(0, MAX_TITLE_CHARS) : title;
+    }
+
+    /** 文件名去掉路径和扩展名，作为上下文标题里的文档名 */
+    public static String documentTitle(String fileName) {
+        if (fileName == null || fileName.isBlank()) {
+            return null;
+        }
+        String name = fileName.trim();
+        int slash = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
+        if (slash >= 0) {
+            name = name.substring(slash + 1);
+        }
+        int dot = name.lastIndexOf('.');
+        return dot > 0 ? name.substring(0, dot) : name;
+    }
+
+    /** 向量化和关键词检索用的文本：上下文标题 + 正文；回答时引用的仍是正文 */
+    public static String indexText(String contextTitle, String content) {
+        if (contextTitle == null || contextTitle.isBlank()) {
+            return content;
+        }
+        return contextTitle + "\n" + (content == null ? "" : content);
+    }
+
     private List<String> recursiveSplit(String text, int targetSize, int overlap, int sepIndex) {
         List<String> chunks = new ArrayList<>();
         if (text.length() <= targetSize) {

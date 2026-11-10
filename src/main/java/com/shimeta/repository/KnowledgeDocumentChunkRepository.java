@@ -16,9 +16,10 @@ public interface KnowledgeDocumentChunkRepository extends JpaRepository<Knowledg
     interface ChunkText {
         String getId();
         String getContent();
+        String getContextTitle();
     }
 
-    @Query("SELECT c.id AS id, c.content AS content FROM KnowledgeDocumentChunk c "
+    @Query("SELECT c.id AS id, c.content AS content, c.contextTitle AS contextTitle FROM KnowledgeDocumentChunk c "
             + "WHERE c.knowledgeBaseId = :knowledgeBaseId AND c.enabled = TRUE")
     List<ChunkText> findTextByKnowledgeBaseId(@Param("knowledgeBaseId") String knowledgeBaseId);
 
@@ -30,7 +31,7 @@ public interface KnowledgeDocumentChunkRepository extends JpaRepository<Knowledg
         String getMaxId();
     }
 
-    @Query("SELECT COUNT(c) AS count, COALESCE(SUM(LENGTH(c.content)), 0) AS totalLength, "
+    @Query("SELECT COUNT(c) AS count, COALESCE(SUM(LENGTH(c.content) + COALESCE(LENGTH(c.contextTitle), 0)), 0) AS totalLength, "
             + "MIN(c.id) AS minId, MAX(c.id) AS maxId FROM KnowledgeDocumentChunk c "
             + "WHERE c.knowledgeBaseId = :knowledgeBaseId AND c.enabled = TRUE")
     ChunkFingerprint fingerprintByKnowledgeBaseId(@Param("knowledgeBaseId") String knowledgeBaseId);

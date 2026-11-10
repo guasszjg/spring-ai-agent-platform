@@ -221,21 +221,96 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         }
 
         long totalTokens = documentChunker.estimateTokens(textContent);
+        String docId = UUID.randomUUID().toString();
+        List<KnowledgeDocumentChunk> entities = buildChunks(kbId, docId, fileName, parseResult, textContent);
 
+        chunkRepository.saveAll(entities);
+        log.info("Spring AI 自研多格式智能解析与向量入库完成: kbId={}, docId={}, fileName={}, format={}, parser={}, chunkCount={}, tokens={}",
+                kbId, docId, fileName, parseResult.format(), parseResult.parserType(), entities.size(), totalTokens);
+
+        afterChunksSaved(kbId, entities);
+
+        // 累加知识库成本 Embedding Tokens 与估算金额
+        try {
+            Optional<KnowledgeBase> kbOpt = knowledgeBaseRepository.findById(kbId);
+            if (kbOpt.isPresent()) {
+                KnowledgeBase kb = kbOpt.get();
+                long curEmbedTokens = kb.getEmbeddingTokens() != null ? kb.getEmbeddingTokens() : 0L;
+                kb.setEmbeddingTokens(curEmbedTokens + totalTokens);
+                kb.setEstimatedCost(KnowledgeCostStatsDto.estimateCost(kb.getEmbeddingTokens(), kb.getRerankTokens()));
+                knowledgeBaseRepository.save(kb);
+            }
+        } catch (Exception e) {
+            log.warn("更新知识库 Embedding Tokens 成本统计失败: {}", e.getMessage());
+        }
+        return uploadedDocumentDto(docId, fileName, textContent, totalTokens);
+    }
+
+    /**
+     * 用保存的原件重新解析、切片、向量化一个文档，替换它原来的切片（文档 ID 不变）。
+     * 用于解析或切片方式升级后（例如加上下文标题）让已有文档生效
+     *
+     * @return 新的切片数
+     */
+    @Transactional
+    public int rebuildDocument(String externalDatasetId, String docId, String fileName, byte[] fileBytes) {
+        String kbId = resolveKnowledgeBaseId(externalDatasetId);
+        if (kbId == null) {
+            kbId = externalDatasetId;
+        }
+        DocumentParsingService.ParseResult parseResult = documentParsingService.parse(fileBytes, fileName);
+        String textContent = parseResult.text();
+        if (textContent == null || textContent.isBlank()) {
+            throw new IllegalStateException("文件解析后没有文字");
+        }
+        List<KnowledgeDocumentChunk> entities = buildChunks(kbId, docId, fileName, parseResult, textContent);
+        chunkRepository.deleteByDocumentId(docId);
+        chunkRepository.flush();
+        chunkRepository.saveAll(entities);
+        log.info("重建文档切片: kbId={}, docId={}, fileName={}, chunkCount={}", kbId, docId, fileName, entities.size());
+        afterChunksSaved(kbId, entities);
+        return entities.size();
+    }
+
+    private void afterChunksSaved(String kbId, List<KnowledgeDocumentChunk> entities) {
+        // P4: 触发 GraphRAG 实体三元组智能提取 (实体抽取与关联建模)
+        if (graphRagService != null) {
+            try {
+                for (KnowledgeDocumentChunk ch : entities) {
+                    graphRagService.extractAndSaveTriplets(kbId, ch.getId(), ch.getContent());
+                }
+            } catch (Exception e) {
+                log.warn("GraphRAG 实体三元组提取异常: {}", e.getMessage());
+            }
+        }
+
+        // P4: 文档变更自动使语义缓存失效
+        if (semanticCacheService != null) {
+            semanticCacheService.clearCache(kbId);
+        }
+    }
+
+    /** 解析结果切片、加上下文标题、向量化，返回待保存的切片（不保存） */
+    private List<KnowledgeDocumentChunk> buildChunks(String kbId, String docId, String fileName,
+                                                     DocumentParsingService.ParseResult parseResult, String textContent) {
+        long totalTokens = documentChunker.estimateTokens(textContent);
         // P2: 高级父子切片管线 (Parent-Child Chunking)
         List<DocumentChunker.ParentChildPiece> pieces = documentChunker.splitParentChild(textContent);
         if (pieces.isEmpty() && !textContent.isBlank()) {
             pieces = List.of(new DocumentChunker.ParentChildPiece(0, textContent, null, textContent, textContent.length(), totalTokens, "STANDALONE"));
         }
+        // 3.2：每个切片带上「文档名 › 章 › 节」，向量化和关键词检索用标题 + 正文
+        List<String> titles = documentChunker.contextTitles(textContent, pieces, DocumentChunker.documentTitle(fileName));
 
         boolean isDocImage = Boolean.TRUE.equals(parseResult.metadata().get("isImage"));
         String docImageUrl = (parseResult.metadata().get("imageUrl") != null) ? String.valueOf(parseResult.metadata().get("imageUrl")) : null;
         String docImageCaption = (parseResult.metadata().get("imageCaption") != null) ? String.valueOf(parseResult.metadata().get("imageCaption")) : null;
 
-        String docId = UUID.randomUUID().toString();
         List<KnowledgeDocumentChunk> entities = new ArrayList<>();
 
-        for (DocumentChunker.ParentChildPiece piece : pieces) {
+        for (int pieceNo = 0; pieceNo < pieces.size(); pieceNo++) {
+            DocumentChunker.ParentChildPiece piece = pieces.get(pieceNo);
+            String contextTitle = isDocImage ? null : titles.get(pieceNo);
             KnowledgeDocumentChunk chunk = new KnowledgeDocumentChunk();
             chunk.setKnowledgeBaseId(kbId);
             chunk.setDocumentId(docId);
@@ -256,12 +331,16 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 float[] vector = embeddingService.embedImage(docImageUrl, chunk.getImageCaption());
                 applyEmbedding(chunk, vector);
             } else {
-                float[] vector = embeddingService.embed(piece.childContent());
+                chunk.setContextTitle(contextTitle);
+                float[] vector = embeddingService.embed(DocumentChunker.indexText(contextTitle, piece.childContent()));
                 applyEmbedding(chunk, vector);
             }
 
             Map<String, Object> meta = new LinkedHashMap<>();
             meta.put("sourceName", fileName);
+            if (contextTitle != null) {
+                meta.put("contextTitle", contextTitle);
+            }
             meta.put("chunkIndex", piece.index());
             meta.put("charCount", piece.charCount());
             meta.put("chunkType", chunk.getChunkType());
@@ -284,41 +363,10 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
 
             entities.add(chunk);
         }
+        return entities;
+    }
 
-        chunkRepository.saveAll(entities);
-        log.info("Spring AI 自研多格式智能解析与向量入库完成: kbId={}, docId={}, fileName={}, format={}, parser={}, chunkCount={}, tokens={}",
-                kbId, docId, fileName, parseResult.format(), parseResult.parserType(), entities.size(), totalTokens);
-
-        // P4: 触发 GraphRAG 实体三元组智能提取 (实体抽取与关联建模)
-        if (graphRagService != null) {
-            try {
-                for (KnowledgeDocumentChunk ch : entities) {
-                    graphRagService.extractAndSaveTriplets(kbId, ch.getId(), ch.getContent());
-                }
-            } catch (Exception e) {
-                log.warn("GraphRAG 实体三元组提取异常: {}", e.getMessage());
-            }
-        }
-
-        // P4: 文档变更自动使语义缓存失效
-        if (semanticCacheService != null) {
-            semanticCacheService.clearCache(kbId);
-        }
-
-        // 累加知识库成本 Embedding Tokens 与估算金额
-        try {
-            Optional<KnowledgeBase> kbOpt = knowledgeBaseRepository.findById(kbId);
-            if (kbOpt.isPresent()) {
-                KnowledgeBase kb = kbOpt.get();
-                long curEmbedTokens = kb.getEmbeddingTokens() != null ? kb.getEmbeddingTokens() : 0L;
-                kb.setEmbeddingTokens(curEmbedTokens + totalTokens);
-                kb.setEstimatedCost(KnowledgeCostStatsDto.estimateCost(kb.getEmbeddingTokens(), kb.getRerankTokens()));
-                knowledgeBaseRepository.save(kb);
-            }
-        } catch (Exception e) {
-            log.warn("更新知识库 Embedding Tokens 成本统计失败: {}", e.getMessage());
-        }
-
+    private static DifyDocumentDto uploadedDocumentDto(String docId, String fileName, String textContent, long totalTokens) {
         DifyDocumentDto dto = new DifyDocumentDto();
         dto.setId(docId);
         dto.setName(fileName);
