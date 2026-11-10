@@ -53,11 +53,14 @@ public class AgentToolRegistry {
             "web_search", "bocha_web_search");
     /** 工具返回这些前缀时记为调用失败 */
     private static final List<String> FAILURE_PREFIXES = List.of(
-            "工具执行失败", "未知工具", "【联网检索异常】", "【联网检索提示】", "【联网检索插件】", "【自定义工具失败】");
+            "工具执行失败", "未知工具", "【联网检索异常】", "【联网检索提示】", "【联网检索插件】", "【自定义工具失败】",
+            com.shimeta.mcp.McpToolInvoker.FAILURE_PREFIX);
     /** DeepSeek 搜索接口地址；包内可见便于测试替换 */
     String deepSeekSearchUrl = "https://api.deepseek.com/v1/tools/search";
     private final ThreadLocal<Map<String, Map<String, Object>>> currentPlatformConfigs = new ThreadLocal<>();
     private final ThreadLocal<List<HttpToolSpec>> currentHttpTools = new ThreadLocal<>();
+    private final ThreadLocal<List<com.shimeta.mcp.McpToolSpec>> currentMcpTools = new ThreadLocal<>();
+    private com.shimeta.mcp.McpToolInvoker mcpInvoker;
     private final String configuredBochaApiKey;
     private final OutboundUrlValidator urlValidator;
 
@@ -106,6 +109,20 @@ public class AgentToolRegistry {
         }
     }
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setMcpInvoker(com.shimeta.mcp.McpToolInvoker mcpInvoker) {
+        this.mcpInvoker = mcpInvoker;
+    }
+
+    /** 本次对话可用的 MCP 工具（已审核启用的全部）；是否发给模型还要看智能体有没有勾选 */
+    public void setMcpTools(List<com.shimeta.mcp.McpToolSpec> specs) {
+        if (specs == null || specs.isEmpty()) {
+            currentMcpTools.remove();
+        } else {
+            currentMcpTools.set(specs);
+        }
+    }
+
     public void setHttpTools(List<HttpToolSpec> specs) {
         if (specs == null || specs.isEmpty()) {
             currentHttpTools.remove();
@@ -120,6 +137,7 @@ public class AgentToolRegistry {
         currentContextAgentId.remove();
         currentPlatformConfigs.remove();
         currentHttpTools.remove();
+        currentMcpTools.remove();
     }
 
     public List<Map<String, Object>> getToolDefinitions(List<String> enabledToolNames) {
@@ -247,7 +265,35 @@ public class AgentToolRegistry {
             }
         }
 
+        // MCP 工具只在智能体明确勾选时才发给模型，按函数名精确匹配（内置工具在没勾选任何工具时会全部带上，MCP 不跟这个规则）
+        List<com.shimeta.mcp.McpToolSpec> mcpTools = currentMcpTools.get();
+        if (mcpTools != null && enabledToolNames != null) {
+            for (com.shimeta.mcp.McpToolSpec spec : mcpTools) {
+                if (enabledToolNames.stream().noneMatch(name -> name.equalsIgnoreCase(spec.functionName()))) {
+                    continue;
+                }
+                String description = spec.description() != null && !spec.description().isBlank()
+                        ? spec.description() : (spec.title() != null ? spec.title() : spec.toolName());
+                Map<String, Object> fn = new LinkedHashMap<>();
+                fn.put("name", spec.functionName());
+                fn.put("description", description.length() > 1024 ? description.substring(0, 1024) : description);
+                fn.put("parameters", spec.inputSchema());
+                Map<String, Object> tool = new LinkedHashMap<>();
+                tool.put("type", "function");
+                tool.put("function", fn);
+                list.add(tool);
+            }
+        }
+
         return list;
+    }
+
+    private com.shimeta.mcp.McpToolSpec findMcpTool(String toolName) {
+        List<com.shimeta.mcp.McpToolSpec> specs = currentMcpTools.get();
+        if (specs == null || toolName == null) {
+            return null;
+        }
+        return specs.stream().filter(spec -> toolName.equals(spec.functionName())).findFirst().orElse(null);
     }
 
     private void addIfEnabled(List<Map<String, Object>> list, List<String> enabledToolNames,
@@ -286,7 +332,7 @@ public class AgentToolRegistry {
         }
         String code = TOOL_ALIASES.getOrDefault(toolName, toolName);
         boolean known = code.startsWith("time_") || "bocha_web_search".equals(code) || "deepseek_web_search".equals(code)
-                || findHttpTool(code) != null;
+                || findHttpTool(code) != null || findMcpTool(code) != null;
         if (!known) {
             return;
         }
@@ -300,6 +346,11 @@ public class AgentToolRegistry {
                     ? objectMapper.readTree(argumentsJson)
                     : objectMapper.createObjectNode();
 
+            com.shimeta.mcp.McpToolSpec mcpTool = findMcpTool(toolName);
+            if (mcpTool != null) {
+                return mcpInvoker != null ? mcpInvoker.call(mcpTool, argumentsJson)
+                        : com.shimeta.mcp.McpToolInvoker.FAILURE_PREFIX + "MCP 功能不可用";
+            }
             return switch (toolName) {
                 case "time_get_current_time", "get_current_time" -> handleGetCurrentTime(root);
                 case "time_calculate_weekday", "calculate_weekday" -> handleCalculateWeekday(root);
@@ -317,7 +368,10 @@ public class AgentToolRegistry {
     }
 
     public String formatToolCallSummary(String toolName, String argumentsJson) {
-        String cleanName = toolName.replace('_', '.');
+        com.shimeta.mcp.McpToolSpec mcpTool = findMcpTool(toolName);
+        String cleanName = mcpTool != null
+                ? "MCP " + mcpTool.serverName() + " · " + mcpTool.toolName()
+                : toolName.replace('_', '.');
         try {
             JsonNode node = objectMapper.readTree(argumentsJson);
             if (node.isObject() && node.size() > 0) {
