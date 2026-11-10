@@ -147,7 +147,7 @@ public class Bm25KeywordIndex {
             for (int doc = 0; doc < chunks.size(); doc++) {
                 KnowledgeDocumentChunkRepository.ChunkText chunk = chunks.get(doc);
                 ids.add(chunk.getId());
-                List<String> tokens = ChineseTokenizer.tokenize(chunk.getContent());
+                List<String> tokens = ChineseTokenizer.tokenize(DocumentChunker.indexText(chunk.getContextTitle(), chunk.getContent()));
                 lengths[doc] = tokens.size();
                 Map<String, Integer> tf = new HashMap<>();
                 for (String token : tokens) {

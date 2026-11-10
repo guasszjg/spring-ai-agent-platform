@@ -159,6 +159,9 @@ class SpringAiKnowledgeBaseProviderRerankTest {
 
             @Override
             public String getContent() { return content; }
+
+            @Override
+            public String getContextTitle() { return null; }
         };
     }
 

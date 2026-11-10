@@ -240,6 +240,10 @@ public class DocumentParsingService {
                 if (element instanceof XWPFParagraph paragraph) {
                     String text = paragraph.getText().trim();
                     if (!text.isEmpty()) {
+                        int level = docxHeadingLevel(document, paragraph);
+                        if (level > 0 && text.length() <= 80) {
+                            sb.append("#".repeat(level)).append(' ');
+                        }
                         sb.append(text).append("\n\n");
                         paragraphCount++;
                     }
@@ -273,11 +277,49 @@ public class DocumentParsingService {
             Map<String, Object> meta = new LinkedHashMap<>();
             meta.put("paragraphCount", paragraphCount);
             meta.put("tableCount", tableCount);
-            return ParseResult.ofText(sb.toString().trim(), "DOCX", "DOCX_POI_PARSER", meta);
+            // 没用标题样式的文档，按编号识别章节标题
+            String docText = DocumentStructure.structure(sb.toString().trim());
+            return ParseResult.ofText(docText, "DOCX", "DOCX_POI_PARSER", meta);
         } catch (Exception e) {
             log.debug("POI 无法打开 DOCX，改为直接读取 document.xml: {}", e.getMessage());
             return parseDocxXml(bytes);
         }
+    }
+
+    private static final Pattern DOCX_HEADING_STYLE = Pattern.compile("(?i)^(?:heading|标题)\\s*([1-6])$");
+
+    /**
+     * Word 段落的标题级别（1–6），不是标题返回 0。看段落样式名（Heading 1、标题 1 等）和大纲级别；
+     * 中文版 Word 的样式 ID 常常是数字，所以按样式名判断
+     */
+    static int docxHeadingLevel(XWPFDocument document, XWPFParagraph paragraph) {
+        try {
+            String styleId = paragraph.getStyleID();
+            if (styleId != null && document.getStyles() != null) {
+                var style = document.getStyles().getStyle(styleId);
+                String name = style != null && style.getName() != null ? style.getName() : styleId;
+                Matcher m = DOCX_HEADING_STYLE.matcher(name.trim());
+                if (m.matches()) {
+                    return Integer.parseInt(m.group(1));
+                }
+                if (style != null && style.getCTStyle().getPPr() != null && style.getCTStyle().getPPr().getOutlineLvl() != null) {
+                    int lvl = style.getCTStyle().getPPr().getOutlineLvl().getVal().intValue();
+                    if (lvl >= 0 && lvl < 6) {
+                        return lvl + 1;
+                    }
+                }
+            }
+            var ppr = paragraph.getCTP().getPPr();
+            if (ppr != null && ppr.getOutlineLvl() != null) {
+                int lvl = ppr.getOutlineLvl().getVal().intValue();
+                if (lvl >= 0 && lvl < 6) {
+                    return lvl + 1;
+                }
+            }
+        } catch (Exception ignored) {
+            // 样式信息不全时按普通段落处理
+        }
+        return 0;
     }
 
     /** 页眉页脚去重收集；只有页码（如 "10"、"第 3 页"、"3 / 12"）的内容丢弃 */
@@ -510,7 +552,7 @@ public class DocumentParsingService {
     private ParseResult parsePdf(byte[] bytes, String filename) {
         int pageCount;
         int pagesWithText = 0;
-        StringBuilder text = new StringBuilder();
+        List<String> pages = new ArrayList<>();
         try (PDDocument document = Loader.loadPDF(bytes)) {
             pageCount = Math.max(1, document.getNumberOfPages());
             PDFTextStripper stripper = new PDFTextStripper();
@@ -522,9 +564,7 @@ public class DocumentParsingService {
                 if (pageText.length() >= MIN_PAGE_TEXT) {
                     pagesWithText++;
                 }
-                if (!pageText.isEmpty()) {
-                    text.append(pageText).append("\n\n");
-                }
+                pages.add(pageText);
             }
         } catch (InvalidPasswordException e) {
             log.warn("PDF 已加密，无法提取文本: filename={}", filename);
@@ -534,7 +574,14 @@ public class DocumentParsingService {
             return pdfUnreadable(filename, "文件已损坏或格式不受支持（" + e.getMessage() + "），请重新导出 PDF 后上传。");
         }
 
-        String plainText = text.toString().trim();
+        // 去掉页眉页脚和目录，带编号的章节标题标成 Markdown 标题，切片时据此加上下文标题
+        StringBuilder text = new StringBuilder();
+        for (String pageText : DocumentStructure.stripRepeatedPageLines(pages)) {
+            if (!pageText.isEmpty()) {
+                text.append(pageText).append("\n\n");
+            }
+        }
+        String plainText = DocumentStructure.structure(text.toString().trim());
         int charCount = plainText.length();
         int charsPerPage = charCount / pageCount;
         boolean isScanned = charsPerPage < SCANNED_CHARS_PER_PAGE;

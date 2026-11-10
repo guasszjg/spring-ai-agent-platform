@@ -82,6 +82,13 @@ public class KnowledgeDocumentChunk {
     @Column(columnDefinition = "TEXT")
     private String metadataJson;
 
+    /** 上下文标题「文档名 › 章 › 节」，只用于向量化和关键词检索 */
+    @Column(name = "context_title", length = 300)
+    private String contextTitle;
+
+    public String getContextTitle() { return contextTitle; }
+    public void setContextTitle(String contextTitle) { this.contextTitle = contextTitle; }
+
     /**
      * P4 多模态扩展：图片受控访问地址/URL（Chapter 18）
      */
