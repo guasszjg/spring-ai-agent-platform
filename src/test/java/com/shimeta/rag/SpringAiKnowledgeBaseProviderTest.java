@@ -289,4 +289,38 @@ class SpringAiKnowledgeBaseProviderTest {
         assertThat(imgChunk.getMatchedBy()).isEqualTo("IMAGE_VECTOR");
         verify(chunkRepository).save(imgChunk);
     }
+
+    @Test
+    void duplicateUploadsReturnTheSameContentOnlyOnce() {
+        List<KnowledgeDocumentChunk> chunks = new java.util.ArrayList<>();
+        String[] texts = {"设备重启：长按电源键 10 秒，等待指示灯熄灭后松开。", "恢复出厂设置：进入系统菜单，选择恢复出厂并确认。"};
+        int n = 0;
+        for (String doc : List.of("doc_a", "doc_b")) {
+            for (String text : texts) {
+                KnowledgeDocumentChunk c = new KnowledgeDocumentChunk();
+                c.setId("c" + (n++));
+                c.setKnowledgeBaseId("kb_dup");
+                c.setDocumentId(doc);
+                c.setChunkIndex(n);
+                c.setContent(text);
+                c.setChunkType("STANDALONE");
+                c.setTokenCount(20L);
+                c.setEnabled(true);
+                c.setEmbedding(embeddingService.serializeVector(embeddingService.embed(text, 1024)));
+                chunks.add(c);
+            }
+        }
+        when(knowledgeBaseRepository.findByExternalDatasetId(anyString())).thenReturn(Optional.empty());
+        when(knowledgeBaseRepository.findById(anyString())).thenReturn(Optional.empty());
+        when(chunkRepository.findByKnowledgeBaseIdAndEnabledTrueOrderByChunkIndexAsc("kb_dup")).thenReturn(chunks);
+
+        RetrievalRequest req = RetrievalRequest.builder()
+                .knowledgeBaseId("kb_dup").query("设备怎么重启").topK(4).scoreThreshold(0.0)
+                .expandParent(true).rewriteEnabled(false).maxContextTokens(3000).build();
+
+        List<RetrievedChunk> result = provider.retrieve("kb_dup", req);
+
+        assertThat(result).extracting(RetrievedChunk::content).doesNotHaveDuplicates();
+        assertThat(result).extracting(RetrievedChunk::content).contains(texts[0]);
+    }
 }

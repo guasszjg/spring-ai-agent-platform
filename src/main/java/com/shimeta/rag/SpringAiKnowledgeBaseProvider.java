@@ -680,6 +680,8 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         boolean expandParent = request.expandParent() == null || Boolean.TRUE.equals(request.expandParent());
         List<RetrievedChunk> candidateResults = new ArrayList<>();
         Set<String> seenParents = new HashSet<>();
+        // 同一份文件重复上传时，两份的切片内容一样：只留分数高的那条，不占 topK 名额
+        Set<String> seenContents = new HashSet<>();
 
         for (ScoredChunk sc : candidates) {
             if (candidateResults.size() >= topK * 2) {
@@ -702,6 +704,10 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 finalContent = ch.getParentContent();
                 finalTokens = documentChunker.estimateTokens(finalContent);
                 parentExpanded = true;
+            }
+            String contentKey = com.shimeta.rag.pipeline.ChunkDedup.key(finalContent);
+            if (!contentKey.isEmpty() && !seenContents.add(contentKey)) {
+                continue;
             }
 
             boolean isImage = "IMAGE".equalsIgnoreCase(ch.getChunkType()) || (ch.getImageUrl() != null && !ch.getImageUrl().isBlank());

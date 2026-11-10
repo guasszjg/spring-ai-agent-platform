@@ -466,9 +466,11 @@ public class KnowledgeBaseService {
             }
         }
 
+        // 几个知识库里有相同文档时，同样的内容只留分数最高的一条，再按预算裁剪
+        allChunks.sort(Comparator.comparingDouble((RetrievedChunk c) -> c.score() != null ? c.score() : 0.0).reversed());
+        allChunks = com.shimeta.rag.pipeline.ChunkDedup.distinctByContent(allChunks);
         // P2 阶段：Token 预算裁剪 (修复 F4 缺陷)
         if (budgetPruner != null) {
-            allChunks.sort(Comparator.comparingDouble(RetrievedChunk::score).reversed());
             allChunks = budgetPruner.prune(allChunks, contextBudget).prunedChunks();
         }
 
@@ -1120,6 +1122,45 @@ public class KnowledgeBaseService {
     }
 
     @Transactional
+    /**
+     * 同一个知识库里不收内容完全相同的文件（按 SHA-256 比较，改了文件名也认得出）：
+     * 重复的文件会让检索结果出现两份相同资料。同一批里的重复文件也一样拒绝。
+     * 早期上传、没有记录指纹的文档不参与比较
+     */
+    void rejectDuplicateFiles(KnowledgeBase kb, List<MultipartFile> files) {
+        Map<String, String> existing = new HashMap<>();
+        for (KnowledgeDocument doc : documentRepository.findByKnowledgeBaseId(kb.getId())) {
+            if (doc.getSha256() != null && !doc.getSha256().isBlank()) {
+                existing.putIfAbsent(doc.getSha256().toLowerCase(java.util.Locale.ROOT), doc.getName());
+            }
+        }
+        Map<String, String> inBatch = new HashMap<>();
+        List<String> problems = new ArrayList<>();
+        for (MultipartFile file : files) {
+            String name = file.getOriginalFilename() != null ? file.getOriginalFilename() : "file";
+            String sha;
+            try {
+                sha = java.util.HexFormat.of().formatHex(
+                        java.security.MessageDigest.getInstance("SHA-256").digest(file.getBytes()));
+            } catch (Exception e) {
+                log.warn("计算文件指纹失败，跳过重复检查: {}", e.getMessage());
+                continue;
+            }
+            if (existing.containsKey(sha)) {
+                String old = existing.get(sha);
+                problems.add(old.equals(name) ? "「" + name + "」已经在知识库里" : "「" + name + "」和已有的「" + old + "」内容完全相同");
+            } else if (inBatch.containsKey(sha)) {
+                problems.add("「" + name + "」和同一批的「" + inBatch.get(sha) + "」内容完全相同");
+            } else {
+                inBatch.put(sha, name);
+            }
+        }
+        if (!problems.isEmpty()) {
+            throw new IllegalArgumentException("有重复文件，本次没有上传：" + String.join("；", problems)
+                    + "。同一份文件传两次会让检索结果出现重复资料；如需更新文档，请先删除旧的再上传。");
+        }
+    }
+
     public List<KnowledgeDocument> uploadDocuments(String knowledgeBaseId, List<MultipartFile> files, CurrentActor actor) {
         KnowledgeBase kb = knowledgeBaseRepository.findById(knowledgeBaseId)
                 .orElseThrow(() -> new IllegalArgumentException("知识库不存在: " + knowledgeBaseId));
@@ -1138,6 +1179,7 @@ public class KnowledgeBaseService {
         for (MultipartFile file : files) {
             validateFile(file);
         }
+        rejectDuplicateFiles(kb, files);
 
         KnowledgeBaseProvider provider = resolveProvider(kb.getProvider());
         List<KnowledgeDocument> results = new ArrayList<>();
