@@ -171,4 +171,17 @@ class AiChatServiceInstructionTest {
         assertThat(layout.system()).doesNotContain("{{sys.date}}").contains("输入 你好");
         assertThat(layout.user()).doesNotContain("【知识库检索结果】");
     }
+
+    @Test
+    void skillCatalogGoesAtTheEndOfSystemPrompt() {
+        when(knowledgeBaseService.buildRetrieval(any(), any()))
+                .thenReturn(new KnowledgeBaseService.RetrievalContext("", java.util.List.of()));
+        String catalog = new com.shimeta.skill.SkillSession(java.util.List.of(
+                new com.shimeta.skill.SkillSpec("s1", "退款", "用户要求退款时", "完整步骤正文", java.util.List.of())),
+                java.util.Set.of(), null).catalog();
+        AiChatService.PromptLayout layout = service().buildPromptLayout(null, agentWithPrompt("你是客服。"), "我要退款", null, null, catalog);
+
+        assertThat(layout.system()).contains("你是客服。").endsWith(catalog).doesNotContain("完整步骤正文");
+        assertThat(layout.user()).doesNotContain("可用技能");
+    }
 }

@@ -104,6 +104,13 @@ public class AiChatService {
         this.mcpServerService = mcpServerService;
     }
 
+    private com.shimeta.skill.SkillService skillService;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setSkillService(com.shimeta.skill.SkillService skillService) {
+        this.skillService = skillService;
+    }
+
     static boolean isMcpToolName(String name) {
         return name != null && name.startsWith("mcp_");
     }
@@ -176,6 +183,23 @@ public class AiChatService {
             toolRegistry.setMcpTools(mcpServerService.runtimeSpecs());
         }
         List<java.util.Map<String, Object>> tools = toolRegistry.getToolDefinitions(request.getEnabledTools());
+        // 关联了技能：系统提示里列出技能目录，再加一个 load_skill 工具让模型按需读取完整步骤
+        com.shimeta.skill.SkillSession skillSession = null;
+        if (skillService != null && agent.getSkillIds() != null && !agent.getSkillIds().isEmpty()) {
+            List<com.shimeta.skill.SkillSpec> specs = skillService.runtimeSpecs(agent.getSkillIds());
+            if (!specs.isEmpty()) {
+                java.util.Set<String> available = new java.util.HashSet<>();
+                for (java.util.Map<String, Object> tool : tools) {
+                    if (tool.get("function") instanceof java.util.Map<?, ?> fn && fn.get("name") != null) {
+                        available.add(String.valueOf(fn.get("name")));
+                    }
+                }
+                skillSession = new com.shimeta.skill.SkillSession(specs, available, skillService::recordLoad);
+                tools = new java.util.ArrayList<>(tools);
+                tools.add(skillSession.toolDefinition());
+                toolRegistry.setSkillSession(skillSession);
+            }
+        }
         toolRegistry.setCurrentContextAgentId(agent.getId());
         // 启用了 DeepSeek 联网搜索时才取 Key（工具管理页单独填写的优先，否则用模型网关 DeepSeek 通道的）
         if (platformToolService != null && hasTool(tools, "deepseek_web_search")) {
@@ -282,6 +306,7 @@ public class AiChatService {
         } finally {
             toolRegistry.clearCurrentContext();
         }
+        List<String> skillsLoaded = skillSession != null ? skillSession.loadedNames() : List.of();
         List<String> faqImages = RETRIEVED_FAQ_IMAGES.get();
         RETRIEVED_FAQ_IMAGES.remove();
 
@@ -306,6 +331,7 @@ public class AiChatService {
         );
         response.setToolCalled(toolCalledHolder[0]);
         response.setImages(faqImages);
+        response.setSkillsLoaded(skillsLoaded);
         response.setPromptTokens(promptTokens);
         response.setCachedPromptTokens(cachedPromptTokens);
         response.setCompletionTokens(completionTokens);
@@ -425,6 +451,9 @@ public class AiChatService {
                         route.primary().getName(), tools.size());
             }
             List<String> layoutTools = primaryTools ? enabledTools : null;
+            // 技能靠 load_skill 工具加载，通道不支持工具调用时也不放技能目录
+            com.shimeta.skill.SkillSession skills = primaryTools ? toolRegistry.currentSkillSession() : null;
+            String skillCatalog = skills != null ? skills.catalog() : null;
 
             // 主备通道都配置了上下文窗口时取较小的那个，切到备用通道时同一份消息也放得下
             ContextWindowPlanner.Plan plan = ContextWindowPlanner.plan(
@@ -433,16 +462,25 @@ public class AiChatService {
             List<ChatMessage> fittedHistory = history;
             PromptLayout layout;
             if (plan == null) {
-                layout = buildPromptLayout(livePrompt, agent, userMessage, layoutTools);
+                layout = buildPromptLayout(livePrompt, agent, userMessage, layoutTools, null, skillCatalog);
             } else {
                 int toolTokens = Math.max(estimateTokens(toolsJson(primaryToolDefs)), estimateTokens(toolsJson(fallbackToolDefs)));
+                // 知识库检索先给技能正文让出一部分（最多输入预算的四分之一，不超过最长那个技能）
+                int skillReserve = skills == null ? 0 : Math.min(skills.maxContentTokens(),
+                        Math.max(0, plan.inputBudget() / 4));
                 layout = buildPromptLayout(livePrompt, agent, userMessage, layoutTools,
-                        bare -> plan.inputBudget() - toolTokens
+                        bare -> plan.inputBudget() - toolTokens - skillReserve
                                 - ContextWindowPlanner.messageTokens(bare.system())
                                 - ContextWindowPlanner.messageTokens(bare.user())
-                                - KNOWLEDGE_FRAME_TOKENS);
+                                - KNOWLEDGE_FRAME_TOKENS, skillCatalog);
                 int used = toolTokens + ContextWindowPlanner.messageTokens(layout.system())
                         + ContextWindowPlanner.messageTokens(layout.user());
+                if (skills != null) {
+                    // 技能正文和历史消息分剩下的空间：技能最多拿一半
+                    int reserve = Math.min(skills.maxContentTokens(), Math.max(0, (plan.inputBudget() - used) / 2));
+                    skills.setTokenBudget(reserve);
+                    used += reserve;
+                }
                 fittedHistory = ContextWindowPlanner.fitHistory(history, plan.inputBudget() - used);
                 callGeneration = effective.copy();
                 callGeneration.setMaxTokens(plan.outputTokens());
@@ -508,6 +546,12 @@ public class AiChatService {
      */
     PromptLayout buildPromptLayout(String rawPrompt, Agent agent, String userMessage, List<String> enabledTools,
                                    java.util.function.ToIntFunction<PromptLayout> knowledgeBudget) {
+        return buildPromptLayout(rawPrompt, agent, userMessage, enabledTools, knowledgeBudget, null);
+    }
+
+    /** @param skillCatalog 技能目录（名称和适用场景），放在系统提示最后；为空时不放 */
+    PromptLayout buildPromptLayout(String rawPrompt, Agent agent, String userMessage, List<String> enabledTools,
+                                   java.util.function.ToIntFunction<PromptLayout> knowledgeBudget, String skillCatalog) {
         String base = firstNonBlank(rawPrompt, agent.getSystemPrompt(), "你是一个通用智能助手。");
 
         // 1. 获取当前系统真实时间与星期 (标准北京时间 Asia/Shanghai)
@@ -568,6 +612,9 @@ public class AiChatService {
 
         // 注入到系统指令头部，赋予模型确定性的时序与工具调度认知
         String system = timeContext + "\n\n" + processed;
+        if (skillCatalog != null && !skillCatalog.isBlank()) {
+            system = system + "\n\n" + skillCatalog;
+        }
 
         // 4. 当前时间和知识库检索片段（RAG 上下文）每次都会变，放进 user 消息
         String currentTime = String.format("【当前时间】%s（%s），北京时间 %s", dateStr, weekday, timeStr);
