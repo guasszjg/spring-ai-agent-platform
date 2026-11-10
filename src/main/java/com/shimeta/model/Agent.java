@@ -77,6 +77,12 @@ public class Agent {
     @Convert(converter = StringListJsonConverter.class)
     @Column(name = "skill_ids", columnDefinition = "TEXT")
     private List<String> skillIds;
+    /**
+     * 使用知识库的方式：PRE_RETRIEVE 先检索后回答 / AGENTIC 模型自主检索（通过 search_knowledge 工具）。
+     * 默认为空，按先检索后回答处理；更新请求没带这个字段时不改动
+     */
+    @Column(name = "knowledge_mode", length = 16)
+    private String knowledgeMode;
     /** 已废弃：早期按智能体生成的明文 Key。V23 起清空且不再生成，开放调用一律使用「开放凭证」（只存哈希）。保留字段仅为兼容旧库结构 */
     @Column(unique = true, length = 128)
     private String apiKey;
@@ -328,6 +334,35 @@ public class Agent {
 
     public void setKnowledgeBaseIds(List<String> knowledgeBaseIds) {
         this.knowledgeBaseIds = knowledgeBaseIds != null ? knowledgeBaseIds : new ArrayList<>();
+    }
+
+    public static final String KNOWLEDGE_PRE_RETRIEVE = "PRE_RETRIEVE";
+    public static final String KNOWLEDGE_AGENTIC = "AGENTIC";
+
+    public String getKnowledgeMode() {
+        return knowledgeMode;
+    }
+
+    public void setKnowledgeMode(String knowledgeMode) {
+        this.knowledgeMode = knowledgeMode;
+    }
+
+    /** 规范化知识库使用方式：大小写不敏感，空值取先检索后回答，其他取值拒绝 */
+    public static String normalizeKnowledgeMode(String mode) {
+        if (mode == null || mode.isBlank()) {
+            return KNOWLEDGE_PRE_RETRIEVE;
+        }
+        String upper = mode.trim().toUpperCase(java.util.Locale.ROOT);
+        if (!KNOWLEDGE_PRE_RETRIEVE.equals(upper) && !KNOWLEDGE_AGENTIC.equals(upper)) {
+            throw new IllegalArgumentException("知识库使用方式只能是 PRE_RETRIEVE（先检索后回答）或 AGENTIC（模型自主检索）");
+        }
+        return upper;
+    }
+
+    /** 是否由模型自己决定什么时候检索知识库 */
+    @JsonIgnore
+    public boolean isAgenticKnowledge() {
+        return KNOWLEDGE_AGENTIC.equalsIgnoreCase(knowledgeMode == null ? "" : knowledgeMode.trim());
     }
 
     public List<String> getSkillIds() {

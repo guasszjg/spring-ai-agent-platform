@@ -24,6 +24,16 @@ public class ChatResponse {
     private String failoverFrom;
     /** 本次对话模型加载了哪些技能 */
     private java.util.List<String> skillsLoaded = java.util.List.of();
+    /** 模型自主检索时，本次回答检索知识库用的查询词 */
+    private java.util.List<String> knowledgeSearches = java.util.List.of();
+
+    public java.util.List<String> getKnowledgeSearches() {
+        return knowledgeSearches;
+    }
+
+    public void setKnowledgeSearches(java.util.List<String> knowledgeSearches) {
+        this.knowledgeSearches = knowledgeSearches == null ? java.util.List.of() : knowledgeSearches;
+    }
 
     public java.util.List<String> getSkillsLoaded() {
         return skillsLoaded;

@@ -200,6 +200,19 @@ public class AiChatService {
                 toolRegistry.setSkillSession(skillSession);
             }
         }
+        // 模型自主检索：不在提问前检索，改为注册 search_knowledge 工具，由模型决定什么时候查、查什么。
+        // 通道不支持工具调用时 invokeViaGateway 会退回先检索后回答
+        KnowledgeSearchSession knowledgeSession = null;
+        if (agent.isAgenticKnowledge() && knowledgeBaseService != null
+                && agent.getKnowledgeBaseIds() != null && !agent.getKnowledgeBaseIds().isEmpty()) {
+            java.util.Map<String, String> names = knowledgeBaseService.searchableNames(agent.getKnowledgeBaseIds());
+            if (!names.isEmpty()) {
+                knowledgeSession = new KnowledgeSearchSession(names, knowledgeBaseService::buildRetrieval);
+                tools = new java.util.ArrayList<>(tools);
+                tools.add(knowledgeSession.toolDefinition());
+                toolRegistry.setKnowledgeSession(knowledgeSession);
+            }
+        }
         toolRegistry.setCurrentContextAgentId(agent.getId());
         // 启用了 DeepSeek 联网搜索时才取 Key（工具管理页单独填写的优先，否则用模型网关 DeepSeek 通道的）
         if (platformToolService != null && hasTool(tools, "deepseek_web_search")) {
@@ -307,7 +320,11 @@ public class AiChatService {
             toolRegistry.clearCurrentContext();
         }
         List<String> skillsLoaded = skillSession != null ? skillSession.loadedNames() : List.of();
+        List<String> knowledgeSearches = knowledgeSession != null ? knowledgeSession.queries() : List.of();
         List<String> faqImages = RETRIEVED_FAQ_IMAGES.get();
+        if ((faqImages == null || faqImages.isEmpty()) && knowledgeSession != null) {
+            faqImages = knowledgeSession.faqImages();
+        }
         RETRIEVED_FAQ_IMAGES.remove();
 
         reply = cleanAnswer(reply);
@@ -332,6 +349,7 @@ public class AiChatService {
         response.setToolCalled(toolCalledHolder[0]);
         response.setImages(faqImages);
         response.setSkillsLoaded(skillsLoaded);
+        response.setKnowledgeSearches(knowledgeSearches);
         response.setPromptTokens(promptTokens);
         response.setCachedPromptTokens(cachedPromptTokens);
         response.setCompletionTokens(completionTokens);
@@ -443,9 +461,20 @@ public class AiChatService {
                     ? route.fallback() : null;
             // 通道不支持工具调用时不发工具定义，也不在提示词里写工具指引；主备通道分别判断
             boolean primaryTools = LlmGatewayService.supportsTools(route.primary());
-            List<java.util.Map<String, Object>> primaryToolDefs = primaryTools || tools == null ? tools : List.of();
-            List<java.util.Map<String, Object>> fallbackToolDefs = fallback != null && LlmGatewayService.supportsTools(fallback)
-                    ? tools : List.of();
+            boolean fallbackTools = fallback != null && LlmGatewayService.supportsTools(fallback);
+            // 模型自主检索要求主备通道都能调用工具（切到备用通道时用的是同一份提示词），否则退回先检索后回答
+            KnowledgeSearchSession knowledge = toolRegistry.currentKnowledgeSession();
+            boolean agenticKnowledge = knowledge != null && primaryTools && (fallback == null || fallbackTools);
+            List<java.util.Map<String, Object>> effectiveTools = tools;
+            if (knowledge != null && !agenticKnowledge) {
+                log.info("Agent [{}] uses model-driven knowledge search, but the channel cannot call tools; falling back to retrieving before answering",
+                        agent.getName());
+                effectiveTools = tools == null ? null : tools.stream().filter(t -> !(t.get("function") instanceof java.util.Map<?, ?> fn
+                        && KnowledgeSearchSession.TOOL_NAME.equals(fn.get("name")))).toList();
+                toolRegistry.setKnowledgeSession(null);
+            }
+            List<java.util.Map<String, Object>> primaryToolDefs = primaryTools || effectiveTools == null ? effectiveTools : List.of();
+            List<java.util.Map<String, Object>> fallbackToolDefs = fallbackTools ? effectiveTools : List.of();
             if (!primaryTools && tools != null && !tools.isEmpty()) {
                 log.info("Channel [{}] does not support tool calls, skipping {} tool definitions",
                         route.primary().getName(), tools.size());
@@ -454,6 +483,8 @@ public class AiChatService {
             // 技能靠 load_skill 工具加载，通道不支持工具调用时也不放技能目录
             com.shimeta.skill.SkillSession skills = primaryTools ? toolRegistry.currentSkillSession() : null;
             String skillCatalog = skills != null ? skills.catalog() : null;
+            String systemAppendix = joinNonBlank(agenticKnowledge ? knowledge.guidance() : null, skillCatalog);
+            boolean retrieveFirst = !agenticKnowledge;
 
             // 主备通道都配置了上下文窗口时取较小的那个，切到备用通道时同一份消息也放得下
             ContextWindowPlanner.Plan plan = ContextWindowPlanner.plan(
@@ -462,7 +493,7 @@ public class AiChatService {
             List<ChatMessage> fittedHistory = history;
             PromptLayout layout;
             if (plan == null) {
-                layout = buildPromptLayout(livePrompt, agent, userMessage, layoutTools, null, skillCatalog);
+                layout = buildPromptLayout(livePrompt, agent, userMessage, layoutTools, null, systemAppendix, retrieveFirst);
             } else {
                 int toolTokens = Math.max(estimateTokens(toolsJson(primaryToolDefs)), estimateTokens(toolsJson(fallbackToolDefs)));
                 // 知识库检索先给技能正文让出一部分（最多输入预算的四分之一，不超过最长那个技能）
@@ -472,13 +503,19 @@ public class AiChatService {
                         bare -> plan.inputBudget() - toolTokens - skillReserve
                                 - ContextWindowPlanner.messageTokens(bare.system())
                                 - ContextWindowPlanner.messageTokens(bare.user())
-                                - KNOWLEDGE_FRAME_TOKENS, skillCatalog);
+                                - KNOWLEDGE_FRAME_TOKENS, systemAppendix, retrieveFirst);
                 int used = toolTokens + ContextWindowPlanner.messageTokens(layout.system())
                         + ContextWindowPlanner.messageTokens(layout.user());
                 if (skills != null) {
                     // 技能正文和历史消息分剩下的空间：技能最多拿一半
                     int reserve = Math.min(skills.maxContentTokens(), Math.max(0, (plan.inputBudget() - used) / 2));
                     skills.setTokenBudget(reserve);
+                    used += reserve;
+                }
+                if (agenticKnowledge) {
+                    // 模型自己检索的资料在工具调用过程中才加进来，同样先留出空间：最多拿剩下的一半
+                    int reserve = Math.min(KnowledgeSearchSession.DEFAULT_TOTAL_TOKENS, Math.max(0, (plan.inputBudget() - used) / 2));
+                    knowledge.setTokenBudget(reserve);
                     used += reserve;
                 }
                 fittedHistory = ContextWindowPlanner.fitHistory(history, plan.inputBudget() - used);
@@ -552,6 +589,26 @@ public class AiChatService {
     /** @param skillCatalog 技能目录（名称和适用场景），放在系统提示最后；为空时不放 */
     PromptLayout buildPromptLayout(String rawPrompt, Agent agent, String userMessage, List<String> enabledTools,
                                    java.util.function.ToIntFunction<PromptLayout> knowledgeBudget, String skillCatalog) {
+        return buildPromptLayout(rawPrompt, agent, userMessage, enabledTools, knowledgeBudget, skillCatalog, true);
+    }
+
+    private static String joinNonBlank(String a, String b) {
+        boolean hasA = a != null && !a.isBlank();
+        boolean hasB = b != null && !b.isBlank();
+        if (hasA && hasB) {
+            return a + "\n\n" + b;
+        }
+        return hasA ? a : (hasB ? b : null);
+    }
+
+    /**
+     * @param systemAppendix 放在系统提示最后的内容（知识库检索说明、技能目录）；为空时不放
+     * @param retrieveFirst  是否在提问前检索知识库；模型自主检索时为 false
+     */
+    PromptLayout buildPromptLayout(String rawPrompt, Agent agent, String userMessage, List<String> enabledTools,
+                                   java.util.function.ToIntFunction<PromptLayout> knowledgeBudget, String systemAppendix,
+                                   boolean retrieveFirst) {
+        String skillCatalog = systemAppendix;
         String base = firstNonBlank(rawPrompt, agent.getSystemPrompt(), "你是一个通用智能助手。");
 
         // 1. 获取当前系统真实时间与星期 (标准北京时间 Asia/Shanghai)
@@ -618,6 +675,9 @@ public class AiChatService {
 
         // 4. 当前时间和知识库检索片段（RAG 上下文）每次都会变，放进 user 消息
         String currentTime = String.format("【当前时间】%s（%s），北京时间 %s", dateStr, weekday, timeStr);
+        if (!retrieveFirst) {
+            return new PromptLayout(system, buildUserContent(currentTime, null, userMessage));
+        }
         if (knowledgeBudget == null) {
             return new PromptLayout(system, buildUserContent(currentTime, retrieveKnowledge(agent, userMessage, null), userMessage));
         }

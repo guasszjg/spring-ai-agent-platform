@@ -124,6 +124,20 @@ public class AgentToolRegistry {
     }
 
     private final ThreadLocal<com.shimeta.skill.SkillSession> currentSkills = new ThreadLocal<>();
+    private final ThreadLocal<com.shimeta.service.KnowledgeSearchSession> currentKnowledge = new ThreadLocal<>();
+
+    /** 本次对话「模型自主检索」的知识库；search_knowledge 调用由它处理 */
+    public void setKnowledgeSession(com.shimeta.service.KnowledgeSearchSession session) {
+        if (session == null || session.isEmpty()) {
+            currentKnowledge.remove();
+        } else {
+            currentKnowledge.set(session);
+        }
+    }
+
+    public com.shimeta.service.KnowledgeSearchSession currentKnowledgeSession() {
+        return currentKnowledge.get();
+    }
 
     /** 本次对话的技能；load_skill 调用由它处理 */
     public void setSkillSession(com.shimeta.skill.SkillSession session) {
@@ -154,6 +168,7 @@ public class AgentToolRegistry {
         currentHttpTools.remove();
         currentMcpTools.remove();
         currentSkills.remove();
+        currentKnowledge.remove();
     }
 
     public List<Map<String, Object>> getToolDefinitions(List<String> enabledToolNames) {
@@ -347,7 +362,7 @@ public class AgentToolRegistry {
             return;
         }
         String code = TOOL_ALIASES.getOrDefault(toolName, toolName);
-        boolean known = code.startsWith("time_") || "bocha_web_search".equals(code) || "deepseek_web_search".equals(code)
+        boolean known = code.startsWith("time_") || com.shimeta.service.KnowledgeSearchSession.TOOL_NAME.equals(code) || "bocha_web_search".equals(code) || "deepseek_web_search".equals(code)
                 || findHttpTool(code) != null || findMcpTool(code) != null;
         if (!known) {
             return;
@@ -365,6 +380,10 @@ public class AgentToolRegistry {
             com.shimeta.skill.SkillSession skills = currentSkills.get();
             if (skills != null && com.shimeta.skill.SkillSession.TOOL_NAME.equals(toolName)) {
                 return skills.load(root.path("name").asText(""));
+            }
+            com.shimeta.service.KnowledgeSearchSession knowledge = currentKnowledge.get();
+            if (knowledge != null && com.shimeta.service.KnowledgeSearchSession.TOOL_NAME.equals(toolName)) {
+                return knowledge.search(root.path("query").asText(""), root.path("knowledge_base").asText(""));
             }
             com.shimeta.mcp.McpToolSpec mcpTool = findMcpTool(toolName);
             if (mcpTool != null) {
@@ -388,6 +407,13 @@ public class AgentToolRegistry {
     }
 
     public String formatToolCallSummary(String toolName, String argumentsJson) {
+        if (com.shimeta.service.KnowledgeSearchSession.TOOL_NAME.equals(toolName) && currentKnowledge.get() != null) {
+            try {
+                return "检索知识库 · " + objectMapper.readTree(argumentsJson).path("query").asText("");
+            } catch (Exception ignored) {
+                return "检索知识库";
+            }
+        }
         if (com.shimeta.skill.SkillSession.TOOL_NAME.equals(toolName) && currentSkills.get() != null) {
             try {
                 return "加载技能 · " + objectMapper.readTree(argumentsJson).path("name").asText("");
