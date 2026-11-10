@@ -97,6 +97,17 @@ public class AiChatService {
         return chat(request, null);
     }
 
+    private com.shimeta.mcp.McpServerService mcpServerService;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setMcpServerService(com.shimeta.mcp.McpServerService mcpServerService) {
+        this.mcpServerService = mcpServerService;
+    }
+
+    static boolean isMcpToolName(String name) {
+        return name != null && name.startsWith("mcp_");
+    }
+
     /** 已路由到模型网关的通道，但通道失败或没有返回内容：消息里带具体原因，不能再回退到 Spring AI 默认客户端 */
     private static class ChannelCallException extends IllegalStateException {
         ChannelCallException(String message) {
@@ -158,6 +169,11 @@ public class AiChatService {
         if (platformToolService != null) {
             toolRegistry.setPlatformConfigs(platformToolService.runtimeConfigs());
             toolRegistry.setHttpTools(platformToolService.httpRuntimeSpecs());
+        }
+        // 智能体勾选了 MCP 工具（函数名以 mcp_ 开头）才去查，其它对话不多这一次查询
+        if (mcpServerService != null && request.getEnabledTools() != null
+                && request.getEnabledTools().stream().anyMatch(AiChatService::isMcpToolName)) {
+            toolRegistry.setMcpTools(mcpServerService.runtimeSpecs());
         }
         List<java.util.Map<String, Object>> tools = toolRegistry.getToolDefinitions(request.getEnabledTools());
         toolRegistry.setCurrentContextAgentId(agent.getId());
@@ -519,10 +535,13 @@ public class AiChatService {
         );
 
         // 若挂载了扩展工具，注入工具调用路由规范，消除模型对时间工具与联网搜索的二义性竞争
-        if (enabledTools != null && !enabledTools.isEmpty()) {
-            boolean hasTime = enabledTools.stream().anyMatch(t -> t.contains("时间") || t.contains("time") || t.contains("时区") || t.contains("星期"));
-            boolean hasDeepSeekSearch = enabledTools.stream().anyMatch(t -> t.contains("DeepSeek") || t.contains("deepseek"));
-            boolean hasBocha = enabledTools.stream().anyMatch(t -> t.contains("bocha")
+        // MCP 工具名是服务自己起的，可能碰巧带 time、检索这些字眼，下面按名称猜内置工具的指引不能算上它们
+        List<String> builtinToolNames = enabledTools == null ? List.of()
+                : enabledTools.stream().filter(t -> !isMcpToolName(t)).toList();
+        if (!builtinToolNames.isEmpty()) {
+            boolean hasTime = builtinToolNames.stream().anyMatch(t -> t.contains("时间") || t.contains("time") || t.contains("时区") || t.contains("星期"));
+            boolean hasDeepSeekSearch = builtinToolNames.stream().anyMatch(t -> t.contains("DeepSeek") || t.contains("deepseek"));
+            boolean hasBocha = builtinToolNames.stream().anyMatch(t -> t.contains("bocha")
                     || ((t.contains("联网") || t.contains("检索")) && !t.contains("DeepSeek") && !t.contains("deepseek")));
 
             StringBuilder toolGuide = new StringBuilder("\n\n【工具调用指引规范】\n");

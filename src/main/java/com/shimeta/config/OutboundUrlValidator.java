@@ -17,34 +17,42 @@ public class OutboundUrlValidator {
     }
 
     public void validateProviderBaseUrl(String rawUrl) {
+        validate(rawUrl, "模型 Base URL", false);
+    }
+
+    /**
+     * @param label                说明里用的名称，如「MCP 服务地址」
+     * @param allowPrivateOverride 管理员对这一个地址单独放行内网访问；全局开关打开时本来就允许
+     */
+    public void validate(String rawUrl, String label, boolean allowPrivateOverride) {
         URI uri;
         try {
             uri = URI.create(rawUrl);
         } catch (Exception e) {
-            throw new IllegalArgumentException("Base URL 格式无效");
+            throw new IllegalArgumentException(label + " 格式无效");
         }
 
         String scheme = uri.getScheme();
         if (scheme == null || !("https".equalsIgnoreCase(scheme) || "http".equalsIgnoreCase(scheme))) {
-            throw new IllegalArgumentException("Base URL 只允许使用 HTTP 或 HTTPS");
+            throw new IllegalArgumentException(label + " 只允许使用 HTTP 或 HTTPS");
         }
         if (uri.getHost() == null || uri.getHost().isBlank() || uri.getUserInfo() != null) {
-            throw new IllegalArgumentException("Base URL 必须包含合法主机名，且不能包含用户凭据");
+            throw new IllegalArgumentException(label + " 必须包含合法主机名，且不能包含用户凭据");
         }
-        if (allowPrivateAddresses) {
+        if (allowPrivateAddresses || allowPrivateOverride) {
             return;
         }
 
         try {
             for (InetAddress address : InetAddress.getAllByName(uri.getHost())) {
                 if (isPrivateOrReserved(address)) {
-                    throw new IllegalArgumentException("出于安全考虑，模型 Base URL 不能指向本机或内网地址");
+                    throw new IllegalArgumentException("出于安全考虑，" + label + " 不能指向本机或内网地址");
                 }
             }
         } catch (IllegalArgumentException e) {
             throw e;
         } catch (Exception e) {
-            throw new IllegalArgumentException("无法解析模型 Base URL 的主机名");
+            throw new IllegalArgumentException("无法解析 " + label + " 的主机名");
         }
     }
 
