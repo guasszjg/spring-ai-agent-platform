@@ -123,6 +123,21 @@ public class AgentToolRegistry {
         }
     }
 
+    private final ThreadLocal<com.shimeta.skill.SkillSession> currentSkills = new ThreadLocal<>();
+
+    /** 本次对话的技能；load_skill 调用由它处理 */
+    public void setSkillSession(com.shimeta.skill.SkillSession session) {
+        if (session == null || session.isEmpty()) {
+            currentSkills.remove();
+        } else {
+            currentSkills.set(session);
+        }
+    }
+
+    public com.shimeta.skill.SkillSession currentSkillSession() {
+        return currentSkills.get();
+    }
+
     public void setHttpTools(List<HttpToolSpec> specs) {
         if (specs == null || specs.isEmpty()) {
             currentHttpTools.remove();
@@ -138,6 +153,7 @@ public class AgentToolRegistry {
         currentPlatformConfigs.remove();
         currentHttpTools.remove();
         currentMcpTools.remove();
+        currentSkills.remove();
     }
 
     public List<Map<String, Object>> getToolDefinitions(List<String> enabledToolNames) {
@@ -346,6 +362,10 @@ public class AgentToolRegistry {
                     ? objectMapper.readTree(argumentsJson)
                     : objectMapper.createObjectNode();
 
+            com.shimeta.skill.SkillSession skills = currentSkills.get();
+            if (skills != null && com.shimeta.skill.SkillSession.TOOL_NAME.equals(toolName)) {
+                return skills.load(root.path("name").asText(""));
+            }
             com.shimeta.mcp.McpToolSpec mcpTool = findMcpTool(toolName);
             if (mcpTool != null) {
                 return mcpInvoker != null ? mcpInvoker.call(mcpTool, argumentsJson)
@@ -368,6 +388,13 @@ public class AgentToolRegistry {
     }
 
     public String formatToolCallSummary(String toolName, String argumentsJson) {
+        if (com.shimeta.skill.SkillSession.TOOL_NAME.equals(toolName) && currentSkills.get() != null) {
+            try {
+                return "加载技能 · " + objectMapper.readTree(argumentsJson).path("name").asText("");
+            } catch (Exception ignored) {
+                return "加载技能";
+            }
+        }
         com.shimeta.mcp.McpToolSpec mcpTool = findMcpTool(toolName);
         String cleanName = mcpTool != null
                 ? "MCP " + mcpTool.serverName() + " · " + mcpTool.toolName()

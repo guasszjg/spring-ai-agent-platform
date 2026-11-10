@@ -22,6 +22,16 @@ public class ChatResponse {
     private Integer completionTokens;
     /** 本次主通道失败、改由备用通道回答时，主通道的名称；正常时为 null */
     private String failoverFrom;
+    /** 本次对话模型加载了哪些技能 */
+    private java.util.List<String> skillsLoaded = java.util.List.of();
+
+    public java.util.List<String> getSkillsLoaded() {
+        return skillsLoaded;
+    }
+
+    public void setSkillsLoaded(java.util.List<String> skillsLoaded) {
+        this.skillsLoaded = skillsLoaded == null ? java.util.List.of() : skillsLoaded;
+    }
 
     public ChatResponse() {
         this.timestamp = LocalDateTime.now();

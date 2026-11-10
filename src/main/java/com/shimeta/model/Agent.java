@@ -70,6 +70,13 @@ public class Agent {
     @Convert(converter = StringListJsonConverter.class)
     @Column(name = "knowledge_base_ids", columnDefinition = "TEXT")
     private List<String> knowledgeBaseIds = new ArrayList<>();
+    /**
+     * 关联的技能（Skill），对话时只把名称和适用场景放进系统提示，模型需要时再加载完整步骤。
+     * 默认为空（null）：更新请求没带这个字段时不改动已关联的技能
+     */
+    @Convert(converter = StringListJsonConverter.class)
+    @Column(name = "skill_ids", columnDefinition = "TEXT")
+    private List<String> skillIds;
     /** 已废弃：早期按智能体生成的明文 Key。V23 起清空且不再生成，开放调用一律使用「开放凭证」（只存哈希）。保留字段仅为兼容旧库结构 */
     @Column(unique = true, length = 128)
     private String apiKey;
@@ -321,6 +328,14 @@ public class Agent {
 
     public void setKnowledgeBaseIds(List<String> knowledgeBaseIds) {
         this.knowledgeBaseIds = knowledgeBaseIds != null ? knowledgeBaseIds : new ArrayList<>();
+    }
+
+    public List<String> getSkillIds() {
+        return skillIds;
+    }
+
+    public void setSkillIds(List<String> skillIds) {
+        this.skillIds = skillIds;
     }
 
     @JsonIgnore

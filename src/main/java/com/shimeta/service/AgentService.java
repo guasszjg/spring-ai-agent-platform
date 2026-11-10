@@ -176,6 +176,13 @@ public class AgentService {
         return opt;
     }
 
+    private com.shimeta.skill.SkillService skillService;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setSkillService(com.shimeta.skill.SkillService skillService) {
+        this.skillService = skillService;
+    }
+
     public Agent create(Agent agent) {
         return create(agent, CurrentActor.get());
     }
@@ -186,6 +193,9 @@ public class AgentService {
         }
         if (agent.getKnowledgeBaseIds() != null) {
             validateKnowledgeBaseBindings(actor, agent.getKnowledgeBaseIds());
+        }
+        if (skillService != null) {
+            agent.setSkillIds(skillService.validateBindings(actor, agent.getSkillIds()));
         }
         agent.setId(null);
         // Code 由系统生成，调用方传了也不用；创建后不再变化（开放接口可以用它指定智能体）
@@ -243,6 +253,8 @@ public class AgentService {
         if (agentUpdate.getKnowledgeBaseIds() != null) {
             validateKnowledgeBaseBindings(actor, agentUpdate.getKnowledgeBaseIds());
         }
+        List<String> skillIds = skillService != null && agentUpdate.getSkillIds() != null
+                ? skillService.validateBindings(actor, agentUpdate.getSkillIds(), existing.getSkillIds()) : null;
 
         if (agentUpdate.getName() != null) existing.setName(agentUpdate.getName());
         if (agentUpdate.getAvatar() != null) existing.setAvatar(agentUpdate.getAvatar());
@@ -270,6 +282,9 @@ public class AgentService {
         }
         if (agentUpdate.getKnowledgeBaseIds() != null) {
             existing.setKnowledgeBaseIds(new ArrayList<>(agentUpdate.getKnowledgeBaseIds()));
+        }
+        if (skillIds != null) {
+            existing.setSkillIds(skillIds);
         }
         if (actor != null && actor.isSuperAdmin() && agentUpdate.getIsSystem() != null) {
             existing.setIsSystem(agentUpdate.getIsSystem());
@@ -375,6 +390,9 @@ public class AgentService {
                 });
             }
             clone.setKnowledgeBaseIds(validKbs);
+        }
+        if (skillService != null) {
+            clone.setSkillIds(skillService.filterUsable(actor, source.getSkillIds()));
         }
         clone.setId(null);
         clone.setApiKey(null);

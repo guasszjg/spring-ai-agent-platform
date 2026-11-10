@@ -166,4 +166,59 @@ class AiChatServiceChannelCapabilityTest {
         verify(knowledgeBaseService, never()).buildRetrieval(any(), any(), any());
         verify(knowledgeBaseService, never()).buildRetrieval(any(), any());
     }
+
+    private java.util.concurrent.atomic.AtomicReference<com.shimeta.skill.SkillSession> withSkills() {
+        com.shimeta.skill.SkillService skillService = mock(com.shimeta.skill.SkillService.class);
+        when(skillService.runtimeSpecs(any())).thenReturn(List.of(new com.shimeta.skill.SkillSpec(
+                "s1", "退款", "用户要求退款时", "步".repeat(5000), List.of())));
+        service.setSkillService(skillService);
+        agent.setSkillIds(List.of("s1"));
+        java.util.concurrent.atomic.AtomicReference<com.shimeta.skill.SkillSession> holder = new java.util.concurrent.atomic.AtomicReference<>();
+        org.mockito.Mockito.doAnswer(inv -> {
+            holder.set(inv.getArgument(0));
+            return null;
+        }).when(toolRegistry).setSkillSession(any());
+        when(toolRegistry.currentSkillSession()).thenAnswer(inv -> holder.get());
+        return holder;
+    }
+
+    @Test
+    @DisplayName("关联了技能：多发一个 load_skill 工具，系统提示末尾带技能目录，不带正文")
+    void skillsAddCatalogAndLoadTool() {
+        withSkills();
+
+        service.chat(request(null));
+
+        Call call = capture();
+        assertThat(call.tools()).extracting(t -> (Object) ((Map<?, ?>) t.get("function")).get("name"))
+                .containsExactly((Object) "time_get_current_time", "load_skill");
+        String system = String.valueOf(call.messages().get(0).get("content"));
+        assertThat(system).contains("【可用技能】").contains("- 退款：用户要求退款时").doesNotContain("步步步");
+    }
+
+    @Test
+    @DisplayName("通道不支持工具调用：技能目录和 load_skill 都不发")
+    void skillsSkippedWhenChannelHasNoTools() {
+        withSkills();
+        primary.setSupportsTools(false);
+
+        service.chat(request(null));
+
+        Call call = capture();
+        assertThat(call.tools()).isEmpty();
+        assertThat(call.allContent()).doesNotContain("可用技能");
+    }
+
+    @Test
+    @DisplayName("配置了 4096 窗口：给技能正文留出预算，加载时按预算截断")
+    void windowLimitsSkillContent() {
+        var holder = withSkills();
+        primary.setContextWindow(4096);
+
+        service.chat(request(null));
+
+        String loaded = holder.get().load("退款");
+        assertThat(loaded).contains("已省略");
+        assertThat(loaded.length()).isLessThan(2500);
+    }
 }
