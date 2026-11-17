@@ -555,13 +555,23 @@ public class OpenAiCompatibleClient {
         int completionTokens = 0;
         int cachedTokens = 0;
         boolean sawEvent = false;
+        // 当前事件块的 event 名（SSE 里写在 data 行之前，空行结束一个事件块）
+        String eventName = null;
         String line;
         while ((line = reader.readLine()) != null) {
             if (cancelled != null && cancelled.getAsBoolean()) {
                 break;
             }
             String trimmed = line.trim();
-            if (trimmed.isEmpty() || trimmed.startsWith(":")) {
+            if (trimmed.isEmpty()) {
+                eventName = null;
+                continue;
+            }
+            if (trimmed.startsWith(":")) {
+                continue;
+            }
+            if (trimmed.startsWith("event:")) {
+                eventName = trimmed.substring(6).trim();
                 continue;
             }
             if (!sawEvent && trimmed.startsWith("{")) {
@@ -581,11 +591,20 @@ public class OpenAiCompatibleClient {
             if ("[DONE]".equals(data)) {
                 break;
             }
+            boolean errorEvent = "error".equalsIgnoreCase(eventName);
             JsonNode chunk;
             try {
                 chunk = objectMapper.readTree(data);
             } catch (Exception e) {
+                if (errorEvent && !data.isEmpty()) {
+                    throw new IllegalStateException("模型服务返回错误: " + truncate(data));
+                }
                 continue;
+            }
+            String streamError = streamErrorMessage(chunk, errorEvent);
+            if (streamError != null) {
+                // 通道在流里报错（如输入超出上下文长度）：把原因交给上层，而不是当成"没有返回内容"
+                throw new IllegalStateException("模型服务返回错误: " + truncate(streamError));
             }
             JsonNode usage = chunk.path("usage");
             if (usage.isObject()) {
@@ -634,8 +653,35 @@ public class OpenAiCompatibleClient {
         return new StreamResult(content.toString(), toolCalls, promptTokens, completionTokens, cachedTokens);
     }
 
+    /**
+     * 流里的一条数据是不是错误：OpenAI / vLLM 风格的 {"error": ...}，或者 event: error 事件里的 {"message": ...}。
+     * 不是错误时返回 null
+     */
+    static String streamErrorMessage(JsonNode chunk, boolean errorEvent) {
+        if (chunk == null || !chunk.isObject()) {
+            return null;
+        }
+        JsonNode error = chunk.get("error");
+        if (error != null && !error.isNull()) {
+            if (error.isTextual()) {
+                return error.asText().isBlank() ? "未知错误" : error.asText();
+            }
+            String message = error.path("message").asText("");
+            return message.isBlank() ? error.toString() : message;
+        }
+        if (errorEvent && !chunk.has("choices")) {
+            String message = chunk.path("message").asText("");
+            return message.isBlank() ? chunk.toString() : message;
+        }
+        return null;
+    }
+
     private StreamResult parseCompletion(String body, java.util.function.Consumer<String> onContent) throws java.io.IOException {
         JsonNode root = objectMapper.readTree(body);
+        String error = streamErrorMessage(root, false);
+        if (error != null) {
+            throw new IllegalStateException("模型服务返回错误: " + truncate(error));
+        }
         JsonNode message = root.path("choices").path(0).path("message");
         List<ToolCall> toolCalls = new ArrayList<>();
         JsonNode calls = message.path("tool_calls");

@@ -127,6 +127,18 @@ public class AiChatService {
         boolean routed;
         String failoverFrom;
         int estimatedPromptTokens;
+        /** 最近一次通道调用失败的原因（如模型服务返回的错误），用于告诉用户具体出了什么问题 */
+        String lastError;
+    }
+
+    /** 通道全部失败时给用户看的说明：带上通道返回的具体原因 */
+    static String channelFailureMessage(String lastError) {
+        if (lastError == null || lastError.isBlank()) {
+            return "模型通道调用失败，请到「模型网关」检查通道连通性或稍后重试";
+        }
+        String reason = lastError.length() > 300 ? lastError.substring(0, 300) + "…" : lastError;
+        return "模型通道调用失败：" + reason
+                + "。请到「模型网关」检查该通道；如果是输入过长，请把通道的「上下文窗口」设为模型实际支持的长度";
     }
 
     /** 粗略估算 Token：中日韩字符每字约 1 个，其余每 4 个字符约 1 个。只在通道没有返回用量时使用 */
@@ -268,7 +280,7 @@ public class AiChatService {
                 throw new StreamInterruptedException("调用方已断开连接", null);
             } else if (trace.routed) {
                 throw new ChannelCallException(routed == null
-                        ? "模型通道调用失败，请到「模型网关」检查通道连通性或稍后重试"
+                        ? channelFailureMessage(trace.lastError)
                         : "模型没有返回内容，请重试或换一种问法；如果持续出现，请到「模型网关」检查该通道");
             } else if (chatClient != null) {
                 log.info("Invoking Spring AI ChatClient for Agent: [{}] with model: [{}]", agent.getName(), executionModel);
@@ -535,7 +547,7 @@ public class AiChatService {
                     .sum() + estimateTokens(toolsJson(primaryToolDefs));
             OpenAiCompatibleClient.ChatResult result = callProvider(route.primary(), route.primaryKey(),
                     agent.getModelName(), callGeneration, route.timeoutMs(), route.maxRetries(), messages, primaryToolDefs,
-                    routedModel, sink);
+                    routedModel, sink, trace);
             if (result != null) {
                 return result;
             }
@@ -545,7 +557,7 @@ public class AiChatService {
                 trace.failoverFrom = route.primary().getName();
                 return callProvider(fallback, route.fallbackKey(),
                         agent.getModelName(), callGeneration, route.timeoutMs(), route.maxRetries(), messages, fallbackToolDefs,
-                        routedModel, sink);
+                        routedModel, sink, trace);
             }
             return null;
         }).orElse(null);
@@ -728,6 +740,16 @@ public class AiChatService {
                                                            List<java.util.Map<String, Object>> messages,
                                                            List<java.util.Map<String, Object>> tools,
                                                            String[] routedModel, StreamSink sink) {
+        return callProvider(provider, apiKey, requestedModel, generation, timeoutMs, maxRetries, messages, tools,
+                routedModel, sink, null);
+    }
+
+    private OpenAiCompatibleClient.ChatResult callProvider(com.shimeta.model.LlmProvider provider,
+                                                           String apiKey, String requestedModel, ChatGeneration generation,
+                                                           int timeoutMs, int maxRetries,
+                                                           List<java.util.Map<String, Object>> messages,
+                                                           List<java.util.Map<String, Object>> tools,
+                                                           String[] routedModel, StreamSink sink, RouteTrace trace) {
         String model = pickModel(provider, requestedModel);
         routedModel[0] = model;
         int attempts = Math.max(1, maxRetries + 1);
@@ -759,6 +781,9 @@ public class AiChatService {
                     throw new StreamInterruptedException("模型通道在输出过程中中断: " + ex.getMessage(), ex);
                 }
                 log.warn("Gateway channel [{}] attempt {} failed: {}", provider.getName(), i + 1, ex.getMessage());
+                if (trace != null) {
+                    trace.lastError = ex.getMessage();
+                }
             }
         }
         return null;
