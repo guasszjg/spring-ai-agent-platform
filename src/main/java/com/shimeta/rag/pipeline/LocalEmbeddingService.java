@@ -65,11 +65,7 @@ public class LocalEmbeddingService {
             var activeOpt = embeddingConfigService.getActiveConfig();
             if (activeOpt.isPresent()) {
                 hasConfiguredModel = true;
-                float[] dynamicVec = callDynamicEmbedding(activeOpt.get(), text);
-                if (dynamicVec == null || dynamicVec.length == 0) {
-                    throw new IllegalStateException("激活的 Embedding 模型未返回向量，已拒绝哈希投影兜底");
-                }
-                return normalizeExact(dynamicVec, targetDim, true);
+                return embedConfigured(text, activeOpt.get(), targetDim);
             }
         }
 
@@ -109,17 +105,37 @@ public class LocalEmbeddingService {
         return embed(text, resolveDimension());
     }
 
+    public float[] embed(String text, EmbeddingConfig config) {
+        Integer dimension = config.getDimension();
+        return embedConfigured(text, config, dimension != null && dimension > 0 ? dimension : DEFAULT_DIMENSION);
+    }
+
+    private float[] embedConfigured(String text, EmbeddingConfig config, int dimension) {
+        float[] vector = callDynamicEmbedding(config, text);
+        if (vector == null || vector.length == 0) {
+            throw new IllegalStateException("激活的 Embedding 模型未返回向量，已拒绝哈希投影兜底");
+        }
+        return normalizeExact(vector, dimension, true);
+    }
+
     /**
      * P4 多模态扩展：生成图片的视觉与语义多模态 Embedding 向量（维度与当前激活的 Embedding 模型一致，遵循第 18 章）
      */
     public float[] embedImage(String imageRef, String caption, int dimension) {
         int targetDim = dimension > 0 ? dimension : resolveDimension();
-        String combined = "image_ref:" + (imageRef != null ? imageRef : "") + " " + (caption != null ? caption : "");
-        return embed(combined, targetDim);
+        return embed(imageText(imageRef, caption), targetDim);
     }
 
     public float[] embedImage(String imageRef, String caption) {
         return embedImage(imageRef, caption, resolveDimension());
+    }
+
+    public float[] embedImage(String imageRef, String caption, EmbeddingConfig config) {
+        return embed(imageText(imageRef, caption), config);
+    }
+
+    private static String imageText(String imageRef, String caption) {
+        return "image_ref:" + (imageRef != null ? imageRef : "") + " " + (caption != null ? caption : "");
     }
 
     /**

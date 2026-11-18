@@ -54,7 +54,7 @@ public class KnowledgeIndexVersion {
     @Column(name = "chunk_config", columnDefinition = "TEXT")
     private String chunkConfig;
 
-    @Column(name = "embedding_model", length = 64)
+    @Column(name = "embedding_model", length = 120)
     private String embeddingModel = "text-embedding-v3";
 
     @Column(name = "embedding_provider", length = 64)

@@ -55,7 +55,7 @@ public class KnowledgeBase {
 
     private Boolean enabled = true;
 
-    @Column(length = 64)
+    @Column(length = 120)
     private String embeddingModel = "text-embedding-v3";
 
     @Column(length = 64)

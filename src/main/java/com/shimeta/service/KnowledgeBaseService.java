@@ -1,6 +1,7 @@
 package com.shimeta.service;
 
 import com.shimeta.rag.pipeline.LocalEmbeddingService;
+import com.shimeta.model.EmbeddingConfig;
 import com.shimeta.model.KnowledgeBase;
 import com.shimeta.model.KnowledgeDocument;
 import com.shimeta.model.KnowledgeFaq;
@@ -1489,7 +1490,7 @@ public class KnowledgeBaseService {
             throw new IllegalStateException("权限不足：您无权修改该知识库FAQ");
         }
 
-        KnowledgeFaq faq = faqRepository.findById(faqId)
+        KnowledgeFaq faq = faqRepository.findForUpdate(faqId)
                 .orElseThrow(() -> new IllegalArgumentException("FAQ 不存在: " + faqId));
 
         if (!faq.getKnowledgeBaseId().equals(kb.getId())) {
@@ -1541,6 +1542,31 @@ public class KnowledgeBaseService {
         return faqRepository.save(faq);
     }
 
+    /** 重建本地 FAQ 的索引。失败由后台任务统计，并回滚这条 FAQ 的索引写入。 */
+    @Transactional
+    public boolean rebuildFaqIndex(KnowledgeBase kb, String faqId, EmbeddingConfig embeddingConfig) {
+        KnowledgeFaq faq = faqRepository.findForUpdate(faqId).orElse(null);
+        if (faq == null || !kb.getId().equals(faq.getKnowledgeBaseId())) {
+            return false;
+        }
+        if (!(resolveProvider(kb.getProvider()) instanceof SpringAiKnowledgeBaseProvider provider)
+                || kb.getExternalDatasetId() == null || kb.getExternalDatasetId().isBlank()) {
+            throw new IllegalStateException("自建知识库的索引未配置");
+        }
+        DifyDocumentDto indexed = provider.syncFaqDocument(kb.getExternalDatasetId(), faq.getExternalDocId(),
+                faq.getQuestion(), faq.getAnswer(), faq.getCategory(), !Boolean.FALSE.equals(faq.getEnabled()), embeddingConfig);
+        faq.setExternalDocId(indexed.getId());
+        return true;
+    }
+
+    @Transactional
+    public void updateRebuiltEmbeddingMetadata(String kbId, EmbeddingConfig embeddingConfig) {
+        if (knowledgeBaseRepository.updateEmbeddingMetadata(kbId, embeddingConfig.getModelName(),
+                embeddingConfig.getProvider()) == 0) {
+            throw new IllegalStateException("知识库已不存在");
+        }
+    }
+
     @Transactional
     public void deleteFaq(String knowledgeBaseId, String faqId) {
         deleteFaq(knowledgeBaseId, faqId, CurrentActor.get());
@@ -1554,7 +1580,7 @@ public class KnowledgeBaseService {
             throw new IllegalStateException("权限不足：您无权删除该知识库FAQ");
         }
 
-        KnowledgeFaq faq = faqRepository.findById(faqId)
+        KnowledgeFaq faq = faqRepository.findForUpdate(faqId)
                 .orElseThrow(() -> new IllegalArgumentException("FAQ 不存在: " + faqId));
 
         if (!faq.getKnowledgeBaseId().equals(kb.getId())) {

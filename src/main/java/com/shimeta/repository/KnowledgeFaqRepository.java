@@ -1,9 +1,11 @@
 package com.shimeta.repository;
 
 import com.shimeta.model.KnowledgeFaq;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -15,6 +17,10 @@ import java.util.Optional;
 public interface KnowledgeFaqRepository extends JpaRepository<KnowledgeFaq, String> {
 
     List<KnowledgeFaq> findByKnowledgeBaseId(String knowledgeBaseId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT f FROM KnowledgeFaq f WHERE f.id = :id")
+    Optional<KnowledgeFaq> findForUpdate(@Param("id") String id);
 
     Page<KnowledgeFaq> findByKnowledgeBaseId(String knowledgeBaseId, Pageable pageable);
 

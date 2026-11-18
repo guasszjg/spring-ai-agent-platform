@@ -1,5 +1,6 @@
 package com.shimeta.rag;
 
+import com.shimeta.model.EmbeddingConfig;
 import com.shimeta.model.KnowledgeBase;
 import com.shimeta.model.KnowledgeDocumentChunk;
 import com.shimeta.model.KnowledgeGraphTriplet;
@@ -222,7 +223,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
 
         long totalTokens = documentChunker.estimateTokens(textContent);
         String docId = UUID.randomUUID().toString();
-        List<KnowledgeDocumentChunk> entities = buildChunks(kbId, docId, fileName, parseResult, textContent);
+        List<KnowledgeDocumentChunk> entities = buildChunks(kbId, docId, fileName, parseResult, textContent, null);
 
         chunkRepository.saveAll(entities);
         log.info("Spring AI 自研多格式智能解析与向量入库完成: kbId={}, docId={}, fileName={}, format={}, parser={}, chunkCount={}, tokens={}",
@@ -253,7 +254,8 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
      * @return 新的切片数
      */
     @Transactional
-    public int rebuildDocument(String externalDatasetId, String docId, String fileName, byte[] fileBytes) {
+    public int rebuildDocument(String externalDatasetId, String docId, String fileName, byte[] fileBytes,
+                               EmbeddingConfig embeddingConfig) {
         String kbId = resolveKnowledgeBaseId(externalDatasetId);
         if (kbId == null) {
             kbId = externalDatasetId;
@@ -263,7 +265,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         if (textContent == null || textContent.isBlank()) {
             throw new IllegalStateException("文件解析后没有文字");
         }
-        List<KnowledgeDocumentChunk> entities = buildChunks(kbId, docId, fileName, parseResult, textContent);
+        List<KnowledgeDocumentChunk> entities = buildChunks(kbId, docId, fileName, parseResult, textContent, embeddingConfig);
         chunkRepository.deleteByDocumentId(docId);
         chunkRepository.flush();
         chunkRepository.saveAll(entities);
@@ -292,7 +294,8 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
 
     /** 解析结果切片、加上下文标题、向量化，返回待保存的切片（不保存） */
     private List<KnowledgeDocumentChunk> buildChunks(String kbId, String docId, String fileName,
-                                                     DocumentParsingService.ParseResult parseResult, String textContent) {
+                                                     DocumentParsingService.ParseResult parseResult, String textContent,
+                                                     EmbeddingConfig embeddingConfig) {
         long totalTokens = documentChunker.estimateTokens(textContent);
         // P2: 高级父子切片管线 (Parent-Child Chunking)
         List<DocumentChunker.ParentChildPiece> pieces = documentChunker.splitParentChild(textContent);
@@ -328,11 +331,16 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 chunk.setImageUrl(docImageUrl);
                 chunk.setImageCaption(docImageCaption != null ? docImageCaption : piece.childContent());
                 chunk.setMatchedBy("TEXT_ONLY");
-                float[] vector = embeddingService.embedImage(docImageUrl, chunk.getImageCaption());
+                float[] vector = embeddingConfig == null
+                        ? embeddingService.embedImage(docImageUrl, chunk.getImageCaption())
+                        : embeddingService.embedImage(docImageUrl, chunk.getImageCaption(), embeddingConfig);
                 applyEmbedding(chunk, vector);
             } else {
                 chunk.setContextTitle(contextTitle);
-                float[] vector = embeddingService.embed(DocumentChunker.indexText(contextTitle, piece.childContent()));
+                String indexText = DocumentChunker.indexText(contextTitle, piece.childContent());
+                float[] vector = embeddingConfig == null
+                        ? embeddingService.embed(indexText)
+                        : embeddingService.embed(indexText, embeddingConfig);
                 applyEmbedding(chunk, vector);
             }
 
@@ -398,6 +406,12 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
     @Transactional
     public DifyDocumentDto syncFaqDocument(String externalDatasetId, String existingExternalDocId, String question,
                                           String answer, String category) {
+        return syncFaqDocument(externalDatasetId, existingExternalDocId, question, answer, category, true, null);
+    }
+
+    @Transactional
+    public DifyDocumentDto syncFaqDocument(String externalDatasetId, String existingExternalDocId, String question,
+                                          String answer, String category, boolean enabled, EmbeddingConfig embeddingConfig) {
         String kbId = resolveKnowledgeBaseId(externalDatasetId);
         if (kbId == null) {
             kbId = externalDatasetId;
@@ -422,9 +436,11 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         chunk.setChunkType("STANDALONE");
         chunk.setCharacterCount(combinedText.length());
         chunk.setTokenCount(tokens);
-        chunk.setEnabled(true);
+        chunk.setEnabled(enabled);
 
-        float[] vector = embeddingService.embed(combinedText);
+        float[] vector = embeddingConfig == null
+                ? embeddingService.embed(combinedText)
+                : embeddingService.embed(combinedText, embeddingConfig);
         applyEmbedding(chunk, vector);
 
         Map<String, Object> meta = new LinkedHashMap<>();

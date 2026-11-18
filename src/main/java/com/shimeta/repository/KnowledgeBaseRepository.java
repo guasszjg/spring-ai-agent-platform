@@ -4,6 +4,7 @@ import com.shimeta.model.KnowledgeBase;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -17,6 +18,11 @@ public interface KnowledgeBaseRepository extends JpaRepository<KnowledgeBase, St
     Optional<KnowledgeBase> findByExternalDatasetId(String externalDatasetId);
 
     List<KnowledgeBase> findByProvider(String provider);
+
+    @Modifying
+    @Query("UPDATE KnowledgeBase k SET k.embeddingModel = :model, k.embeddingProvider = :provider WHERE k.id = :id")
+    int updateEmbeddingMetadata(@Param("id") String id, @Param("model") String model,
+                                @Param("provider") String provider);
 
     @Query("SELECT k FROM KnowledgeBase k WHERE (:keyword IS NULL OR :keyword = '' OR " +
            "LOWER(k.name) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +

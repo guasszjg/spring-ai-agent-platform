@@ -1,9 +1,12 @@
 package com.shimeta.service;
 
+import com.shimeta.model.EmbeddingConfig;
 import com.shimeta.model.KnowledgeBase;
 import com.shimeta.model.KnowledgeDocument;
+import com.shimeta.model.KnowledgeFaq;
 import com.shimeta.rag.SpringAiKnowledgeBaseProvider;
 import com.shimeta.repository.KnowledgeDocumentRepository;
+import com.shimeta.repository.KnowledgeFaqRepository;
 import com.shimeta.security.CurrentActor;
 import com.shimeta.storage.ObjectStorageService;
 import org.slf4j.Logger;
@@ -34,17 +37,20 @@ public class KnowledgeIndexRebuildService {
     public static final String DONE = "DONE";
     public static final String FAILED = "FAILED";
 
-    /** 重建进度。total 是要处理的文档数，done 是已处理（含失败和跳过） */
+    /** 重建进度。total、done、skipped、failed 包含文档和 FAQ；chunks 只统计文档切片。 */
     public record Status(String state, int total, int done, int rebuilt, int skipped, int failed, int chunks,
+                         int totalDocuments, int totalFaqs, int rebuiltFaqs,
                          String currentDocument, List<String> errors,
                          LocalDateTime startedAt, LocalDateTime finishedAt) {
         static Status idle() {
-            return new Status("IDLE", 0, 0, 0, 0, 0, 0, null, List.of(), null, null);
+            return new Status("IDLE", 0, 0, 0, 0, 0, 0, 0, 0, 0, null, List.of(), null, null);
         }
     }
 
     private final KnowledgeBaseService knowledgeBaseService;
     private final KnowledgeDocumentRepository documentRepository;
+    private final KnowledgeFaqRepository faqRepository;
+    private final EmbeddingConfigService embeddingConfigService;
     private final ObjectStorageService objectStorageService;
     private final SpringAiKnowledgeBaseProvider springAiProvider;
     private final Map<String, Status> statuses = new ConcurrentHashMap<>();
@@ -56,10 +62,14 @@ public class KnowledgeIndexRebuildService {
 
     public KnowledgeIndexRebuildService(KnowledgeBaseService knowledgeBaseService,
                                         KnowledgeDocumentRepository documentRepository,
+                                        KnowledgeFaqRepository faqRepository,
+                                        EmbeddingConfigService embeddingConfigService,
                                         ObjectStorageService objectStorageService,
                                         SpringAiKnowledgeBaseProvider springAiProvider) {
         this.knowledgeBaseService = knowledgeBaseService;
         this.documentRepository = documentRepository;
+        this.faqRepository = faqRepository;
+        this.embeddingConfigService = embeddingConfigService;
         this.objectStorageService = objectStorageService;
         this.springAiProvider = springAiProvider;
     }
@@ -81,24 +91,28 @@ public class KnowledgeIndexRebuildService {
         }
         List<KnowledgeDocument> docs = new ArrayList<>(documentRepository.findByKnowledgeBaseId(kbId));
         docs.sort(Comparator.comparing(KnowledgeDocument::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder())));
-        Status started = new Status(RUNNING, docs.size(), 0, 0, 0, 0, 0, null, List.of(), LocalDateTime.now(), null);
+        List<KnowledgeFaq> faqs = faqRepository.findByKnowledgeBaseId(kbId);
+        EmbeddingConfig embeddingConfig = embeddingConfigService.getActiveConfig().orElse(null);
+        Status started = new Status(RUNNING, docs.size() + faqs.size(), 0, 0, 0, 0, 0,
+                docs.size(), faqs.size(), 0, null, List.of(), LocalDateTime.now(), null);
         statuses.put(kbId, started);
-        executor.submit(() -> run(kb, docs));
+        executor.submit(() -> run(kb, docs, faqs, embeddingConfig, started));
         return started;
     }
 
-    private void run(KnowledgeBase kb, List<KnowledgeDocument> docs) {
+    private void run(KnowledgeBase kb, List<KnowledgeDocument> docs, List<KnowledgeFaq> faqs,
+                     EmbeddingConfig embeddingConfig, Status started) {
         String kbId = kb.getId();
         int done = 0;
         int rebuilt = 0;
+        int rebuiltFaqs = 0;
         int skipped = 0;
         int failed = 0;
         int chunks = 0;
         List<String> errors = new ArrayList<>();
-        LocalDateTime startedAt = statuses.get(kbId).startedAt();
         for (KnowledgeDocument doc : docs) {
-            statuses.put(kbId, new Status(RUNNING, docs.size(), done, rebuilt, skipped, failed, chunks, doc.getName(),
-                    List.copyOf(errors), startedAt, null));
+            statuses.put(kbId, new Status(RUNNING, started.total(), done, rebuilt, skipped, failed, chunks,
+                    docs.size(), faqs.size(), rebuiltFaqs, doc.getName(), List.copyOf(errors), started.startedAt(), null));
             try {
                 if (doc.getExternalDocId() == null || doc.getExternalDocId().isBlank()) {
                     skipped++;
@@ -111,7 +125,8 @@ public class KnowledgeIndexRebuildService {
                     try (InputStream in = objectStorageService.getObject(doc.getObjectKey())) {
                         bytes = in.readAllBytes();
                     }
-                    chunks += springAiProvider.rebuildDocument(kb.getExternalDatasetId(), doc.getExternalDocId(), doc.getName(), bytes);
+                    chunks += springAiProvider.rebuildDocument(kb.getExternalDatasetId(),
+                            doc.getExternalDocId(), doc.getName(), bytes, embeddingConfig);
                     rebuilt++;
                 }
             } catch (Exception e) {
@@ -121,10 +136,39 @@ public class KnowledgeIndexRebuildService {
             }
             done++;
         }
-        String state = failed > 0 && rebuilt == 0 ? FAILED : DONE;
-        statuses.put(kbId, new Status(state, docs.size(), done, rebuilt, skipped, failed, chunks, null,
-                List.copyOf(errors), startedAt, LocalDateTime.now()));
-        log.info("知识库索引重建完成 kb={}: 重建 {} 个文档，跳过 {}，失败 {}，共 {} 个切片", kbId, rebuilt, skipped, failed, chunks);
+        for (KnowledgeFaq faq : faqs) {
+            String name = "FAQ「" + faq.getQuestion() + "」";
+            statuses.put(kbId, new Status(RUNNING, started.total(), done, rebuilt, skipped, failed, chunks,
+                    docs.size(), faqs.size(), rebuiltFaqs, name, List.copyOf(errors), started.startedAt(), null));
+            try {
+                if (knowledgeBaseService.rebuildFaqIndex(kb, faq.getId(), embeddingConfig)) {
+                    rebuiltFaqs++;
+                } else {
+                    skipped++;
+                    addError(errors, name + "：FAQ 已不存在，已跳过");
+                }
+            } catch (Exception e) {
+                failed++;
+                addError(errors, name + "：" + e.getMessage());
+                log.warn("重建 FAQ 索引失败 kb={} faq={}: {}", kbId, faq.getId(), e.getMessage());
+            }
+            done++;
+        }
+
+        String state = failed > 0 && rebuilt + rebuiltFaqs == 0 ? FAILED : DONE;
+        if (embeddingConfig != null && rebuilt + rebuiltFaqs > 0 && skipped == 0 && failed == 0) {
+            try {
+                knowledgeBaseService.updateRebuiltEmbeddingMetadata(kbId, embeddingConfig);
+            } catch (Exception e) {
+                state = FAILED;
+                addError(errors, "更新知识库向量模型名称失败：" + e.getMessage());
+                log.warn("更新知识库向量模型名称失败 kb={}: {}", kbId, e.getMessage());
+            }
+        }
+        statuses.put(kbId, new Status(state, started.total(), done, rebuilt, skipped, failed, chunks,
+                docs.size(), faqs.size(), rebuiltFaqs, null, List.copyOf(errors), started.startedAt(), LocalDateTime.now()));
+        log.info("知识库索引重建结束 kb={} state={}: 重建 {} 个文档、{} 条 FAQ，跳过 {}，失败 {}，文档切片 {} 个",
+                kbId, state, rebuilt, rebuiltFaqs, skipped, failed, chunks);
     }
 
     private static void addError(List<String> errors, String message) {
