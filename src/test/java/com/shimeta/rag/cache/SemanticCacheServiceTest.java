@@ -6,7 +6,6 @@ import com.shimeta.rag.pipeline.LocalEmbeddingService;
 import com.shimeta.repository.KnowledgeRetrievalCacheRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
 import java.time.LocalDateTime;
@@ -29,19 +28,13 @@ public class SemanticCacheServiceTest {
         cacheRepository = Mockito.mock(KnowledgeRetrievalCacheRepository.class);
         embeddingService = new LocalEmbeddingService(null);
         cacheService = new SemanticCacheService(cacheRepository, embeddingService);
+        when(cacheRepository.incrementHit(any(), anyLong())).thenReturn(1);
     }
 
     @Test
     void testExactQueryHitInDatabase() {
         String kbId = "kb_test";
         String query = "如何重置密码";
-        RetrievedChunk sampleChunk = RetrievedChunk.builder()
-                .chunkId("c1")
-                .content("请前往个人中心修改密码")
-                .sourceName("用户手册.txt")
-                .score(0.9)
-                .build();
-
         KnowledgeRetrievalCache cacheEntity = new KnowledgeRetrievalCache();
         cacheEntity.setId("cache_1");
         cacheEntity.setKnowledgeBaseId(kbId);
@@ -52,8 +45,8 @@ public class SemanticCacheServiceTest {
         cacheEntity.setLatencySavedMs(200L);
         cacheEntity.setExpiresAt(LocalDateTime.now().plusDays(1));
 
-        when(cacheRepository.findByKnowledgeBaseIdAndQueryText(eq(kbId), eq(query.trim().toLowerCase())))
-                .thenReturn(Optional.of(cacheEntity));
+        when(cacheRepository.findActiveExact(eq(kbId), eq(query), any()))
+                .thenReturn(List.of(cacheEntity));
 
         Optional<SemanticCacheService.CacheLookupResult> result = cacheService.lookup(kbId, query, null, 0.95);
 
@@ -65,7 +58,7 @@ public class SemanticCacheServiceTest {
         assertTrue(result.get().chunks().get(0).metadata().containsKey("semanticCacheHit"));
         assertEquals(true, result.get().chunks().get(0).metadata().get("semanticCacheHit"));
 
-        verify(cacheRepository, atLeastOnce()).save(any(KnowledgeRetrievalCache.class));
+        verify(cacheRepository).incrementHit("cache_1", 120L);
     }
 
     @Test
@@ -85,9 +78,7 @@ public class SemanticCacheServiceTest {
         cacheEntity.setHitCount(1L);
         cacheEntity.setExpiresAt(LocalDateTime.now().plusDays(2));
 
-        when(cacheRepository.findByKnowledgeBaseIdAndQueryText(eq(kbId), any()))
-                .thenReturn(Optional.empty());
-        when(cacheRepository.findByKnowledgeBaseId(eq(kbId)))
+        when(cacheRepository.findActive(eq(kbId), any()))
                 .thenReturn(List.of(cacheEntity));
 
         float[] incomingVec = embeddingService.embed(incomingQuery, 1024);
@@ -108,8 +99,11 @@ public class SemanticCacheServiceTest {
         String query = "什么是 RAG";
         RetrievedChunk chunk = RetrievedChunk.builder().content("检索增强生成").score(0.95).build();
 
-        cacheService.put(kbId, "v1", query, null, List.of(chunk), 120L, 3600L);
-        verify(cacheRepository, times(1)).save(any(KnowledgeRetrievalCache.class));
+        when(cacheRepository.upsert(any(), eq(kbId), eq("v1"), eq("什么是 rag"), any(), any(), any(), any()))
+                .thenReturn(Optional.of("existing-row"));
+        cacheService.put(kbId, "v1", "  什么是   RAG   ", null, List.of(chunk), 120L, 3600L);
+        assertTrue(cacheService.lookup(kbId, query, null, 0.95).isPresent());
+        verify(cacheRepository).incrementHit("existing-row", 150L);
 
         cacheService.clearCache(kbId);
         verify(cacheRepository, times(1)).deleteByKnowledgeBaseId(eq(kbId));
@@ -128,7 +122,7 @@ public class SemanticCacheServiceTest {
                 + "\"metadata\":{\"faqId\":\"faq_1\"}}]");
         cacheEntity.setHitCount(1L);
         cacheEntity.setExpiresAt(LocalDateTime.now().plusDays(1));
-        when(cacheRepository.findByKnowledgeBaseIdAndQueryText(eq(kbId), eq(query))).thenReturn(Optional.of(cacheEntity));
+        when(cacheRepository.findActiveExact(eq(kbId), eq(query), any())).thenReturn(List.of(cacheEntity));
 
         Optional<SemanticCacheService.CacheLookupResult> result = cacheService.lookup(kbId, query, null, 0.95);
 
@@ -138,7 +132,7 @@ public class SemanticCacheServiceTest {
     }
 
     @Test
-    void unreadableCacheIsTreatedAsMissAndDeleted() {
+    void unreadableCacheIsTreatedAsMiss() {
         String kbId = "kb_test";
         String query = "公司地址";
         KnowledgeRetrievalCache cacheEntity = new KnowledgeRetrievalCache();
@@ -148,9 +142,19 @@ public class SemanticCacheServiceTest {
         cacheEntity.setResultJson("not-json");
         cacheEntity.setHitCount(1L);
         cacheEntity.setExpiresAt(LocalDateTime.now().plusDays(1));
-        when(cacheRepository.findByKnowledgeBaseIdAndQueryText(eq(kbId), eq(query))).thenReturn(Optional.of(cacheEntity));
+        when(cacheRepository.findActiveExact(eq(kbId), eq(query), any())).thenReturn(List.of(cacheEntity));
 
         assertTrue(cacheService.lookup(kbId, query, null, 0.95).isEmpty());
-        verify(cacheRepository).delete(cacheEntity);
+        verify(cacheRepository, never()).incrementHit(any(), anyLong());
     }
+
+    @Test
+    void duplicateActiveExactRowsAreTreatedAsMiss() {
+        when(cacheRepository.findActiveExact(eq("kb_test"), eq("query"), any()))
+                .thenReturn(List.of(new KnowledgeRetrievalCache(), new KnowledgeRetrievalCache()));
+
+        assertTrue(cacheService.lookup("kb_test", "query", null, 0.95).isEmpty());
+        verify(cacheRepository, never()).incrementHit(any(), anyLong());
+    }
+
 }

@@ -4,6 +4,7 @@ import com.shimeta.model.KnowledgeRetrievalCache;
 import com.shimeta.rag.RetrievedChunk;
 import com.shimeta.rag.pipeline.LocalEmbeddingService;
 import com.shimeta.repository.KnowledgeRetrievalCacheRepository;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -11,15 +12,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -71,11 +75,8 @@ public class SemanticCacheService {
 
     private record CachedMemoryItem(
             String id,
-            String queryText,
-            float[] queryVector,
             List<RetrievedChunk> chunks,
             long hitCount,
-            long savedLatencyMs,
             LocalDateTime expiresAt
     ) {}
 
@@ -88,72 +89,55 @@ public class SemanticCacheService {
      * @param similarityThreshold 语义相似度判定阈值（默认建议 0.95）
      * @return 缓存命中结果
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Optional<CacheLookupResult> lookup(String kbId, String query, float[] queryVector, double similarityThreshold) {
         if (kbId == null || query == null || query.isBlank()) {
             return Optional.empty();
         }
 
         String normalizedQuery = normalize(query);
-        long lookupStart = System.currentTimeMillis();
+        LocalDateTime now = LocalDateTime.now();
 
         // 1. 一级内存快速精确匹配
         Map<String, CachedMemoryItem> kbMem = memoryCache.get(kbId);
         if (kbMem != null) {
             CachedMemoryItem memItem = kbMem.get(normalizedQuery);
-            if (memItem != null && !isExpired(memItem.expiresAt())) {
+            if (memItem != null && !isExpired(memItem.expiresAt())
+                    && cacheRepository.incrementHit(memItem.id(), 150L) > 0) {
                 long newHit = memItem.hitCount() + 1;
-                long latencySaved = System.currentTimeMillis() - lookupStart;
-                updateHitCountAsync(memItem.id(), 150L);
                 List<RetrievedChunk> annotated = annotateChunks(memItem.chunks(), 1.0, newHit);
                 log.info("语义缓存[内存精确命中]: kbId={}, query='{}', hitCount={}", kbId, query, newHit);
                 return Optional.of(new CacheLookupResult(annotated, true, 1.0, newHit, 150L));
             }
-        }
-
-        // 2. 二级持久化精确匹配
-        Optional<KnowledgeRetrievalCache> exactDb = cacheRepository.findByKnowledgeBaseIdAndQueryText(kbId, normalizedQuery);
-        if (exactDb.isPresent()) {
-            KnowledgeRetrievalCache entity = exactDb.get();
-            if (!isExpired(entity.getExpiresAt())) {
-                long newHit = (entity.getHitCount() != null ? entity.getHitCount() : 1L) + 1;
-                entity.setHitCount(newHit);
-                long latencySaved = entity.getLatencySavedMs() != null ? entity.getLatencySavedMs() + 120L : 120L;
-                entity.setLatencySavedMs(latencySaved);
-                cacheRepository.save(entity);
-
-                List<RetrievedChunk> chunks = deserializeChunks(entity.getResultJson());
-                if (chunks == null) {
-                    // 解析不了的旧缓存当作未命中，删掉后走正常检索
-                    cacheRepository.delete(entity);
-                    return Optional.empty();
-                }
-                List<RetrievedChunk> annotated = annotateChunks(chunks, 1.0, newHit);
-
-                // 回填内存一级缓存
-                float[] vec = (entity.getQueryVector() != null) ? embeddingService.deserializeVector(entity.getQueryVector()) : new float[0];
-                putMemory(kbId, normalizedQuery, entity.getId(), vec, chunks, newHit, latencySaved, entity.getExpiresAt());
-
-                log.info("语义缓存[数据库精确命中]: kbId={}, query='{}', hitCount={}", kbId, query, newHit);
-                return Optional.of(new CacheLookupResult(annotated, true, 1.0, newHit, 120L));
+            if (memItem != null) {
+                kbMem.remove(normalizedQuery, memItem);
             }
         }
 
-        // 3. 向量语义相似度匹配 (余弦相似度 >= similarityThreshold)
-        if (queryVector == null || queryVector.length == 0) {
-            queryVector = embeddingService.embed(query);
+        // 2. 二级持久化精确匹配
+        List<KnowledgeRetrievalCache> exactMatches = cacheRepository.findActiveExact(kbId, normalizedQuery, now);
+        if (exactMatches.size() > 1) {
+            log.warn("Duplicate active retrieval cache entries: kbId={}", kbId);
+            return Optional.empty();
+        }
+        if (!exactMatches.isEmpty()) {
+            return useDatabaseHit(kbId, normalizedQuery, exactMatches.getFirst(), 1.0, 120L);
         }
 
-        List<KnowledgeRetrievalCache> allCached = cacheRepository.findByKnowledgeBaseId(kbId);
+        // 3. 向量语义相似度匹配 (余弦相似度 >= similarityThreshold)
+        List<KnowledgeRetrievalCache> allCached = cacheRepository.findActive(kbId, now);
         if (allCached.isEmpty()) {
             return Optional.empty();
+        }
+        if (queryVector == null || queryVector.length == 0) {
+            queryVector = embeddingService.embed(query);
         }
 
         KnowledgeRetrievalCache bestMatch = null;
         double highestSimilarity = -1.0;
 
         for (KnowledgeRetrievalCache item : allCached) {
-            if (isExpired(item.getExpiresAt()) || item.getQueryVector() == null || item.getQueryVector().isBlank()) {
+            if (item.getQueryVector() == null || item.getQueryVector().isBlank()) {
                 continue;
             }
             float[] cachedVec = embeddingService.deserializeVector(item.getQueryVector());
@@ -169,77 +153,56 @@ public class SemanticCacheService {
 
         double effectiveThreshold = similarityThreshold > 0 ? similarityThreshold : 0.95;
         if (bestMatch != null && highestSimilarity >= effectiveThreshold) {
-            long newHit = (bestMatch.getHitCount() != null ? bestMatch.getHitCount() : 1L) + 1;
-            bestMatch.setHitCount(newHit);
-            long latencySaved = bestMatch.getLatencySavedMs() != null ? bestMatch.getLatencySavedMs() + 180L : 180L;
-            bestMatch.setLatencySavedMs(latencySaved);
-            cacheRepository.save(bestMatch);
-
-            List<RetrievedChunk> chunks = deserializeChunks(bestMatch.getResultJson());
-            if (chunks == null) {
-                cacheRepository.delete(bestMatch);
-                return Optional.empty();
-            }
-            List<RetrievedChunk> annotated = annotateChunks(chunks, highestSimilarity, newHit);
-
-            // 回填内存一级缓存
-            putMemory(kbId, normalizedQuery, bestMatch.getId(), queryVector, chunks, newHit, latencySaved, bestMatch.getExpiresAt());
-
-            log.info("语义缓存[向量相似度命中]: kbId={}, query='{}' <=> cached='{}', similarity={}, hitCount={}",
-                    kbId, query, bestMatch.getQueryText(), Math.round(highestSimilarity * 10000.0) / 10000.0, newHit);
-            return Optional.of(new CacheLookupResult(annotated, true, highestSimilarity, newHit, 180L));
+            return useDatabaseHit(kbId, normalizedQuery, bestMatch, highestSimilarity, 180L);
         }
 
         return Optional.empty();
     }
 
+    private Optional<CacheLookupResult> useDatabaseHit(String kbId, String query, KnowledgeRetrievalCache entry,
+                                                       double similarity, long latencySaved) {
+        List<RetrievedChunk> chunks = deserializeChunks(entry.getResultJson());
+        if (chunks == null || chunks.isEmpty() || chunks.stream().anyMatch(chunk -> chunk == null)) {
+            return Optional.empty();
+        }
+
+        long newHit = (entry.getHitCount() != null ? entry.getHitCount() : 1L) + 1;
+        if (cacheRepository.incrementHit(entry.getId(), latencySaved) == 0) {
+            return Optional.empty();
+        }
+        if (similarity == 1.0 && query.equals(entry.getQueryText())) {
+            putMemory(kbId, query, entry.getId(), chunks, newHit, entry.getExpiresAt());
+        }
+        return Optional.of(new CacheLookupResult(annotateChunks(chunks, similarity, newHit),
+                true, similarity, newHit, latencySaved));
+    }
+
     /**
      * 写入语义缓存
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void put(String kbId, String indexVersionId, String query, float[] queryVector,
                     List<RetrievedChunk> chunks, long executionLatencyMs, Long ttlSeconds) {
         if (kbId == null || query == null || query.isBlank() || chunks == null || chunks.isEmpty()) {
             return;
         }
 
+        String normalizedQuery = normalize(query);
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime expiresAt = ttlSeconds != null && ttlSeconds > 0
+                ? now.plusSeconds(ttlSeconds) : now.plusDays(7);
+        float[] vector = queryVector != null && queryVector.length > 0 ? queryVector : embeddingService.embed(query);
+        String serializedVector = embeddingService.serializeVector(vector);
+        String resultJson;
         try {
-            String normalizedQuery = normalize(query);
-            LocalDateTime expiresAt = (ttlSeconds != null && ttlSeconds > 0)
-                    ? LocalDateTime.now().plusSeconds(ttlSeconds)
-                    : LocalDateTime.now().plusDays(7); // 默认 7 天
-
-            String serializedVector = (queryVector != null && queryVector.length > 0)
-                    ? embeddingService.serializeVector(queryVector)
-                    : embeddingService.serializeVector(embeddingService.embed(query));
-
-            String resultJson = objectMapper.writeValueAsString(chunks);
-
-            // 保存到持久化数据库
-            KnowledgeRetrievalCache entity = new KnowledgeRetrievalCache();
-            entity.setKnowledgeBaseId(kbId);
-            entity.setIndexVersionId(indexVersionId);
-            entity.setQueryText(normalizedQuery);
-            entity.setQueryVector(serializedVector);
-            entity.setResultJson(resultJson);
-            entity.setHitCount(1L);
-            entity.setLatencySavedMs(0L);
-            entity.setExpiresAt(expiresAt);
-
-            if (entity.getId() == null || entity.getId().isBlank()) {
-                entity.setId(java.util.UUID.randomUUID().toString());
-            }
-            KnowledgeRetrievalCache saved = cacheRepository.save(entity);
-            String cacheId = (saved != null && saved.getId() != null) ? saved.getId() : entity.getId();
-
-            // 保存到一级内存
-            float[] finalVec = (queryVector != null && queryVector.length > 0) ? queryVector : embeddingService.embed(query);
-            putMemory(kbId, normalizedQuery, cacheId, finalVec, chunks, 1L, 0L, expiresAt);
-
-            log.debug("语义缓存写入完成: kbId={}, query='{}', chunkCount={}", kbId, query, chunks.size());
-        } catch (Exception e) {
-            log.warn("写入语义缓存异常: kbId={}, query='{}', err={}", kbId, query, e.getMessage());
+            resultJson = objectMapper.writeValueAsString(chunks);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Unable to serialize retrieval cache chunks", e);
         }
+
+        cacheRepository.upsert(UUID.randomUUID().toString(), kbId, indexVersionId, normalizedQuery,
+                        serializedVector, resultJson, now, expiresAt)
+                .ifPresent(id -> putMemory(kbId, normalizedQuery, id, chunks, 1L, expiresAt));
     }
 
     /**
@@ -279,20 +242,20 @@ public class SemanticCacheService {
         return new CacheStats(kbId, count, hits, latencySaved, tokensSaved);
     }
 
-    private void putMemory(String kbId, String query, String id, float[] vec, List<RetrievedChunk> chunks,
-                           long hitCount, long savedLatency, LocalDateTime expiresAt) {
-        memoryCache.computeIfAbsent(kbId, k -> new ConcurrentHashMap<>())
-                .put(query, new CachedMemoryItem(id, query, vec, chunks, hitCount, savedLatency, expiresAt));
-    }
-
-    private void updateHitCountAsync(String id, long latencySaved) {
-        try {
-            cacheRepository.findById(id).ifPresent(entity -> {
-                entity.setHitCount((entity.getHitCount() != null ? entity.getHitCount() : 1L) + 1);
-                entity.setLatencySavedMs((entity.getLatencySavedMs() != null ? entity.getLatencySavedMs() : 0L) + latencySaved);
-                cacheRepository.save(entity);
+    private void putMemory(String kbId, String query, String id, List<RetrievedChunk> chunks,
+                           long hitCount, LocalDateTime expiresAt) {
+        Runnable store = () -> memoryCache.computeIfAbsent(kbId, key -> new ConcurrentHashMap<>())
+                .put(query, new CachedMemoryItem(id, chunks, hitCount, expiresAt));
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    store.run();
+                }
             });
-        } catch (Exception ignored) {}
+        } else {
+            store.run();
+        }
     }
 
     private List<RetrievedChunk> annotateChunks(List<RetrievedChunk> original, double similarity, long hitCount) {
@@ -330,7 +293,7 @@ public class SemanticCacheService {
         return res;
     }
 
-    /** 解析失败返回 null（调用方按未命中处理），不能返回空列表：空列表会被当成「检索无结果」 */
+    /** 解析失败时由调用方继续正常检索。 */
     private List<RetrievedChunk> deserializeChunks(String json) {
         try {
             return objectMapper.readValue(json, new TypeReference<List<RetrievedChunk>>() {});

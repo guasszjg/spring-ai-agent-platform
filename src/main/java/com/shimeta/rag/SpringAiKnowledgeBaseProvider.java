@@ -525,11 +525,15 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         // 1. P4 语义缓存检查 (Semantic Cache Check): 相似度 >= 0.95 判定为同一语义，直接瞬时返回
         boolean cacheEnabled = request.cacheEnabled() == null || Boolean.TRUE.equals(request.cacheEnabled());
         if (cacheEnabled && semanticCacheService != null) {
-            Optional<SemanticCacheService.CacheLookupResult> cacheHit = semanticCacheService.lookup(kbId, request.query(), null, 0.95);
-            if (cacheHit.isPresent()) {
-                log.info("Spring AI 检索瞬时命中语义缓存 (< 5ms): kbId={}, query='{}', hitCount={}, similarity={}",
-                        kbId, request.query(), cacheHit.get().hitCount(), cacheHit.get().similarity());
-                return cacheHit.get().chunks();
+            try {
+                Optional<SemanticCacheService.CacheLookupResult> cacheHit = semanticCacheService.lookup(kbId, request.query(), null, 0.95);
+                if (cacheHit.isPresent()) {
+                    log.info("Spring AI 检索瞬时命中语义缓存 (< 5ms): kbId={}, query='{}', hitCount={}, similarity={}",
+                            kbId, request.query(), cacheHit.get().hitCount(), cacheHit.get().similarity());
+                    return cacheHit.get().chunks();
+                }
+            } catch (RuntimeException e) {
+                log.warn("读取语义缓存失败，继续检索知识库: kbId={}", kbId, e);
             }
         }
 
@@ -808,7 +812,11 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
 
         // 6. P4: 异步或同步写入语义缓存 (以备下次快速命中)
         if (cacheEnabled && !rerankFailed && semanticCacheService != null && !finalChunks.isEmpty()) {
-            semanticCacheService.put(kbId, request.indexVersionId(), request.query(), queryVec, finalChunks, latencyMs, null);
+            try {
+                semanticCacheService.put(kbId, request.indexVersionId(), request.query(), queryVec, finalChunks, latencyMs, null);
+            } catch (RuntimeException e) {
+                log.warn("写入语义缓存失败，保留本次检索结果: kbId={}", kbId, e);
+            }
         }
 
         // 累加自研引擎检索 Token 与重排调用统计

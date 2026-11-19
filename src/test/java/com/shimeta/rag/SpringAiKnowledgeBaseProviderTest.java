@@ -2,6 +2,7 @@ package com.shimeta.rag;
 
 import com.shimeta.model.KnowledgeBase;
 import com.shimeta.model.KnowledgeDocumentChunk;
+import com.shimeta.rag.cache.SemanticCacheService;
 import com.shimeta.rag.dto.DifyDatasetDto;
 import com.shimeta.rag.dto.DifyDocumentDto;
 import com.shimeta.rag.engine.RetrievalRequest;
@@ -15,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataRetrievalFailureException;
 import org.springframework.mock.web.MockMultipartFile;
 
 import java.nio.charset.StandardCharsets;
@@ -24,6 +26,9 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -36,6 +41,9 @@ class SpringAiKnowledgeBaseProviderTest {
 
     @Mock
     private KnowledgeBaseRepository knowledgeBaseRepository;
+
+    @Mock
+    private SemanticCacheService semanticCache;
 
     private DocumentChunker documentChunker;
     private LocalEmbeddingService embeddingService;
@@ -145,6 +153,38 @@ class SpringAiKnowledgeBaseProviderTest {
         // chunk1 应该排名在 chunk2 前面
         assertThat(chunks.get(0).chunkId()).isEqualTo("c1");
         assertThat(chunks.get(0).score()).isGreaterThan(0.0);
+    }
+
+    @Test
+    void retrievesKnowledgeEvenWhenReadingAndWritingTheCacheFails() {
+        String kbId = "kb_test_123";
+        String query = "退款到账";
+        KnowledgeDocumentChunk chunk = new KnowledgeDocumentChunk();
+        chunk.setId("refund");
+        chunk.setKnowledgeBaseId(kbId);
+        chunk.setChunkIndex(0);
+        chunk.setContent("退款到账需要三个工作日。");
+        chunk.setTokenCount(20L);
+        chunk.setEnabled(true);
+        when(chunkRepository.findByKnowledgeBaseIdAndEnabledTrueOrderByChunkIndexAsc(kbId))
+                .thenReturn(List.of(chunk));
+        when(semanticCache.lookup(kbId, query, null, 0.95))
+                .thenThrow(new DataRetrievalFailureException("cache read failed"));
+        doThrow(new DataRetrievalFailureException("cache write failed"))
+                .when(semanticCache).put(eq(kbId), any(), eq(query), any(), anyList(), anyLong(), any());
+        provider = new SpringAiKnowledgeBaseProvider(chunkRepository, knowledgeBaseRepository,
+                documentChunker, embeddingService, keywordRetriever, queryTransformer, budgetPruner,
+                null, semanticCache, null, null, null);
+        RetrievalRequest request = RetrievalRequest.builder()
+                .knowledgeBaseId(kbId)
+                .query(query)
+                .searchMethod("full_text_search")
+                .scoreThreshold(0.0)
+                .cacheEnabled(true)
+                .build();
+
+        assertThat(provider.retrieve(kbId, request)).extracting(RetrievedChunk::chunkId).containsExactly("refund");
+        verify(semanticCache).put(eq(kbId), any(), eq(query), any(), anyList(), anyLong(), any());
     }
 
     @Test
