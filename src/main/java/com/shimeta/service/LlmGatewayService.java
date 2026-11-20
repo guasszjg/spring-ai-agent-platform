@@ -2,6 +2,7 @@ package com.shimeta.service;
 
 import com.shimeta.config.SecretCrypto;
 import com.shimeta.config.OutboundUrlValidator;
+import com.shimeta.model.ChatGeneration;
 import com.shimeta.model.GatewayModelOption;
 import com.shimeta.model.GatewayOverview;
 import com.shimeta.model.GatewayPolicy;
@@ -402,6 +403,224 @@ public class LlmGatewayService {
                 : (policy.getMaxRetries() != null ? policy.getMaxRetries() : 1);
         return Optional.of(new ResolvedRoute(primary, fallback, timeout, retries, decryptKey(primary),
                 fallback != null ? decryptKey(fallback) : null));
+    }
+
+    // ==================== 智能体自选通道 ====================
+
+    /**
+     * 智能体对话的路由结果。
+     *
+     * @param model  主通道上使用的模型（可能不在通道模型列表里，调用时再按通道默认模型兜底）
+     * @param notice 智能体选的通道当前不能用、已改用平台默认时给用户看的说明；正常时为空
+     */
+    public record AgentRoute(ResolvedRoute route, String model, String notice) {
+    }
+
+    /** 智能体能选的通道：已启用、配置了 Key、最近一次连通测试通过 */
+    public boolean isSelectable(LlmProvider provider) {
+        return provider != null && isReady(provider) && "SUCCESS".equalsIgnoreCase(provider.getLastProbeStatus());
+    }
+
+    private String unavailableReason(LlmProvider provider) {
+        if (!Boolean.TRUE.equals(provider.getEnabled())) {
+            return "未启用";
+        }
+        if (!hasKey(provider)) {
+            return "未配置 API Key";
+        }
+        if (provider.getLastProbeStatus() == null || provider.getLastProbeStatus().isBlank()) {
+            return "还没有做连通测试";
+        }
+        if (!"SUCCESS".equalsIgnoreCase(provider.getLastProbeStatus())) {
+            return "最近一次连通测试未通过";
+        }
+        return null;
+    }
+
+    /**
+     * 按智能体（或调试页草稿）选的通道解析路由。选的通道当前不能用时改用平台默认，并在 notice 里说明。
+     * 备用通道选了就用，不受平台「自动降级」开关影响；没选时按平台降级设置。
+     */
+    @Transactional
+    public Optional<AgentRoute> resolveAgentRoute(com.shimeta.model.AgentRouteChoice choice) {
+        String primaryId = choice != null ? blankToNull(choice.getPrimaryProviderId()) : null;
+        String fallbackId = choice != null ? blankToNull(choice.getFallbackProviderId()) : null;
+        String modelName = choice != null ? choice.getModelName() : null;
+        List<LlmProvider> all = providerRepository.findAllByOrderByBuiltinDescCreatedAtAsc();
+        List<String> notices = new ArrayList<>();
+
+        LlmProvider chosenPrimary = null;
+        if (primaryId != null) {
+            chosenPrimary = all.stream().filter(p -> primaryId.equals(p.getId())).findFirst().orElse(null);
+            if (chosenPrimary == null) {
+                notices.add("选择的主通道已被删除，本次使用平台默认通道");
+            } else if (!isSelectable(chosenPrimary)) {
+                notices.add("选择的主通道「" + chosenPrimary.getName() + "」" + unavailableReason(chosenPrimary)
+                        + "，本次使用平台默认通道");
+                chosenPrimary = null;
+            }
+        }
+        Optional<ResolvedRoute> platform = resolveRoute(chosenPrimary != null ? null : modelName);
+        LlmProvider primary = chosenPrimary != null ? chosenPrimary : platform.map(ResolvedRoute::primary).orElse(null);
+        if (primary == null) {
+            return Optional.empty();
+        }
+
+        LlmProvider fallback = null;
+        boolean fallbackChosen = false;
+        if (fallbackId != null) {
+            LlmProvider candidate = all.stream().filter(p -> fallbackId.equals(p.getId())).findFirst().orElse(null);
+            if (candidate == null) {
+                notices.add("选择的备用通道已被删除，本次按平台降级设置");
+            } else if (!isSelectable(candidate)) {
+                notices.add("选择的备用通道「" + candidate.getName() + "」" + unavailableReason(candidate)
+                        + "，本次按平台降级设置");
+            } else {
+                fallback = candidate;
+                fallbackChosen = true;
+            }
+        }
+        if (!fallbackChosen) {
+            fallback = platform.map(ResolvedRoute::fallback).orElse(null);
+        }
+        if (fallback != null && fallback.getId().equals(primary.getId())) {
+            fallback = null;
+        }
+
+        GatewayPolicy policy = ensurePolicy();
+        int timeout = firstPositive(primary.getTimeoutMs(), policy.getTimeoutMs(), 30000);
+        int retries = primary.getMaxRetries() != null
+                ? primary.getMaxRetries()
+                : (policy.getMaxRetries() != null ? policy.getMaxRetries() : 1);
+        ResolvedRoute route = new ResolvedRoute(primary, fallback, timeout, retries, decryptKey(primary),
+                fallback != null ? decryptKey(fallback) : null);
+        // 用的是自己选的主通道时按选的模型；改用了平台默认时模型名多半不在默认通道里，调用时会用通道默认模型
+        String model = chosenPrimary != null ? blankToNull(modelName) : modelName;
+        if (!notices.isEmpty()) {
+            log.warn("Agent route fallback: {}", String.join("；", notices));
+        }
+        return Optional.of(new AgentRoute(route, model, notices.isEmpty() ? null : String.join("；", notices)));
+    }
+
+    /**
+     * 保存智能体的通道选择前校验：选了的通道必须当前可选，主备不能相同。
+     * 模型不在主通道模型列表里时报错，避免发布后实际用的是另一个模型。
+     */
+    @Transactional
+    public void validateAgentChoice(String primaryId, String fallbackId, String modelName) {
+        String p = blankToNull(primaryId);
+        String f = blankToNull(fallbackId);
+        if (p != null && p.equals(f)) {
+            throw new IllegalArgumentException("主通道和备用通道不能是同一个");
+        }
+        for (String id : java.util.Arrays.asList(p, f)) {
+            if (id == null) {
+                continue;
+            }
+            LlmProvider provider = providerRepository.findById(id)
+                    .orElseThrow(() -> new IllegalArgumentException("选择的模型通道不存在，请刷新后重新选择"));
+            if (!isSelectable(provider)) {
+                throw new IllegalArgumentException("模型通道「" + provider.getName() + "」" + unavailableReason(provider)
+                        + "，不能选用");
+            }
+        }
+        if (p != null && modelName != null && !modelName.isBlank()) {
+            LlmProvider provider = providerRepository.findById(p).orElseThrow();
+            if (parseModels(provider).stream().noneMatch(m -> m.equalsIgnoreCase(modelName.trim()))) {
+                throw new IllegalArgumentException("模型「" + modelName.trim() + "」不在通道「" + provider.getName() + "」的模型列表中");
+            }
+        }
+    }
+
+    /** 调试页选通道用：所有已启用的通道（标出能否选）和平台默认路由 */
+    @Transactional
+    public com.shimeta.model.ChatRouteOptions chatRouteOptions() {
+        List<com.shimeta.model.ChatRouteOptions.Channel> channels = new ArrayList<>();
+        for (LlmProvider provider : providerRepository.findAllByOrderByBuiltinDescCreatedAtAsc()) {
+            if (!Boolean.TRUE.equals(provider.getEnabled())) {
+                continue;
+            }
+            channels.add(new com.shimeta.model.ChatRouteOptions.Channel(
+                    provider.getId(),
+                    provider.getName(),
+                    provider.getVendor(),
+                    provider.getDefaultModel(),
+                    parseModels(provider),
+                    supportsTools(provider),
+                    provider.getContextWindow(),
+                    isSelectable(provider),
+                    unavailableReason(provider),
+                    provider.getLastProbeStatus(),
+                    provider.getLastProbeAt()));
+        }
+        Optional<ResolvedRoute> platform = resolveRoute(null);
+        com.shimeta.model.ChatRouteOptions.PlatformRoute platformRoute = platform
+                .map(r -> new com.shimeta.model.ChatRouteOptions.PlatformRoute(
+                        r.primary().getId(),
+                        r.primary().getName(),
+                        r.primary().getDefaultModel(),
+                        r.fallback() != null ? r.fallback().getId() : null,
+                        r.fallback() != null ? r.fallback().getName() : null))
+                .orElse(null);
+        return new com.shimeta.model.ChatRouteOptions(channels, platformRoute);
+    }
+
+    /** 调试页「测试」的最短间隔（每个用户），避免连点产生调用费用 */
+    static final long CHANNEL_TEST_INTERVAL_MS = 3000;
+    private final Map<String, Long> lastChannelTestAt = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * 用当前配置真实调用一次模型，看现在能不能用。只返回结果，不改动通道的测试状态（那是管理员在模型网关里维护的）。
+     *
+     * @param userKey 限制调用频率用的用户标识
+     */
+    public com.shimeta.model.ChatRouteOptions.TestResult testChannel(String providerId, String model, String userKey) {
+        LlmProvider provider = providerRepository.findById(providerId)
+                .orElseThrow(() -> new IllegalArgumentException("未找到该模型通道"));
+        if (!isSelectable(provider)) {
+            throw new IllegalArgumentException("模型通道「" + provider.getName() + "」" + unavailableReason(provider));
+        }
+        long now = System.currentTimeMillis();
+        String key = (userKey == null ? "" : userKey);
+        Long last = lastChannelTestAt.get(key);
+        if (last != null && now - last < CHANNEL_TEST_INTERVAL_MS) {
+            throw new IllegalStateException("测试太频繁，请稍后再试");
+        }
+        lastChannelTestAt.put(key, now);
+
+        String usedModel = model != null && parseModels(provider).stream().anyMatch(m -> m.equalsIgnoreCase(model.trim()))
+                ? model.trim() : provider.getDefaultModel();
+        ChatGeneration generation = new ChatGeneration();
+        generation.setTemperature(0.0);
+        generation.setMaxTokens(16);
+        generation.setThinking(false);
+        generation.setProviderProtocol(provider.getProtocol());
+        List<Map<String, Object>> messages = List.of(Map.of("role", "user", "content", "请只回复：OK"));
+        int timeout = Math.min(firstPositive(provider.getTimeoutMs(), 30000), 30000);
+        long start = System.currentTimeMillis();
+        try {
+            OpenAiCompatibleClient.ChatResult result = provider.getProtocol() == LlmProtocolType.CUSTOM_HTTP
+                    ? customHttpClient.chat(provider, messages, generation, timeout)
+                    : openAiClient.chatWithTools(provider.getBaseUrl(), decryptKey(provider), usedModel,
+                    parseCustomHeaders(provider.getCustomConfig()), false, messages, List.of(), null, generation, timeout, 1);
+            long latency = System.currentTimeMillis() - start;
+            String reply = result != null && result.content() != null ? result.content().trim() : "";
+            if (reply.length() > 60) {
+                reply = reply.substring(0, 60) + "…";
+            }
+            String message = reply.isEmpty()
+                    ? "通道可以调用，但模型没有返回正文（可能被思考或长度限制占满）"
+                    : "可以使用，用时 " + latency + " ms";
+            return new com.shimeta.model.ChatRouteOptions.TestResult(true, message, latency, usedModel, reply);
+        } catch (Exception e) {
+            long latency = System.currentTimeMillis() - start;
+            String reason = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            if (reason.length() > 300) {
+                reason = reason.substring(0, 300) + "…";
+            }
+            log.info("Channel test failed: channel={}, model={}, reason={}", provider.getName(), usedModel, reason);
+            return new com.shimeta.model.ChatRouteOptions.TestResult(false, reason, latency, usedModel, null);
+        }
     }
 
     public String decryptKey(LlmProvider provider) {

@@ -99,6 +99,20 @@ public class ChatRequest {
         this.enabledTools = enabledTools;
     }
 
+    /**
+     * 调试页本窗口的通道选择（未发布的草稿），只对这次请求生效；为空时用智能体已发布的设置。
+     * 只有控制台调试接口接收，开放接口自己构造请求，不会带它
+     */
+    private AgentRouteChoice routeDraft;
+
+    public AgentRouteChoice getRouteDraft() {
+        return routeDraft;
+    }
+
+    public void setRouteDraft(AgentRouteChoice routeDraft) {
+        this.routeDraft = routeDraft;
+    }
+
     public java.util.Map<String, Object> getToolConfigs() {
         return toolConfigs;
     }

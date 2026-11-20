@@ -81,6 +81,27 @@ public class ChatResponse {
         this.completionTokens = completionTokens;
     }
 
+    /** 本次实际使用的主通道名称 */
+    private String channel;
+    /** 智能体选的通道不能用、已改用平台默认时的说明 */
+    private String routeNotice;
+
+    public String getChannel() {
+        return channel;
+    }
+
+    public void setChannel(String channel) {
+        this.channel = channel;
+    }
+
+    public String getRouteNotice() {
+        return routeNotice;
+    }
+
+    public void setRouteNotice(String routeNotice) {
+        this.routeNotice = routeNotice;
+    }
+
     public String getFailoverFrom() {
         return failoverFrom;
     }

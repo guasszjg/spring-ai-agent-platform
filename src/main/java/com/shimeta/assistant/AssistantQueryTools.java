@@ -599,11 +599,24 @@ public class AssistantQueryTools {
     }
 
     private Map<String, Object> checkChannel(Agent agent, CurrentActor actor) {
-        var routeOpt = gatewayService.resolveRoute(agent.getModelName());
+        com.shimeta.model.AgentRouteChoice choice = com.shimeta.model.AgentRouteChoice.of(agent);
+        String routeNotice = null;
+        java.util.Optional<LlmGatewayService.ResolvedRoute> routeOpt;
+        if (choice.isCustom()) {
+            var agentRoute = gatewayService.resolveAgentRoute(choice);
+            routeOpt = agentRoute.map(LlmGatewayService.AgentRoute::route);
+            routeNotice = agentRoute.map(LlmGatewayService.AgentRoute::notice).orElse(null);
+        } else {
+            routeOpt = gatewayService.resolveRoute(agent.getModelName());
+        }
         if (routeOpt.isEmpty()) {
             return check("模型通道", "FAIL", "没有可用的大模型通道（未启用或未配置 API Key）",
                     actor.isSuperAdmin() ? "到「模型网关 → 大语言模型」启用一个通道并填写 API Key"
                             : "联系超级管理员在「模型网关」中配置可用通道");
+        }
+        if (routeNotice != null) {
+            return check("模型通道", "WARN", routeNotice,
+                    "到智能体调试页重新选择模型通道并发布，或选「跟随平台默认」");
         }
         LlmProvider primary = routeOpt.get().primary();
         String effectiveModel = effectiveModel(primary, agent.getModelName());

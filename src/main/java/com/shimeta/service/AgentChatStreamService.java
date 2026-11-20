@@ -86,6 +86,8 @@ public class AgentChatStreamService {
                 end.put("knowledgeSearches", response.getKnowledgeSearches());
                 end.put("images", response.getImages());
                 end.put("failoverFrom", response.getFailoverFrom());
+            end.put("channel", response.getChannel());
+            end.put("routeNotice", response.getRouteNotice());
                 end.put("conversationId", response.getConversationId());
                 end.put("degraded", Boolean.TRUE.equals(response.getDegraded()));
                 send(emitter, closed, "message_end", end);

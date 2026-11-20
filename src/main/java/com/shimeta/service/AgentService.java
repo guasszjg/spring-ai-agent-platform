@@ -213,6 +213,11 @@ public class AgentService {
         agent.setMemoryTurns(agent.resolveMemoryTurns());
         agent.setThinkingMode(Agent.normalizeThinkingMode(agent.getThinkingMode()));
         agent.setKnowledgeMode(Agent.normalizeKnowledgeMode(agent.getKnowledgeMode()));
+        agent.setPrimaryProviderId(blankToNull(agent.getPrimaryProviderId()));
+        agent.setFallbackProviderId(blankToNull(agent.getFallbackProviderId()));
+        if (gatewayService != null && (agent.getPrimaryProviderId() != null || agent.getFallbackProviderId() != null)) {
+            gatewayService.validateAgentChoice(agent.getPrimaryProviderId(), agent.getFallbackProviderId(), agent.getModelName());
+        }
         Agent saved = agentRepository.save(agent);
         if (promptVersionService != null) {
             promptVersionService.recordCreated(saved, AgentPromptVersionService.SOURCE_CREATE, agent.getPromptChangeNote(), actor);
@@ -261,6 +266,7 @@ public class AgentService {
         if (agentUpdate.getAvatar() != null) existing.setAvatar(agentUpdate.getAvatar());
         if (agentUpdate.getCategory() != null) existing.setCategory(agentUpdate.getCategory());
         if (agentUpdate.getDescription() != null) existing.setDescription(agentUpdate.getDescription());
+        applyRouteChoice(existing, agentUpdate);
         if (agentUpdate.getModelName() != null) existing.setModelName(agentUpdate.getModelName());
         String promptBefore = existing.getSystemPrompt();
         if (agentUpdate.getSystemPrompt() != null) existing.setSystemPrompt(agentUpdate.getSystemPrompt());
@@ -376,6 +382,8 @@ public class AgentService {
         clone.setMemoryTurns(source.resolveMemoryTurns());
         clone.setThinkingMode(Agent.normalizeThinkingMode(source.getThinkingMode()));
         clone.setKnowledgeMode(Agent.normalizeKnowledgeMode(source.getKnowledgeMode()));
+        clone.setPrimaryProviderId(source.getPrimaryProviderId());
+        clone.setFallbackProviderId(source.getFallbackProviderId());
         clone.setStatus(source.getStatus() != null ? source.getStatus() : AgentStatus.RUNNING);
         if (source.getTags() != null) {
             clone.setTags(new ArrayList<>(source.getTags()));
@@ -496,6 +504,40 @@ public class AgentService {
 
             agentRepository.save(agent);
         });
+    }
+
+    /**
+     * 更新智能体的通道选择（调试页「发布上线」时带上）。字段不传不改；传空字符串改回跟随平台默认。
+     * 只有选择发生变化时才校验通道是否可选：已发布的通道后来不可用了，不影响发布其它修改（对话时会自动改用平台默认）
+     */
+    private void applyRouteChoice(Agent existing, Agent update) {
+        if (update.getPrimaryProviderId() == null && update.getFallbackProviderId() == null) {
+            return;
+        }
+        String primary = update.getPrimaryProviderId() != null
+                ? blankToNull(update.getPrimaryProviderId()) : existing.getPrimaryProviderId();
+        String fallback = update.getFallbackProviderId() != null
+                ? blankToNull(update.getFallbackProviderId()) : existing.getFallbackProviderId();
+        String model = update.getModelName() != null ? update.getModelName() : existing.getModelName();
+        boolean changed = !java.util.Objects.equals(primary, existing.getPrimaryProviderId())
+                || !java.util.Objects.equals(fallback, existing.getFallbackProviderId())
+                || (primary != null && !java.util.Objects.equals(model, existing.getModelName()));
+        if (changed && gatewayService != null) {
+            gatewayService.validateAgentChoice(primary, fallback, model);
+        }
+        existing.setPrimaryProviderId(primary);
+        existing.setFallbackProviderId(fallback);
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private LlmGatewayService gatewayService;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setGatewayService(LlmGatewayService gatewayService) {
+        this.gatewayService = gatewayService;
     }
 
     public void recordExecutedModel(String id, String model) {

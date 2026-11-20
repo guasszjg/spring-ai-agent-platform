@@ -129,6 +129,22 @@ public class AiChatService {
         int estimatedPromptTokens;
         /** 最近一次通道调用失败的原因（如模型服务返回的错误），用于告诉用户具体出了什么问题 */
         String lastError;
+        /** 本次路由到的主通道名称 */
+        String channel;
+        /** 智能体选的通道不能用、已改用平台默认时的说明 */
+        String routeNotice;
+    }
+
+    /**
+     * 解析智能体这次对话的路由。没选自己的通道时和以前一样走平台默认路由；
+     * 选了时按选择解析，选的通道不能用会改用平台默认并带上说明
+     */
+    private java.util.Optional<LlmGatewayService.AgentRoute> resolveAgentRoute(com.shimeta.model.AgentRouteChoice choice) {
+        if (choice == null || !choice.isCustom()) {
+            String model = choice != null ? choice.getModelName() : null;
+            return gatewayService.resolveRoute(model).map(route -> new LlmGatewayService.AgentRoute(route, model, null));
+        }
+        return gatewayService.resolveAgentRoute(choice);
     }
 
     /** 通道全部失败时给用户看的说明：带上通道返回的具体原因 */
@@ -255,8 +271,13 @@ public class AiChatService {
             }
         };
 
+        // 调试页带了本窗口的通道草稿就用草稿，否则用智能体已发布的选择
+        boolean draftRoute = request.getRouteDraft() != null;
+        com.shimeta.model.AgentRouteChoice routeChoice = draftRoute
+                ? request.getRouteDraft() : com.shimeta.model.AgentRouteChoice.of(agent);
+
         try {
-            OpenAiCompatibleClient.ChatResult routed = invokeViaGateway(agent, userMessage, request.getHistory(),
+            OpenAiCompatibleClient.ChatResult routed = invokeViaGateway(agent, routeChoice, userMessage, request.getHistory(),
                     request.getGeneration(), request.getPrompt(), tools, request.getEnabledTools(), routedModel, trackedSink, trace);
             if (routed != null && routed.content() != null && !routed.content().isBlank()) {
                 reply = routed.content();
@@ -345,8 +366,9 @@ public class AiChatService {
         int tokens = promptTokens + completionTokens;
         agentService.recordInvocation(agent.getId(), latencyMs, promptTokens, completionTokens, realModelReply,
                 trace.failoverFrom != null, cachedPromptTokens);
-        // 备用通道只是临时顶替，不能把智能体自己的模型设置改成备用模型
-        if (realModelReply && trace.failoverFrom == null) {
+        // 备用通道只是临时顶替，不能把智能体自己的模型设置改成备用模型；
+        // 调试草稿和智能体自选的通道都由用户明确指定了模型，不能被这里改写
+        if (realModelReply && trace.failoverFrom == null && !draftRoute && !routeChoice.isCustom()) {
             agentService.recordExecutedModel(agent.getId(), executionModel);
         }
 
@@ -366,6 +388,8 @@ public class AiChatService {
         response.setCachedPromptTokens(cachedPromptTokens);
         response.setCompletionTokens(completionTokens);
         response.setFailoverFrom(realModelReply ? trace.failoverFrom : null);
+        response.setChannel(trace.channel);
+        response.setRouteNotice(trace.routeNotice);
         response.setDegraded(!realModelReply);
         response.setSource(realModelReply ? "MODEL" : "SIMULATION");
         AgentConversation conversation = conversationService.appendTurn(
@@ -461,14 +485,19 @@ public class AiChatService {
         return response;
     }
 
-    private OpenAiCompatibleClient.ChatResult invokeViaGateway(Agent agent, String userMessage,
+    private OpenAiCompatibleClient.ChatResult invokeViaGateway(Agent agent, com.shimeta.model.AgentRouteChoice routeChoice,
+                                                               String userMessage,
                                                                List<ChatMessage> history, ChatGeneration generation,
                                                                String livePrompt, List<java.util.Map<String, Object>> tools,
                                                                List<String> enabledTools,
                                                                String[] routedModel, StreamSink sink, RouteTrace trace) {
         ChatGeneration effective = generation != null ? generation : fromAgent(agent);
-        return gatewayService.resolveRoute(agent.getModelName()).map(route -> {
+        return resolveAgentRoute(routeChoice).map(agentRoute -> {
+            LlmGatewayService.ResolvedRoute route = agentRoute.route();
+            String requestedModel = agentRoute.model();
             trace.routed = true;
+            trace.channel = route.primary().getName();
+            trace.routeNotice = agentRoute.notice();
             com.shimeta.model.LlmProvider fallback = route.fallback() != null && gatewayService.hasKey(route.fallback())
                     ? route.fallback() : null;
             // 通道不支持工具调用时不发工具定义，也不在提示词里写工具指引；主备通道分别判断
@@ -546,7 +575,7 @@ public class AiChatService {
                     .mapToInt(m -> estimateTokens(String.valueOf(m.get("content"))))
                     .sum() + estimateTokens(toolsJson(primaryToolDefs));
             OpenAiCompatibleClient.ChatResult result = callProvider(route.primary(), route.primaryKey(),
-                    agent.getModelName(), callGeneration, route.timeoutMs(), route.maxRetries(), messages, primaryToolDefs,
+                    requestedModel, callGeneration, route.timeoutMs(), route.maxRetries(), messages, primaryToolDefs,
                     routedModel, sink, trace);
             if (result != null) {
                 return result;
@@ -555,9 +584,11 @@ public class AiChatService {
                 log.warn("Primary LLM channel [{}] failed, switching to fallback [{}]",
                         route.primary().getName(), fallback.getName());
                 trace.failoverFrom = route.primary().getName();
+                // 自己选的备用通道用它的默认模型（选的模型属于主通道）；跟随平台时和以前一样按模型名匹配
+                boolean chosenFallback = routeChoice != null && fallback.getId().equals(routeChoice.getFallbackProviderId());
                 return callProvider(fallback, route.fallbackKey(),
-                        agent.getModelName(), callGeneration, route.timeoutMs(), route.maxRetries(), messages, fallbackToolDefs,
-                        routedModel, sink, trace);
+                        chosenFallback ? null : requestedModel, callGeneration, route.timeoutMs(), route.maxRetries(),
+                        messages, fallbackToolDefs, routedModel, sink, trace);
             }
             return null;
         }).orElse(null);

@@ -124,6 +124,40 @@ class AiChatServiceUsageStatsTest {
     }
 
     @Test
+    @DisplayName("调试页带了通道草稿：按草稿路由，返回通道名和改用默认的说明，不改写智能体模型")
+    void draftRouteIsUsedAndNotPersisted() {
+        LlmProvider mine = provider("我的通道", "qwen-max");
+        when(gatewayService.resolveAgentRoute(any())).thenReturn(Optional.of(new LlmGatewayService.AgentRoute(
+                new LlmGatewayService.ResolvedRoute(mine, null, 1000, 0, "k3", null), "qwen-max", "备用通道不可用")));
+        when(openAiClient.chatWithTools(anyString(), eq("k3"), eq("qwen-max"), any(), anyBoolean(), any(), any(), any(), any(), anyInt(), anyInt()))
+                .thenReturn(new OpenAiCompatibleClient.ChatResult("好的", 10, 2, 12));
+        ChatRequest request = request();
+        request.setRouteDraft(new com.shimeta.model.AgentRouteChoice("我的通道", "x", "qwen-max"));
+
+        ChatResponse response = service.chat(request);
+
+        assertThat(response.getModel()).isEqualTo("qwen-max");
+        assertThat(response.getChannel()).isEqualTo("我的通道");
+        assertThat(response.getRouteNotice()).isEqualTo("备用通道不可用");
+        verify(gatewayService, never()).resolveRoute(any());
+        verify(agentService, never()).recordExecutedModel(any(), any());
+    }
+
+    @Test
+    @DisplayName("草稿选「跟随平台默认」：走平台默认路由，也不改写智能体模型")
+    void draftFollowingPlatformUsesDefaultRoute() {
+        blockingCall("k1").thenReturn(new OpenAiCompatibleClient.ChatResult("好的", 10, 2, 12));
+        ChatRequest request = request();
+        request.setRouteDraft(new com.shimeta.model.AgentRouteChoice(null, null, "glm-5.3-flash"));
+
+        ChatResponse response = service.chat(request);
+
+        assertThat(response.getChannel()).isEqualTo("智谱 GLM");
+        verify(gatewayService, never()).resolveAgentRoute(any());
+        verify(agentService, never()).recordExecutedModel(any(), any());
+    }
+
+    @Test
     @DisplayName("主备通道都失败：抛错前记一次失败调用（否则成功率偏高）")
     void totalFailureIsRecorded() {
         blockingCall("k1").thenThrow(new IllegalStateException("HTTP 500"));

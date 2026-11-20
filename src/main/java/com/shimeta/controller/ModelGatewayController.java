@@ -82,6 +82,34 @@ public class ModelGatewayController {
         return ResponseEntity.ok(ApiResponse.ok(gatewayService.activeRoute()));
     }
 
+    /** 调试页选择模型通道：已启用通道及能否选用、平台默认路由。所有登录用户可查看，不含地址和 Key */
+    @GetMapping("/chat-route-options")
+    public ResponseEntity<ApiResponse<com.shimeta.model.ChatRouteOptions>> chatRouteOptions() {
+        return ResponseEntity.ok(ApiResponse.ok(gatewayService.chatRouteOptions()));
+    }
+
+    /** 调试页测试某个可选通道现在能不能用：真实调用一次模型，不改动通道的测试状态 */
+    @PostMapping("/chat-route-options/{id}/test")
+    public ResponseEntity<ApiResponse<com.shimeta.model.ChatRouteOptions.TestResult>> testChatRoute(
+            @PathVariable String id, @RequestBody(required = false) Map<String, String> body) {
+        CurrentActor actor = CurrentActor.get();
+        if (actor == null || actor.isViewer()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ApiResponse.error("权限不足：只读观察员不能测试模型通道"));
+        }
+        String model = body != null ? body.get("model") : null;
+        try {
+            var result = gatewayService.testChannel(id, model, actor.getUserId());
+            return ResponseEntity.ok(ApiResponse.ok(result.success() ? "通道可以使用" : "通道当前不可用", result));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            HttpStatus status = e.getMessage() != null && e.getMessage().contains("未找到")
+                    ? HttpStatus.NOT_FOUND : HttpStatus.BAD_REQUEST;
+            return ResponseEntity.status(status).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
     @GetMapping("/catalog")
     public ResponseEntity<ApiResponse<List<LlmVendorCatalog.VendorPreset>>> catalog() {
         return ResponseEntity.ok(ApiResponse.ok(LlmVendorCatalog.all()));

@@ -83,6 +83,15 @@ public class Agent {
      */
     @Column(name = "knowledge_mode", length = 16)
     private String knowledgeMode;
+    /**
+     * 智能体自选的主通道（模型网关通道 ID），配合 modelName 指定模型；为空时跟随平台默认路由。
+     * 更新请求里传空字符串表示改回跟随平台默认，不传则不改动
+     */
+    @Column(name = "primary_provider_id", length = 64)
+    private String primaryProviderId;
+    /** 智能体自选的备用通道；为空时跟随平台的降级设置。更新规则同 primaryProviderId */
+    @Column(name = "fallback_provider_id", length = 64)
+    private String fallbackProviderId;
     /** 已废弃：早期按智能体生成的明文 Key。V23 起清空且不再生成，开放调用一律使用「开放凭证」（只存哈希）。保留字段仅为兼容旧库结构 */
     @Column(unique = true, length = 128)
     private String apiKey;
@@ -338,6 +347,22 @@ public class Agent {
 
     public static final String KNOWLEDGE_PRE_RETRIEVE = "PRE_RETRIEVE";
     public static final String KNOWLEDGE_AGENTIC = "AGENTIC";
+
+    public String getPrimaryProviderId() {
+        return primaryProviderId;
+    }
+
+    public void setPrimaryProviderId(String primaryProviderId) {
+        this.primaryProviderId = primaryProviderId;
+    }
+
+    public String getFallbackProviderId() {
+        return fallbackProviderId;
+    }
+
+    public void setFallbackProviderId(String fallbackProviderId) {
+        this.fallbackProviderId = fallbackProviderId;
+    }
 
     public String getKnowledgeMode() {
         return knowledgeMode;
