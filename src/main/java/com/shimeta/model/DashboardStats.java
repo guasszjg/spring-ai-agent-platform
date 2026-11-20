@@ -14,6 +14,8 @@ public class DashboardStats {
     private double successRate;
     private Map<String, Long> categoryDistribution;
     private Map<String, Long> modelDistribution;
+    /** 统计区间内按模型聚合的调用/回复次数（含智能体对话与 AI 助手回复） */
+    private Map<String, Long> modelCallDistribution;
     private long promptTokens;
     private long completionTokens;
     private double estimatedCostUsd;
@@ -145,6 +147,14 @@ public class DashboardStats {
 
     public void setModelDistribution(Map<String, Long> modelDistribution) {
         this.modelDistribution = modelDistribution;
+    }
+
+    public Map<String, Long> getModelCallDistribution() {
+        return modelCallDistribution;
+    }
+
+    public void setModelCallDistribution(Map<String, Long> modelCallDistribution) {
+        this.modelCallDistribution = modelCallDistribution;
     }
 
     public long getPromptTokens() {

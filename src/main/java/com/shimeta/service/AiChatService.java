@@ -158,7 +158,7 @@ public class AiChatService {
     }
 
     /** 粗略估算 Token：中日韩字符每字约 1 个，其余每 4 个字符约 1 个。只在通道没有返回用量时使用 */
-    static int estimateTokens(String text) {
+    public static int estimateTokens(String text) {
         if (text == null || text.isEmpty()) {
             return 0;
         }

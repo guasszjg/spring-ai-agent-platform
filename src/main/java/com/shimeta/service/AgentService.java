@@ -636,9 +636,16 @@ public class AgentService {
         stats.setPromptTokens(promptTokens);
         stats.setCompletionTokens(completionTokens);
         long totalTokens = promptTokens + completionTokens;
-        Map<String, Long> modelTokens = new LinkedHashMap<>(conversationService.tokenUsageByModel(null, wholePlatform ? null : accessibleIds, start, end));
-        assistantUsage.getTokensByModel().forEach((model, tokens) -> modelTokens.merge(model, tokens, Long::sum));
+        Map<String, Long> modelTokensRaw = new LinkedHashMap<>(conversationService.tokenUsageByModel(null, wholePlatform ? null : accessibleIds, start, end));
+        assistantUsage.getTokensByModel().forEach((model, tokens) -> modelTokensRaw.merge(model, tokens, Long::sum));
+        Map<String, Long> modelTokens = sortMapDesc(modelTokensRaw);
         stats.setModelDistribution(modelTokens);
+
+        Map<String, Long> agentCallsByModel = conversationService.callCountByModel(null, wholePlatform ? null : accessibleIds, start, end);
+        Map<String, Long> modelCallsRaw = new LinkedHashMap<>(agentCallsByModel != null ? agentCallsByModel : Map.of());
+        assistantUsage.getCallsByModel().forEach((model, calls) -> modelCallsRaw.merge(model, calls, Long::sum));
+        stats.setModelCallDistribution(sortMapDesc(modelCallsRaw));
+
         stats.setEstimatedCostCny(LlmPriceCatalog.estimateCny(modelTokens, promptTokens, completionTokens));
 
         long prevTokens = previous.stream()
@@ -831,6 +838,18 @@ public class AgentService {
             return agent.getModelName();
         }
         return "未指定";
+    }
+
+    private static Map<String, Long> sortMapDesc(Map<String, Long> source) {
+        if (source == null || source.isEmpty()) {
+            return new LinkedHashMap<>();
+        }
+        Map<String, Long> sorted = new LinkedHashMap<>();
+        source.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue(Comparator.reverseOrder())
+                        .thenComparing(Map.Entry.comparingByKey()))
+                .forEach(e -> sorted.put(e.getKey(), e.getValue()));
+        return sorted;
     }
 
     private int resolveRangeDays(String range) {

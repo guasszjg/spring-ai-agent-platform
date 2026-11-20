@@ -383,4 +383,60 @@ class AssistantServiceTest {
         assertFalse(AssistantService.looksLikeToolsRejected("HTTP 500 tool server crashed"));
         assertFalse(AssistantService.looksLikeToolsRejected(null));
     }
+
+    @Test
+    void readOnlyQuestionsOmitWriteToolsToSaveContext() {
+        assertFalse(AssistantService.mayNeedWriteTools("技能库里有哪些技能？", List.of()));
+        assertFalse(AssistantService.mayNeedWriteTools("使用最多的模型是哪个？", List.of()));
+        assertTrue(AssistantService.mayNeedWriteTools("帮我新建一个售后客服智能体", List.of()));
+        assertTrue(AssistantService.mayNeedWriteTools("名字改成退货助手", List.of()));
+        assertTrue(AssistantService.mayNeedWriteTools("那刚才那个呢", List.of("「创建智能体」已确认")));
+
+        when(openAiClient.streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(), any(), any(), any(), anyInt(), any(), any()))
+                .thenReturn(new OpenAiCompatibleClient.StreamResult("当前有 2 个技能", List.of(), 100, 20));
+
+        service.converse(new AssistantChatRequest(null, "技能库里有哪些技能？", "AGENT"), actor, sink);
+
+        ArgumentCaptor<List<Map<String, Object>>> toolsCap = ArgumentCaptor.forClass(List.class);
+        verify(openAiClient).streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(),
+                any(), toolsCap.capture(), any(), anyInt(), any(), any());
+        String sentTools = String.valueOf(toolsCap.getValue());
+        assertTrue(sentTools.contains("list_agents"));
+        assertFalse(sentTools.contains("create_agent"));
+    }
+
+    @Test
+    void smallContextWindowTrimsOldestHistoryKeepingSystemAndQuestion() {
+        LlmProvider ollama = new LlmProvider();
+        ollama.setProtocol(com.shimeta.model.LlmProtocolType.OLLAMA);
+        assertEquals(AssistantService.OLLAMA_DEFAULT_CONTEXT_WINDOW, AssistantService.effectiveContextWindow(ollama));
+
+        List<Map<String, Object>> base = new ArrayList<>();
+        base.add(Map.of("role", "system", "content", "系统提示"));
+        for (int i = 0; i < 6; i++) {
+            base.add(Map.of("role", "user", "content", "历史提问" + i + "：" + "长文本内容".repeat(120)));
+            base.add(Map.of("role", "assistant", "content", "历史回答" + i + "：" + "详细分析内容".repeat(120)));
+        }
+        base.add(Map.of("role", "user", "content", "技能库里有哪些技能？"));
+
+        List<Map<String, Object>> fitted = service.fitMessagesForWindow(base, List.of(), 4096);
+
+        assertTrue(fitted.size() < base.size(), "超长历史应被裁剪");
+        assertEquals("系统提示", fitted.get(0).get("content"));
+        assertEquals("技能库里有哪些技能？", fitted.get(fitted.size() - 1).get("content"));
+        if (fitted.size() > 2) {
+            assertEquals("user", fitted.get(1).get("role"));
+        }
+    }
+
+    @Test
+    void selectReadToolsFocusesOnRelevantDomainForSmallModels() {
+        assertEquals(java.util.Set.of("list_skills"), AssistantService.selectReadTools("技能库里有哪些技能？", null));
+        assertEquals(java.util.Set.of("list_mcp_servers"), AssistantService.selectReadTools("平台有哪些 MCP 服务？", null));
+        var usageTools = AssistantService.selectReadTools("使用最多的模型是哪个？", null);
+        assertTrue(usageTools.contains("get_usage_summary"));
+        assertTrue(usageTools.size() <= 3);
+        // 泛问/未指明模块时返回 null（下发全量只读工具）
+        assertEquals(null, AssistantService.selectReadTools("「售后客服」用的是什么模型？", null));
+    }
 }

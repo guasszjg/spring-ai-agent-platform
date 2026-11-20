@@ -69,6 +69,12 @@ public class AssistantService {
     static final String CARD_CLAIM_NOTICE = "注意：本轮实际没有生成任何操作卡片，上面关于\"卡片已生成\"的说法有误。如需创建或修改，请让助手重新生成。";
     private static final java.util.regex.Pattern CARD_CLAIM = java.util.regex.Pattern.compile(
             "(已|已经)(为你|为您|帮你|帮您)?生成[^。\n]{0,12}卡片|卡片[^。\n]{0,6}已(经)?生成");
+    /** 宁宽勿严的写操作意图判断：纯查询时不挂载 7 个写工具与冗长卡片规则，避免 4096 等小上下文窗口溢出 */
+    private static final java.util.regex.Pattern WRITE_INTENT = java.util.regex.Pattern.compile(
+            "(?i)(创建|新建|建一|建个|加一|添加|新增|修改|改成|改为|更新|编辑|调整|调成|换成|绑定|解绑|关联|取消关联|"
+                    + "停用|启用|开启|关闭|暂停|发布|上线|下线|签发|生成|凭证|api\\s*key|apikey|faq|卡片|套用|重命名|删除|移除|撤)");
+    /** Ollama OpenAI 兼容接口未配置 contextWindow 时的保守默认窗口，避免输入顶爆 4096 返回空内容 */
+    static final int OLLAMA_DEFAULT_CONTEXT_WINDOW = 4096;
 
     private final LlmGatewayService gatewayService;
     private final OpenAiCompatibleClient openAiClient;
@@ -178,11 +184,15 @@ public class AssistantService {
         conversationService.append(conversation, userMessage);
         sink.send("start", Map.of("conversationId", conversation.getId()));
 
+        List<String> actionNotes = actionService.statusNotes(conversation.getId());
+        boolean agentMode = AssistantChatRequest.MODE_AGENT.equals(mode);
+        boolean includeWrite = agentMode && mayNeedWriteTools(effectiveMessage, actionNotes);
+        java.util.Set<String> focusedReadTools = (agentMode && !includeWrite && history.isEmpty())
+                ? selectReadTools(effectiveMessage, request.context()) : null;
         String system = (AssistantChatRequest.MODE_CHAT.equals(mode)
                 ? AssistantPrompts.chatMode() + docsContext(effectiveMessage)
-                : AssistantPrompts.agentMode(actor)) + pageContext(request.context(), actor);
-        List<Map<String, Object>> messages = buildMessages(system, history,
-                actionService.statusNotes(conversation.getId()), effectiveMessage);
+                : AssistantPrompts.agentMode(actor, includeWrite)) + pageContext(request.context(), actor);
+        List<Map<String, Object>> messages = buildMessages(system, history, actionNotes, effectiveMessage);
 
         ToolContext toolContext = ToolContext.of(actor, conversation.getId());
         Turn turn = new Turn(contentGuardService.createStreamingGuard(policy), sink);
@@ -191,7 +201,7 @@ public class AssistantService {
             turn.degraded = true;
             turn.emit(NO_CHANNEL_REPLY);
         } else {
-            runWithFailover(route.get(), messages, AssistantChatRequest.MODE_AGENT.equals(mode), toolContext, turn, sink);
+            runWithFailover(route.get(), messages, agentMode, includeWrite, focusedReadTools, toolContext, turn, sink);
         }
         turn.finish();
         if (AssistantChatRequest.MODE_AGENT.equals(mode) && toolContext.createdActions().isEmpty()
@@ -309,7 +319,8 @@ public class AssistantService {
 
     /** 主通道按策略重试；仍失败且尚未向用户输出任何内容时切换到降级通道。 */
     private void runWithFailover(LlmGatewayService.AssistantRoute assistantRoute, List<Map<String, Object>> messages,
-                                 boolean agentMode, ToolContext toolContext, Turn turn, Sink sink) {
+                                 boolean agentMode, boolean includeWrite, java.util.Set<String> focusedReadTools,
+                                 ToolContext toolContext, Turn turn, Sink sink) {
         List<Channel> channels = new ArrayList<>();
         LlmGatewayService.ResolvedRoute route = assistantRoute.route();
         // 助手专用模型只作用于主通道；降级通道使用它自己的默认模型
@@ -322,7 +333,7 @@ public class AssistantService {
             for (int attempt = 0; attempt < attempts; attempt++) {
                 turn.model = channel.model();
                 try {
-                    runRounds(channel, route.timeoutMs(), messages, agentMode, toolContext, turn, sink);
+                    runRounds(channel, route.timeoutMs(), messages, agentMode, includeWrite, focusedReadTools, toolContext, turn, sink);
                     return;
                 } catch (RuntimeException e) {
                     log.warn("Assistant channel [{}] attempt {} failed: {}", channel.provider().getName(), attempt + 1, e.getMessage());
@@ -340,15 +351,20 @@ public class AssistantService {
     }
 
     private void runRounds(Channel channel, int timeoutMs, List<Map<String, Object>> baseMessages,
-                           boolean agentMode, ToolContext toolContext, Turn turn, Sink sink) {
+                           boolean agentMode, boolean includeWrite, java.util.Set<String> focusedReadTools,
+                           ToolContext toolContext, Turn turn, Sink sink) {
         CurrentActor actor = toolContext.actor();
-        List<Map<String, Object>> messages = new ArrayList<>(baseMessages);
+        Integer window = effectiveContextWindow(channel.provider());
+        List<Map<String, Object>> initialTools = agentMode
+                ? toolRegistry.definitions(actor, includeWrite, focusedReadTools) : null;
+        List<Map<String, Object>> messages = fitMessagesForWindow(baseMessages, initialTools, window);
         ChatGeneration generation = new ChatGeneration();
         generation.setTemperature(agentMode ? 0.3 : 0.5);
         int round = 0;
         while (round < MAX_ROUNDS && !sink.isCancelled() && !turn.blocked) {
             boolean offerTools = agentMode && !turn.toolsUnsupported && round < MAX_ROUNDS - 1;
-            List<Map<String, Object>> tools = offerTools ? toolRegistry.definitions(actor) : null;
+            List<Map<String, Object>> tools = offerTools
+                    ? toolRegistry.definitions(actor, includeWrite, focusedReadTools) : null;
             OpenAiCompatibleClient.StreamResult result;
             try {
                 result = callModel(channel, timeoutMs, messages, tools, generation, turn, sink);
@@ -379,23 +395,204 @@ public class AssistantService {
 
             for (OpenAiCompatibleClient.ToolCall call : result.toolCalls()) {
                 String label = toolRegistry.labelOf(call.name());
-                sink.send("tool", Map.of("id", call.id(), "name", call.name(), "label", label, "status", "running"));
+                String argSummary = summarizeToolArgs(call.arguments());
+                Map<String, Object> runningEvent = new LinkedHashMap<>();
+                runningEvent.put("id", call.id());
+                runningEvent.put("name", call.name());
+                runningEvent.put("label", label);
+                runningEvent.put("status", "running");
+                if (argSummary != null) {
+                    runningEvent.put("detail", argSummary);
+                }
+                sink.send("tool", runningEvent);
                 int actionsBefore = toolContext.createdActions().size();
                 AssistantToolRegistry.Outcome outcome = toolRegistry.execute(call.name(), call.arguments(), toolContext);
                 log.info("Assistant tool [{}] ok={} for user [{}]", call.name(), outcome.ok(), actor.getUsername());
-                sink.send("tool", Map.of("id", call.id(), "name", call.name(), "label", label,
-                        "status", outcome.ok() ? "done" : "failed"));
+                String resultSummary = summarizeToolOutcome(outcome, argSummary);
+                Map<String, Object> doneEvent = new LinkedHashMap<>();
+                doneEvent.put("id", call.id());
+                doneEvent.put("name", call.name());
+                doneEvent.put("label", label);
+                doneEvent.put("status", outcome.ok() ? "done" : "failed");
+                if (resultSummary != null) {
+                    doneEvent.put("detail", resultSummary);
+                }
+                sink.send("tool", doneEvent);
                 // 写工具生成了待确认操作：推送操作卡片
                 for (AssistantAction action : toolContext.createdActions().subList(actionsBefore, toolContext.createdActions().size())) {
                     sink.send("action", actionService.card(action));
                 }
-                turn.tools.add(Map.of("name", call.name(), "label", label, "ok", outcome.ok()));
+                Map<String, Object> toolRecord = new LinkedHashMap<>();
+                toolRecord.put("name", call.name());
+                toolRecord.put("label", label);
+                toolRecord.put("ok", outcome.ok());
+                if (resultSummary != null) {
+                    toolRecord.put("detail", resultSummary);
+                }
+                turn.tools.add(toolRecord);
                 toolContext.calls().add(new ToolContext.ToolCallRecord(call.name(), call.arguments(), outcome.ok()));
-                messages.add(Map.of("role", "tool", "tool_call_id", call.id(), "content", outcome.content()));
+                String toolContent = trimToolContentForWindow(outcome.content(), messages, tools, window);
+                messages.add(Map.of("role", "tool", "tool_call_id", call.id(), "content", toolContent));
             }
             turn.separateNextRound();
             round++;
         }
+    }
+
+    /** 判断本轮是否可能涉及写操作：纯查询问题不挂载 7 个写工具，节省约 1500 tokens 并提高选工具准确率 */
+    static boolean mayNeedWriteTools(String message, List<String> actionNotes) {
+        if (actionNotes != null && !actionNotes.isEmpty()) {
+            return true;
+        }
+        return message != null && WRITE_INTENT.matcher(message).find();
+    }
+
+    /**
+     * 单轮纯查询时按问题领域收窄只读工具集合（2–4 个），避免一次塞入 12 个工具导致本地小模型跳过工具调用而编造答案。
+     * 多域问题取并集；未命中明确领域或超过 6 个工具时返回 null（下发全量只读工具）。
+     */
+    static java.util.Set<String> selectReadTools(String message, Map<String, String> context) {
+        if (message == null || message.isBlank()) {
+            return null;
+        }
+        String text = message.toLowerCase();
+        java.util.Set<String> selected = new java.util.LinkedHashSet<>();
+
+        if (text.contains("技能") || text.contains("skill")) {
+            selected.add("list_skills");
+        }
+        if (text.contains("mcp")) {
+            selected.add("list_mcp_servers");
+        }
+        if (text.matches(".*(用量|成本|token|花费|花了|排行|最多|分布|统计|调用量|调用次数).*")) {
+            selected.add("get_usage_summary");
+            selected.add("list_agents");
+        }
+        if (text.matches(".*(文档|索引|切片|上传).*") && !text.contains("使用文档") && !text.contains("平台文档")) {
+            selected.add("list_knowledge_documents");
+            selected.add("list_knowledge_bases");
+        }
+        if (text.matches(".*(知识库|kb|faq|rag|dify).*")) {
+            selected.add("list_knowledge_bases");
+            selected.add("list_knowledge_documents");
+        }
+        if (text.matches(".*(通道|网关|向量模型|embedding|rerank|ocr|连通|测试连接|通不通|能不能用).*")) {
+            selected.add("get_gateway_status");
+            selected.add("test_gateway_channel");
+        }
+        if (text.matches(".*(诊断|排查|没回复|没有回复|回答不对|不准确|检索不到|报错|异常|为什么).*")) {
+            selected.add("diagnose_agent");
+            selected.add("get_agent_detail");
+            selected.add("list_knowledge_bases");
+            selected.add("list_knowledge_documents");
+            selected.add("get_gateway_status");
+            selected.add("search_platform_docs");
+        }
+        if (text.contains("模板") || text.contains("template")) {
+            selected.add("list_templates");
+        }
+        if (text.contains("智能体") || text.contains("agent")) {
+            selected.add("list_agents");
+            selected.add("get_agent_detail");
+            selected.add("diagnose_agent");
+        }
+        if (text.matches(".*(怎么|如何|在哪里|在哪|什么意思|区别|角色|权限|开放|api|401|403|状态).*")) {
+            selected.add("search_platform_docs");
+        }
+
+        if (selected.isEmpty()) {
+            return null;
+        }
+        if (context != null) {
+            String resType = context.get("resourceType");
+            if ("AGENT".equalsIgnoreCase(resType)) {
+                selected.add("get_agent_detail");
+                selected.add("diagnose_agent");
+            } else if ("KNOWLEDGE_BASE".equalsIgnoreCase(resType)) {
+                selected.add("list_knowledge_bases");
+                selected.add("list_knowledge_documents");
+            }
+        }
+        return selected.size() <= 6 ? selected : null;
+    }
+
+    static Integer effectiveContextWindow(LlmProvider provider) {
+        if (provider == null) {
+            return null;
+        }
+        if (provider.getContextWindow() != null && provider.getContextWindow() > 0) {
+            return provider.getContextWindow();
+        }
+        if (provider.getProtocol() == LlmProtocolType.OLLAMA) {
+            return OLLAMA_DEFAULT_CONTEXT_WINDOW;
+        }
+        return null;
+    }
+
+    /** 按通道上下文窗口从最早的历史对话开始裁剪，保证系统提示、卡片备注与当前提问完整保留 */
+    List<Map<String, Object>> fitMessagesForWindow(List<Map<String, Object>> baseMessages,
+                                                   List<Map<String, Object>> tools, Integer window) {
+        List<Map<String, Object>> fitted = new ArrayList<>(baseMessages);
+        if (window == null || window <= 0 || fitted.size() <= 2) {
+            return fitted;
+        }
+        int outputReserve = Math.min(window / 4, 1500);
+        int inputBudget = (int) ((window - outputReserve) * 0.85);
+        int toolTokens = tools == null || tools.isEmpty() ? 0 : AiChatService.estimateTokens(toJson(tools));
+
+        // index 0 为系统提示；末尾为当前 user（及可能紧贴其前的 actionNotes system 消息），中间为可裁剪的历史消息
+        int tailStart = fitted.size() - 1;
+        if (tailStart >= 2 && "system".equals(fitted.get(tailStart - 1).get("role"))) {
+            tailStart--;
+        }
+        int fixedTokens = toolTokens + estimateMessageTokens(fitted.get(0));
+        for (int i = tailStart; i < fitted.size(); i++) {
+            fixedTokens += estimateMessageTokens(fitted.get(i));
+        }
+        int historyBudget = Math.max(0, inputBudget - fixedTokens);
+        List<Map<String, Object>> history = new ArrayList<>(fitted.subList(1, tailStart));
+        int historyTokens = history.stream().mapToInt(this::estimateMessageTokens).sum();
+        int drop = 0;
+        while (drop < history.size() && (historyTokens > historyBudget
+                || "assistant".equals(history.get(drop).get("role")))) {
+            historyTokens -= estimateMessageTokens(history.get(drop));
+            drop++;
+        }
+        if (drop == 0) {
+            return fitted;
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        result.add(fitted.get(0));
+        result.addAll(history.subList(drop, history.size()));
+        result.addAll(fitted.subList(tailStart, fitted.size()));
+        log.info("Assistant context window {}: trimmed history {} -> {} messages (tool ~{} tokens)",
+                window, history.size(), history.size() - drop, toolTokens);
+        return result;
+    }
+
+    private String trimToolContentForWindow(String content, List<Map<String, Object>> messages,
+                                            List<Map<String, Object>> tools, Integer window) {
+        if (content == null || window == null || window <= 0 || window > 8192) {
+            return content;
+        }
+        int used = messages.stream().mapToInt(this::estimateMessageTokens).sum()
+                + (tools == null || tools.isEmpty() ? 0 : AiChatService.estimateTokens(toJson(tools)));
+        int reserve = Math.min(window / 4, 1200);
+        int remainTokens = Math.max(400, window - reserve - used);
+        int maxChars = Math.min(AssistantToolRegistry.MAX_RESULT_CHARS, Math.max(900, remainTokens * 2));
+        if (content.length() <= maxChars) {
+            return content;
+        }
+        return content.substring(0, maxChars) + "…（受当前模型上下文窗口限制已精简）";
+    }
+
+    private int estimateMessageTokens(Map<String, Object> msg) {
+        Object content = msg.get("content");
+        int tokens = AiChatService.estimateTokens(content == null ? "" : String.valueOf(content)) + 6;
+        if (msg.containsKey("tool_calls")) {
+            tokens += AiChatService.estimateTokens(toJson(msg.get("tool_calls")));
+        }
+        return tokens;
     }
 
     private OpenAiCompatibleClient.StreamResult callModel(Channel channel, int timeoutMs, List<Map<String, Object>> messages,
@@ -429,6 +626,93 @@ public class AssistantService {
         String lower = error.toLowerCase();
         boolean clientError = lower.contains("http 400") || lower.contains("http 422") || lower.contains("http 404");
         return clientError && (lower.contains("tool") || lower.contains("function"));
+    }
+
+    /** 提取简短、脱敏的工具入参摘要，用于前端工具胶囊展示 */
+    String summarizeToolArgs(String argumentsJson) {
+        if (argumentsJson == null || argumentsJson.isBlank()) {
+            return null;
+        }
+        try {
+            var node = objectMapper.readTree(argumentsJson);
+            if (node == null || !node.isObject() || node.isEmpty()) {
+                return null;
+            }
+            List<String> parts = new ArrayList<>();
+            var fields = node.fields();
+            while (fields.hasNext() && parts.size() < 3) {
+                var entry = fields.next();
+                String key = entry.getKey();
+                String lower = key.toLowerCase();
+                if (lower.contains("secret") || lower.contains("key") || lower.contains("token")
+                        || lower.contains("password") || lower.equals("systemprompt") || lower.equals("answer")) {
+                    continue;
+                }
+                var val = entry.getValue();
+                if (val == null || val.isNull() || val.isContainerNode()) {
+                    continue;
+                }
+                String text = val.asText("").trim();
+                if (text.isEmpty()) {
+                    continue;
+                }
+                if (text.length() > 20) {
+                    text = text.substring(0, 20) + "…";
+                }
+                parts.add(text);
+            }
+            if (parts.isEmpty()) {
+                return null;
+            }
+            String joined = String.join(" / ", parts);
+            return joined.length() > 48 ? joined.substring(0, 48) + "…" : joined;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 提取简短的工具执行结果摘要，方便用户判断查询是否命中 */
+    String summarizeToolOutcome(AssistantToolRegistry.Outcome outcome, String fallbackDetail) {
+        if (outcome == null || outcome.content() == null || outcome.content().isBlank()) {
+            return fallbackDetail;
+        }
+        try {
+            var node = objectMapper.readTree(outcome.content());
+            if (node == null || !node.isObject()) {
+                return fallbackDetail;
+            }
+            if (!outcome.ok()) {
+                String err = node.path("error").asText("").trim();
+                if (!err.isEmpty()) {
+                    return err.length() > 40 ? err.substring(0, 40) + "…" : err;
+                }
+                return "执行失败";
+            }
+            if (node.has("conclusion") && !node.path("conclusion").asText("").isBlank()) {
+                String c = node.path("conclusion").asText("").trim();
+                return c.length() > 36 ? c.substring(0, 36) + "…" : c;
+            }
+            if (node.has("range") && node.has("totalTokens")) {
+                String range = node.path("range").asText("");
+                int modelCount = node.path("modelUsageRanking").isArray() ? node.path("modelUsageRanking").size() : 0;
+                return modelCount > 0 ? range + " · " + modelCount + " 个模型" : range;
+            }
+            if (node.has("total") && node.path("total").canConvertToInt()) {
+                return "共 " + node.path("total").asInt() + " 条";
+            }
+            if (node.has("serverCount") && node.path("serverCount").canConvertToInt()) {
+                return node.path("serverCount").asInt() + " 个服务 / " + node.path("enabledToolCount").asInt() + " 个启用工具";
+            }
+            if (node.has("availableToolCount") && node.path("availableToolCount").canConvertToInt()) {
+                return node.path("availableToolCount").asInt() + " 个可用工具";
+            }
+            if (node.has("items") && node.path("items").isArray()) {
+                return "命中 " + node.path("items").size() + " 条";
+            }
+            return fallbackDetail;
+        } catch (Exception e) {
+            return fallbackDetail;
+        }
     }
 
     private String toJson(Object value) {

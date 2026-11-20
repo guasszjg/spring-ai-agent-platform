@@ -1,10 +1,15 @@
 package com.shimeta.assistant;
 
+import com.shimeta.mcp.McpServerService;
+import com.shimeta.mcp.McpServerView;
+import com.shimeta.mcp.McpToolView;
 import com.shimeta.model.Agent;
 import com.shimeta.model.AgentStatus;
+import com.shimeta.model.DashboardStats;
 import com.shimeta.model.GatewayOverview;
 import com.shimeta.model.GatewayPolicy;
 import com.shimeta.model.KnowledgeBase;
+import com.shimeta.model.KnowledgeDocument;
 import com.shimeta.model.LlmProvider;
 import com.shimeta.model.LlmProviderView;
 import com.shimeta.model.PageResult;
@@ -21,6 +26,8 @@ import com.shimeta.service.EmbeddingConfigService;
 import com.shimeta.service.KnowledgeBaseService;
 import com.shimeta.service.LlmGatewayService;
 import com.shimeta.service.ResourceAuthorizationService;
+import com.shimeta.skill.SkillService;
+import com.shimeta.skill.SkillView;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -59,6 +66,8 @@ class AssistantQueryToolsTest {
     @Mock AgentDailyStatRepository dailyStatRepository;
     @Mock AgentTemplateService templateService;
     @Mock PlatformDocsService platformDocsService;
+    @Mock McpServerService mcpServerService;
+    @Mock SkillService skillService;
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final CurrentActor developer = new CurrentActor("u-dev", "dev", UserRole.DEVELOPER);
@@ -70,6 +79,8 @@ class AssistantQueryToolsTest {
         tools = new AssistantQueryTools(agentService, knowledgeBaseService, knowledgeBaseRepository, indexVersionRepository,
                 gatewayService, embeddingConfigService, difyConfigService, authorizationService, dailyStatRepository,
                 templateService, platformDocsService);
+        tools.setMcpServerService(mcpServerService);
+        tools.setSkillService(skillService);
         when(dailyStatRepository.findByAgentIdAndStatDateBetween(any(), any(), any())).thenReturn(List.of());
         when(authorizationService.canRunAgent(any(), any())).thenReturn(true);
     }
@@ -286,5 +297,159 @@ class AssistantQueryToolsTest {
     void resourceLinksPointToInternalPages() {
         assertEquals("/debug/a1", AssistantQueryTools.agentLink("a1"));
         assertEquals("/dashboard?tab=knowledge&kb=kb-1", AssistantQueryTools.knowledgeBaseLink("kb-1"));
+    }
+
+    @Test
+    void usageSummaryReturnsSortedModelRankingByTokensAndCalls() throws Exception {
+        DashboardStats stats = new DashboardStats();
+        stats.setPromptTokens(7000);
+        stats.setCompletionTokens(3000);
+        stats.setModelDistribution(Map.of("qwen3.5:9b", 2500L, "deepseek-chat", 7500L));
+        stats.setModelCallDistribution(Map.of("qwen3.5:9b", 12L, "deepseek-chat", 8L));
+        when(agentService.getDashboardStats("7days", admin)).thenReturn(stats);
+
+        var node = mapper.readTree(run("get_usage_summary", "{\"range\":\"7days\"}", admin));
+
+        assertTrue(node.path("ok").asBoolean());
+        assertEquals("deepseek-chat", node.path("topModelByTokens").path("model").asText());
+        assertEquals(7500L, node.path("topModelByTokens").path("tokens").asLong());
+        assertEquals(75.0, node.path("topModelByTokens").path("tokenSharePercent").asDouble());
+        assertEquals("qwen3.5:9b", node.path("topModelByCalls").path("model").asText());
+        assertEquals(12L, node.path("topModelByCalls").path("calls").asLong());
+        assertEquals("deepseek-chat", node.path("modelUsageRanking").path(0).path("model").asText());
+        assertEquals(8L, node.path("modelUsageRanking").path(0).path("calls").asLong());
+        assertEquals("qwen3.5:9b", node.path("modelUsageRanking").path(1).path("model").asText());
+    }
+
+    @Test
+    void listKnowledgeDocumentsReturnsDocumentsAndStatusSummary() throws Exception {
+        KnowledgeBase kb = new KnowledgeBase();
+        kb.setId("kb-1");
+        kb.setName("产品手册库");
+        kb.setProvider("SPRING_AI");
+        when(knowledgeBaseRepository.findById("kb-1")).thenReturn(Optional.of(kb));
+        when(authorizationService.canViewKnowledgeBase(developer, kb)).thenReturn(true);
+
+        KnowledgeDocument okDoc = new KnowledgeDocument("kb-1", null, "安装指南.pdf", "pdf", 1024L);
+        okDoc.setId("doc-1");
+        okDoc.setIndexingStatus("completed");
+        okDoc.setWordCount(1200L);
+        KnowledgeDocument errDoc = new KnowledgeDocument("kb-1", null, "扫描件.pdf", "pdf", 2048L);
+        errDoc.setId("doc-2");
+        errDoc.setIndexingStatus("error");
+        errDoc.setErrorMessage("OCR 识别超时");
+
+        when(knowledgeBaseService.searchDocuments("kb-1", null, "error", 1, 10, developer))
+                .thenReturn(new PageResult<>(List.of(errDoc), 1, 1, 10));
+        when(knowledgeBaseService.searchDocuments("kb-1", null, null, 1, 500, developer))
+                .thenReturn(new PageResult<>(List.of(okDoc, errDoc), 2, 1, 500));
+
+        var node = mapper.readTree(run("list_knowledge_documents", "{\"knowledgeBase\":\"kb-1\",\"status\":\"error\"}", developer));
+
+        assertTrue(node.path("ok").asBoolean());
+        assertEquals(1, node.path("total").asInt());
+        assertEquals(1, node.path("statusSummary").path("completed").asInt());
+        assertEquals(1, node.path("statusSummary").path("error").asInt());
+        assertEquals("扫描件.pdf", node.path("items").path(0).path("name").asText());
+        assertTrue(node.path("items").path(0).path("errorMessage").asText().contains("OCR"));
+    }
+
+    @Test
+    void listMcpServersRespectsAdminAndDeveloperBoundariesAndHidesUrl() throws Exception {
+        McpToolView tool = new McpToolView();
+        tool.setServerName("高德地图");
+        tool.setToolName("maps_weather");
+        tool.setFunctionName("mcp_amap__maps_weather");
+        tool.setTitle("天气查询");
+        tool.setCategory("MAP");
+        tool.setEnabled(true);
+        tool.setReviewStatus("APPROVED");
+
+        McpServerView server = new McpServerView();
+        server.setId("mcp-1");
+        server.setName("高德地图");
+        server.setSlug("amap");
+        server.setUrl("https://mcp.amap.com/sse?key=super-secret");
+        server.setTransport("SSE");
+        server.setEnabled(true);
+        server.setLastStatus("OK");
+        server.setToolCount(1);
+        server.setEnabledToolCount(1);
+        server.setTools(List.of(tool));
+
+        when(mcpServerService.list()).thenReturn(List.of(server));
+        when(mcpServerService.availableTools()).thenReturn(List.of(tool));
+
+        String adminJson = run("list_mcp_servers", "{}", admin);
+        var adminNode = mapper.readTree(adminJson);
+        assertTrue(adminNode.path("ok").asBoolean());
+        assertEquals(1, adminNode.path("serverCount").asInt());
+        assertFalse(adminJson.contains("super-secret"));
+        assertFalse(adminJson.contains("mcp.amap.com"));
+
+        String devJson = run("list_mcp_servers", "{\"keyword\":\"天气\"}", developer);
+        var devNode = mapper.readTree(devJson);
+        assertTrue(devNode.path("ok").asBoolean());
+        assertEquals(1, devNode.path("availableToolCount").asInt());
+        assertEquals("mcp_amap__maps_weather", devNode.path("servers").path(0).path("tools").path(0).path("functionName").asText());
+    }
+
+    @Test
+    void listSkillsFiltersByScopeAndKeyword() throws Exception {
+        SkillView sys = new SkillView("sk-1", "故障排查", "排查设备离线问题", null, 500, List.of("bocha_web_search"),
+                "u-admin", "admin", true, true, 2, 10, null, null, null, false, 3);
+        SkillView mine = new SkillView("sk-2", "退货指引", "处理售后退货流程", null, 300, List.of(),
+                "u-dev", "dev", false, true, 1, 2, null, null, null, true, 1);
+        when(skillService.list(developer)).thenReturn(List.of(sys, mine));
+
+        var node = mapper.readTree(run("list_skills", "{\"scope\":\"mine\",\"keyword\":\"退货\"}", developer));
+
+        assertTrue(node.path("ok").asBoolean());
+        assertEquals(1, node.path("total").asInt());
+        assertEquals("退货指引", node.path("items").path(0).path("name").asText());
+    }
+
+    @Test
+    void agentDetailAndDiagnoseIncludeSkillsKnowledgeModeAndToolCapabilityCheck() throws Exception {
+        Agent a = agent("a1", "客服助手");
+        a.setKnowledgeMode(Agent.KNOWLEDGE_AGENTIC);
+        a.setKnowledgeBaseIds(List.of("kb-1"));
+        a.setSkillIds(List.of("sk-1"));
+        a.setMemoryTurns(3);
+        a.setThinkingMode("OFF");
+
+        KnowledgeBase kb = new KnowledgeBase();
+        kb.setId("kb-1");
+        kb.setName("产品库");
+        kb.setProvider("SPRING_AI");
+        kb.setDocumentCount(5);
+
+        LlmProvider provider = new LlmProvider();
+        provider.setName("板子小模型");
+        provider.setDefaultModel("qwen3:1.7b");
+        provider.setSupportsTools(false);
+
+        SkillView sk = new SkillView("sk-1", "售后排查", "排查流程", null, 200, List.of(),
+                "u-admin", "admin", true, true, 1, 0, null, null, null, false, 1);
+
+        when(agentService.getById("a1", developer)).thenReturn(Optional.of(a));
+        when(knowledgeBaseRepository.findById("kb-1")).thenReturn(Optional.of(kb));
+        when(authorizationService.canViewKnowledgeBase(developer, kb)).thenReturn(true);
+        when(gatewayService.resolveRoute(any())).thenReturn(Optional.of(
+                new LlmGatewayService.ResolvedRoute(provider, null, 30000, 1, "k", null)));
+        when(embeddingConfigService.getActiveConfig()).thenReturn(Optional.empty());
+        when(skillService.list(developer)).thenReturn(List.of(sk));
+
+        var detail = mapper.readTree(run("get_agent_detail", "{\"agent\":\"a1\"}", developer));
+        assertEquals("AGENTIC", detail.path("knowledgeMode").asText());
+        assertEquals("售后排查", detail.path("skills").path(0).path("name").asText());
+        assertEquals(3, detail.path("memoryTurns").asInt());
+        assertFalse(detail.path("route").path("supportsTools").asBoolean());
+        assertTrue(detail.path("route").path("primaryChannel").isMissingNode());
+
+        var diag = mapper.readTree(run("diagnose_agent", "{\"agent\":\"a1\"}", developer));
+        assertTrue(diag.path("checks").toString().contains("工具调用能力"));
+        assertTrue(diag.path("checks").toString().contains("模型自主检索"));
+        assertTrue(diag.path("checks").toString().contains("绑定的技能"));
     }
 }

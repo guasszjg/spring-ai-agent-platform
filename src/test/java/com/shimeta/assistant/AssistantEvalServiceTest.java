@@ -54,8 +54,9 @@ class AssistantEvalServiceTest {
     @Test
     void bundledCasesLoadAndOnlyReferenceExistingTools() {
         Set<String> known = new HashSet<>(AssistantEvalScorer.WRITE_TOOLS);
-        known.addAll(List.of("list_agents", "get_agent_detail", "list_knowledge_bases", "get_gateway_status",
-                "get_usage_summary", "diagnose_agent", "list_templates", "search_platform_docs", "test_gateway_channel"));
+        known.addAll(List.of("list_agents", "get_agent_detail", "list_knowledge_bases", "list_knowledge_documents",
+                "list_mcp_servers", "list_skills", "get_gateway_status", "get_usage_summary", "diagnose_agent",
+                "list_templates", "search_platform_docs", "test_gateway_channel"));
         List<AssistantEvalCase> cases = service.cases();
 
         assertTrue(cases.size() >= 50, "评测用例数量应不少于 50，实际 " + cases.size());

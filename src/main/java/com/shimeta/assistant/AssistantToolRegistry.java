@@ -45,14 +45,38 @@ public class AssistantToolRegistry {
 
     /** 当前用户可用的工具定义：只读观察员不下发写工具；数据范围在工具内部按用户过滤。 */
     public List<Map<String, Object>> definitions(CurrentActor actor) {
+        return definitions(actor, true);
+    }
+
+    /** 按需控制是否包含写工具，纯查询场景不发写工具可明显节省上下文空间并降低小模型误选率。 */
+    public List<Map<String, Object>> definitions(CurrentActor actor, boolean includeWrite) {
+        return definitions(actor, includeWrite, null);
+    }
+
+    /**
+     * 按意图聚焦只读工具子集：当问题明确指向特定模块（如技能、MCP、模型用量）时，
+     * 只下发最相关的 2–4 个只读工具，显著提高本地小模型的 Function Calling 触发率并避免编造数据。
+     * allowedReadTools 为空或 null 时下发全部只读工具。
+     */
+    public List<Map<String, Object>> definitions(CurrentActor actor, boolean includeWrite,
+                                                 java.util.Set<String> allowedReadTools) {
         if (actor == null) {
             return List.of();
         }
-        return tools.values().stream()
-                .filter(tool -> !tool.write() || canWrite(actor))
+        List<AssistantTool> visible = tools.values().stream()
+                .filter(tool -> !tool.write() || (includeWrite && canWrite(actor)))
                 .filter(tool -> !tool.superAdminOnly() || actor.isSuperAdmin())
-                .map(AssistantTool::definition)
                 .toList();
+        if (allowedReadTools != null && !allowedReadTools.isEmpty()) {
+            List<AssistantTool> narrowed = visible.stream()
+                    .filter(tool -> tool.write() || allowedReadTools.contains(tool.name()))
+                    .toList();
+            // 若命中子集至少包含一个只读工具才收窄，否则保留全量（兼容最小工具注册表）
+            if (narrowed.stream().anyMatch(tool -> !tool.write())) {
+                visible = narrowed;
+            }
+        }
+        return visible.stream().map(AssistantTool::definition).toList();
     }
 
     public boolean isWriteTool(String name) {

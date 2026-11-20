@@ -29,5 +29,19 @@ public interface AgentConversationMessageRepository extends JpaRepository<AgentC
     List<Object[]> sumTokensByModelForAgents(@Param("agentIds") Collection<String> agentIds,
                                              @Param("start") LocalDateTime start, @Param("end") LocalDateTime end);
 
+    /** 每行：[model, 回复次数] */
+    @Query("select m.model, count(m) from AgentConversationMessage m"
+            + " where m.role = 'assistant' and m.createdAt >= :start and m.createdAt < :end"
+            + " group by m.model")
+    List<Object[]> countCallsByModel(@Param("start") LocalDateTime start, @Param("end") LocalDateTime end);
+
+    /** 每行：[model, 回复次数]，只统计指定智能体 */
+    @Query("select m.model, count(m) from AgentConversationMessage m, AgentConversation c"
+            + " where c.id = m.conversationId and c.agentId in :agentIds"
+            + " and m.role = 'assistant' and m.createdAt >= :start and m.createdAt < :end"
+            + " group by m.model")
+    List<Object[]> countCallsByModelForAgents(@Param("agentIds") Collection<String> agentIds,
+                                              @Param("start") LocalDateTime start, @Param("end") LocalDateTime end);
+
     void deleteByConversationId(String conversationId);
 }

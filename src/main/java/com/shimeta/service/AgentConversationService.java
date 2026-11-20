@@ -263,6 +263,30 @@ public class AgentConversationService {
     }
 
     @Transactional(readOnly = true)
+    public Map<String, Long> callCountByModel(String agentId, java.util.Set<String> allowedAgentIds, LocalDate start, LocalDate end) {
+        LocalDateTime from = (start == null ? LocalDate.of(2020, 1, 1) : start).atStartOfDay();
+        LocalDateTime to = (end == null ? LocalDate.now() : end).plusDays(1).atStartOfDay();
+        final java.util.Set<String> targetAgentIds = (agentId != null && !agentId.isBlank())
+                ? java.util.Set.of(agentId)
+                : allowedAgentIds;
+        Map<String, Long> counts = new LinkedHashMap<>();
+        if (targetAgentIds != null && targetAgentIds.isEmpty()) {
+            return counts;
+        }
+        List<Object[]> rows = targetAgentIds == null
+                ? messageRepository.countCallsByModel(from, to)
+                : messageRepository.countCallsByModelForAgents(targetAgentIds, from, to);
+        if (rows == null) {
+            return counts;
+        }
+        for (Object[] row : rows) {
+            String model = row[0] == null || row[0].toString().isBlank() ? "未指定" : row[0].toString().trim();
+            counts.merge(model, ((Number) row[1]).longValue(), Long::sum);
+        }
+        return counts;
+    }
+
+    @Transactional(readOnly = true)
     public List<AgentConversation> listInRange(String agentId, String range) {
         LocalDate[] bounds = TimeRange.resolve(range);
         return conversationRepository.findByAgentIdOrderByUpdatedAtDesc(agentId).stream()

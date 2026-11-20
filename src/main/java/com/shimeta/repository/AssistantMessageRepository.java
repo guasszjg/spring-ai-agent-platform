@@ -21,20 +21,20 @@ public interface AssistantMessageRepository extends JpaRepository<AssistantMessa
             nativeQuery = true)
     int clearContents(@Param("conversationId") String conversationId);
 
-    /** 全站助手 token 用量，按日期与模型聚合：[日期, 模型, prompt, completion]。 */
+    /** 全站助手 token 用量与回复次数，按日期与模型聚合：[日期, 模型, prompt, completion, count]。 */
     @Query(value = """
             SELECT CAST(created_at AS DATE), model,
-                   COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0)
+                   COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), COUNT(*)
             FROM assistant_messages
             WHERE role = 'assistant' AND created_at >= :start AND created_at < :end
             GROUP BY CAST(created_at AS DATE), model
             """, nativeQuery = true)
     List<Object[]> sumTokensByDayAndModel(@Param("start") LocalDateTime start, @Param("end") LocalDateTime end);
 
-    /** 指定用户的助手 token 用量，按日期与模型聚合：[日期, 模型, prompt, completion]。 */
+    /** 指定用户的助手 token 用量与回复次数，按日期与模型聚合：[日期, 模型, prompt, completion, count]。 */
     @Query(value = """
             SELECT CAST(created_at AS DATE), model,
-                   COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0)
+                   COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), COUNT(*)
             FROM assistant_messages
             WHERE role = 'assistant' AND user_id = :userId AND created_at >= :start AND created_at < :end
             GROUP BY CAST(created_at AS DATE), model

@@ -1,13 +1,18 @@
 package com.shimeta.assistant;
 
+import com.shimeta.mcp.McpServerService;
+import com.shimeta.mcp.McpServerView;
+import com.shimeta.mcp.McpToolView;
 import com.shimeta.model.Agent;
 import com.shimeta.model.AgentDailyStat;
+import com.shimeta.model.AgentRouteChoice;
 import com.shimeta.model.AgentStatus;
 import com.shimeta.model.AgentTemplate;
 import com.shimeta.service.AgentTemplateService;
 import com.shimeta.model.DashboardStats;
 import com.shimeta.model.GatewayOverview;
 import com.shimeta.model.KnowledgeBase;
+import com.shimeta.model.KnowledgeDocument;
 import com.shimeta.model.KnowledgeIndexVersion;
 import com.shimeta.model.LlmProvider;
 import com.shimeta.model.LlmProviderView;
@@ -22,8 +27,11 @@ import com.shimeta.service.EmbeddingConfigService;
 import com.shimeta.service.KnowledgeBaseService;
 import com.shimeta.service.LlmGatewayService;
 import com.shimeta.service.ResourceAuthorizationService;
+import com.shimeta.skill.SkillService;
+import com.shimeta.skill.SkillView;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
@@ -33,10 +41,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * 平台 AI 助手的只读工具（P1）。
@@ -68,6 +78,8 @@ public class AssistantQueryTools {
     private final AgentTemplateService templateService;
     private final PlatformDocsService platformDocsService;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private McpServerService mcpServerService;
+    private SkillService skillService;
 
     public AssistantQueryTools(AgentService agentService,
                                KnowledgeBaseService knowledgeBaseService,
@@ -93,6 +105,16 @@ public class AssistantQueryTools {
         this.dailyStatRepository = dailyStatRepository;
     }
 
+    @Autowired(required = false)
+    public void setMcpServerService(McpServerService mcpServerService) {
+        this.mcpServerService = mcpServerService;
+    }
+
+    @Autowired(required = false)
+    public void setSkillService(SkillService skillService) {
+        this.skillService = skillService;
+    }
+
     public List<AssistantTool> tools() {
         return List.of(
                 AssistantTool.read("list_agents", "查询智能体列表",
@@ -106,7 +128,7 @@ public class AssistantQueryTools {
                                 "limit", prop("integer", "返回数量，默认 10，最大 20"))),
                         (args, ctx) -> listAgents(args, ctx.actor())),
                 AssistantTool.read("get_agent_detail", "查看智能体配置",
-                        "查看一个智能体的配置摘要：模型、提示词摘要、绑定的知识库与工具、状态和调用指标。",
+                        "查看一个智能体的完整配置摘要：模型与通道路由、提示词摘要、上下文记忆、思考模式、知识库使用方式、绑定的知识库/技能/工具、状态和调用指标。",
                         schema(Map.of("agent", prop("string", "智能体的 ID、编码或名称")), "agent"),
                         (args, ctx) -> getAgentDetail(args, ctx.actor())),
                 AssistantTool.read("list_knowledge_bases", "查询知识库列表",
@@ -116,17 +138,38 @@ public class AssistantQueryTools {
                                 "engine", enumProp("引擎：SPRING_AI 平台内置引擎，DIFY 外部引擎，可选", "SPRING_AI", "DIFY"),
                                 "limit", prop("integer", "返回数量，默认 10，最大 20"))),
                         (args, ctx) -> listKnowledgeBases(args, ctx.actor())),
+                AssistantTool.read("list_knowledge_documents", "查询知识库文档",
+                        "查询指定知识库中的文档列表、索引状态（已完成/处理中/失败）及失败原因。用户问\"知识库里有哪些文档\"\"哪篇文档索引失败了\"时使用。",
+                        schema(Map.of(
+                                "knowledgeBase", prop("string", "知识库名称或 ID"),
+                                "keyword", prop("string", "文档名称关键词，可选"),
+                                "status", enumProp("索引状态过滤，可选：completed 已完成，error 失败，indexing 处理中，waiting 排队中",
+                                        "completed", "error", "indexing", "waiting"),
+                                "limit", prop("integer", "返回数量，默认 10，最大 20")), "knowledgeBase"),
+                        (args, ctx) -> listKnowledgeDocuments(args, ctx.actor())),
+                AssistantTool.read("list_mcp_servers", "查询 MCP 服务与工具",
+                        "查询平台接入的 MCP 服务及已审核启用的 MCP 工具（不含服务地址与密钥）。用户问\"有哪些 MCP 服务\"\"有哪些 MCP 工具\"时使用。",
+                        schema(Map.of(
+                                "keyword", prop("string", "服务名称或工具名称关键词，可选"))),
+                        (args, ctx) -> listMcpServers(args, ctx.actor())),
+                AssistantTool.read("list_skills", "查询技能库",
+                        "查询当前用户可见的技能（Skill）列表，含触发场景、所需工具、版本、启用状态与使用统计。用户问\"有哪些技能\"\"技能库里有什么\"时使用。",
+                        schema(Map.of(
+                                "keyword", prop("string", "技能名称或描述关键词，可选"),
+                                "scope", enumProp("范围：all 全部可见（默认），mine 我创建的，system 系统内置", "all", "mine", "system"),
+                                "limit", prop("integer", "返回数量，默认 10，最大 20"))),
+                        (args, ctx) -> listSkills(args, ctx.actor())),
                 AssistantTool.read("get_gateway_status", "查询模型网关状态",
                         "查询大模型通道是否可用。超级管理员可看到各通道、默认/降级设置与最近探测结果，其他角色只能看到是否可用。",
                         schema(Map.of()),
                         (args, ctx) -> getGatewayStatus(args, ctx.actor())),
-                AssistantTool.read("get_usage_summary", "统计用量与成本",
-                        "统计一段时间内的调用量、token 用量与估算成本。超级管理员为全站数据，其他角色为本人数据。",
+                AssistantTool.read("get_usage_summary", "统计用量、模型分布与成本",
+                        "统计一段时间内的调用量、token 用量、估算成本，以及各模型的使用分布排行（含按 Token 消耗和按调用次数，对应概览页模型分布图）和热门智能体排行。用户问\"用了多少 token\"\"成本多少\"\"使用最多的模型是哪个\"\"哪个模型调用最多\"时必须使用此工具。超级管理员为全站数据，其他角色为本人数据。",
                         schema(Map.of("range", enumProp("时间范围：today 今天，7days 近 7 天（默认），30days 近 30 天",
                                 "today", "7days", "30days"))),
                         (args, ctx) -> getUsageSummary(args, ctx.actor())),
                 AssistantTool.read("diagnose_agent", "诊断智能体",
-                        "排查智能体\"没有回复\"\"回答不对\"\"检索不到\"等问题：检查运行状态、模型通道、知识库绑定与索引、近期调用成功率，给出结论和建议。",
+                        "排查智能体\"没有回复\"\"回答不对\"\"检索不到\"\"技能或自主检索没生效\"等问题：检查运行状态、模型通道与工具调用能力、知识库绑定与索引、近期调用成功率，给出结论和建议。",
                         schema(Map.of("agent", prop("string", "智能体的 ID、编码或名称")), "agent"),
                         (args, ctx) -> diagnoseAgent(args, ctx.actor())),
                 AssistantTool.read("list_templates", "查询场景模板",
@@ -195,10 +238,11 @@ public class AssistantQueryTools {
 
     private static final Map<String, String> PAGE_NAMES = Map.ofEntries(
             Map.entry("overview", "概览"), Map.entry("agents", "智能体列表"), Map.entry("templates", "场景模板"),
-            Map.entry("tools", "工具"), Map.entry("knowledge", "自建知识库"), Map.entry("knowledge-dify", "Dify 知识库"),
+            Map.entry("tools", "工具"), Map.entry("skills", "技能库"),
+            Map.entry("knowledge", "自建知识库"), Map.entry("knowledge-dify", "Dify 知识库"),
             Map.entry("gateway", "模型网关"), Map.entry("gateway-llm", "模型网关 · 大语言模型"),
-            Map.entry("gateway-embedding", "模型网关 · 向量模型"), Map.entry("gateway-ocr", "模型网关 · OCR 识别"),
-            Map.entry("gateway-dify", "模型网关 · Dify 知识引擎"),
+            Map.entry("gateway-embedding", "模型网关 · 向量模型"), Map.entry("gateway-rerank", "模型网关 · Rerank 模型"),
+            Map.entry("gateway-ocr", "模型网关 · OCR 识别"), Map.entry("gateway-dify", "模型网关 · Dify 知识引擎"),
             Map.entry("users", "用户"), Map.entry("roles", "角色与权限"), Map.entry("security", "开放与安全"),
             Map.entry("assistant-eval", "助手评测"), Map.entry("debug", "智能体编排与调试"));
 
@@ -336,6 +380,11 @@ public class AssistantQueryTools {
         m.put("status", a.getStatus() != null ? a.getStatus().name() : null);
         m.put("statusLabel", a.getStatus() != null ? a.getStatus().getLabel() : null);
         m.put("model", blankToNull(a.getModelName()));
+        m.put("routeMode", AgentRouteChoice.of(a).isCustom() ? "自选通道" : "跟随平台默认");
+        String kbMode = Agent.normalizeKnowledgeMode(a.getKnowledgeMode());
+        m.put("knowledgeMode", kbMode);
+        m.put("knowledgeModeLabel", Agent.KNOWLEDGE_AGENTIC.equals(kbMode) ? "模型自主检索" : "先检索后回答");
+        m.put("skillCount", a.getSkillIds() == null ? 0 : (int) a.getSkillIds().stream().filter(s -> s != null && !s.isBlank()).count());
         m.put("totalCalls", a.getCallCount() == null ? 0 : a.getCallCount());
         m.put("avgLatencyMs", a.getAvgResponseTimeMs());
         m.put("owner", Boolean.TRUE.equals(a.getIsSystem()) ? "系统内置" : a.getOwnerUsername());
@@ -358,12 +407,82 @@ public class AssistantQueryTools {
         m.put("systemPromptLength", a.getSystemPrompt() == null ? 0 : a.getSystemPrompt().length());
         m.put("temperature", a.getTemperature());
         m.put("maxTokens", a.getMaxTokens());
+        m.put("memoryTurns", a.resolveMemoryTurns());
+        m.put("thinkingMode", Agent.normalizeThinkingMode(a.getThinkingMode()));
+        m.put("route", agentRouteSummary(a, actor));
         m.put("tags", a.getTags());
         m.put("knowledgeBases", knowledgeBaseRefs(a, actor));
+        m.put("skills", skillRefs(a, actor));
         m.put("enabledTools", enabledToolNames(a.getToolsConfig()));
         m.put("canEdit", authorizationService.canManageAgent(actor, a));
         m.put("canRun", authorizationService.canRunAgent(actor, a));
         return ok(m);
+    }
+
+    private Map<String, Object> agentRouteSummary(Agent agent, CurrentActor actor) {
+        Map<String, Object> r = new LinkedHashMap<>();
+        AgentRouteChoice choice = AgentRouteChoice.of(agent);
+        r.put("followPlatform", !choice.isCustom());
+        Optional<LlmGatewayService.ResolvedRoute> routeOpt;
+        String notice = null;
+        if (choice.isCustom()) {
+            var agentRoute = gatewayService.resolveAgentRoute(choice);
+            routeOpt = agentRoute.map(LlmGatewayService.AgentRoute::route);
+            notice = agentRoute.map(LlmGatewayService.AgentRoute::notice).orElse(null);
+        } else {
+            routeOpt = gatewayService.resolveRoute(agent.getModelName());
+        }
+        r.put("available", routeOpt.isPresent());
+        if (routeOpt.isPresent()) {
+            LlmProvider primary = routeOpt.get().primary();
+            r.put("effectiveModel", effectiveModel(primary, agent.getModelName()));
+            r.put("supportsTools", LlmGatewayService.supportsTools(primary));
+            if (actor != null && actor.isSuperAdmin()) {
+                r.put("primaryChannel", primary.getName());
+                if (routeOpt.get().fallback() != null) {
+                    r.put("fallbackChannel", routeOpt.get().fallback().getName());
+                }
+            }
+        }
+        if (notice != null) {
+            r.put("notice", notice);
+        }
+        return r;
+    }
+
+    private List<Map<String, Object>> skillRefs(Agent agent, CurrentActor actor) {
+        List<String> ids = agent.getSkillIds();
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
+        }
+        Map<String, SkillView> visibleById = new LinkedHashMap<>();
+        if (skillService != null && actor != null) {
+            try {
+                for (SkillView s : skillService.list(actor)) {
+                    visibleById.put(s.id(), s);
+                }
+            } catch (RuntimeException ignored) {
+                // 技能列表不可用时退回仅展示 ID
+            }
+        }
+        List<Map<String, Object>> refs = new ArrayList<>();
+        for (String skillId : ids) {
+            if (skillId == null || skillId.isBlank()) {
+                continue;
+            }
+            Map<String, Object> ref = new LinkedHashMap<>();
+            ref.put("id", skillId);
+            SkillView view = visibleById.get(skillId);
+            if (view != null) {
+                ref.put("name", view.name());
+                ref.put("enabled", view.enabled());
+                ref.put("isSystem", view.isSystem());
+            } else if (skillService != null) {
+                ref.put("name", "（无权查看或已删除）");
+            }
+            refs.add(ref);
+        }
+        return refs;
     }
 
     private List<Map<String, Object>> knowledgeBaseRefs(Agent agent, CurrentActor actor) {
@@ -510,6 +629,236 @@ public class AssistantQueryTools {
         return m;
     }
 
+    // ==================== list_knowledge_documents ====================
+
+    Map<String, Object> listKnowledgeDocuments(JsonNode args, CurrentActor actor) {
+        KnowledgeBase kb = resolveKnowledgeBase(text(args, "knowledgeBase"), actor);
+        String keyword = text(args, "keyword");
+        String status = text(args, "status");
+        int limit = limit(args);
+
+        PageResult<KnowledgeDocument> page = knowledgeBaseService.searchDocuments(kb.getId(), keyword, status, 1, limit, actor);
+        List<KnowledgeDocument> records = page != null && page.getRecords() != null ? page.getRecords() : List.of();
+
+        // 统计整个知识库各索引状态数量，方便直接回答“有没有索引失败的文档”
+        Map<String, Integer> statusCounts = new LinkedHashMap<>();
+        PageResult<KnowledgeDocument> allPage = (keyword == null && status == null && page != null && page.getTotal() <= limit)
+                ? page
+                : knowledgeBaseService.searchDocuments(kb.getId(), null, null, 1, 500, actor);
+        if (allPage != null && allPage.getRecords() != null) {
+            for (KnowledgeDocument doc : allPage.getRecords()) {
+                String st = doc.getIndexingStatus() != null && !doc.getIndexingStatus().isBlank()
+                        ? doc.getIndexingStatus().toLowerCase(Locale.ROOT) : "unknown";
+                statusCounts.merge(st, 1, Integer::sum);
+            }
+        }
+
+        List<Map<String, Object>> items = records.stream().map(doc -> {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", doc.getId());
+            item.put("name", doc.getName());
+            item.put("format", doc.getFileFormat() != null ? doc.getFileFormat() : doc.getExtension());
+            item.put("indexingStatus", doc.getIndexingStatus());
+            item.put("statusLabel", documentStatusLabel(doc.getIndexingStatus()));
+            item.put("wordCount", doc.getWordCount() == null ? 0L : doc.getWordCount());
+            item.put("tokenCount", doc.getTokenCount() == null ? 0L : doc.getTokenCount());
+            item.put("enabled", !Boolean.FALSE.equals(doc.getEnabled()));
+            if (doc.getErrorMessage() != null && !doc.getErrorMessage().isBlank()) {
+                item.put("errorMessage", truncate(doc.getErrorMessage(), 150));
+            }
+            item.put("updatedAt", format(doc.getUpdatedAt()));
+            return item;
+        }).toList();
+
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("knowledgeBase", Map.of(
+                "id", kb.getId(),
+                "name", kb.getName(),
+                "engine", engineLabel(kb.getProvider()),
+                "link", knowledgeBaseLink(kb.getId())));
+        res.put("total", page != null ? page.getTotal() : items.size());
+        res.put("returned", items.size());
+        res.put("statusSummary", statusCounts);
+        res.put("items", items);
+        if (items.isEmpty()) {
+            res.put("note", "当前筛选条件下该知识库没有匹配的文档（total=0），请如实告知用户，严禁编造文档。");
+        }
+        return ok(res);
+    }
+
+    private static String documentStatusLabel(String status) {
+        if (status == null) {
+            return "未知";
+        }
+        return switch (status.toLowerCase(Locale.ROOT)) {
+            case "completed" -> "已完成";
+            case "error", "failed" -> "索引失败";
+            case "indexing" -> "处理中";
+            case "waiting" -> "排队中";
+            default -> status;
+        };
+    }
+
+    // ==================== list_mcp_servers ====================
+
+    Map<String, Object> listMcpServers(JsonNode args, CurrentActor actor) {
+        if (mcpServerService == null) {
+            return Map.of("ok", false, "error", "MCP 服务模块未启用");
+        }
+        String kw = text(args, "keyword");
+        String lowerKw = kw == null ? null : kw.toLowerCase(Locale.ROOT);
+
+        if (actor != null && actor.isSuperAdmin()) {
+            List<McpServerView> all = mcpServerService.list();
+            List<Map<String, Object>> servers = new ArrayList<>();
+            int totalEnabledTools = 0;
+            for (McpServerView s : all) {
+                List<McpToolView> tools = s.getTools() == null ? List.of() : s.getTools();
+                boolean serverMatches = lowerKw == null
+                        || containsIgnoreCase(s.getName(), lowerKw)
+                        || containsIgnoreCase(s.getSlug(), lowerKw)
+                        || containsIgnoreCase(s.getRemark(), lowerKw);
+                List<McpToolView> matchedTools = serverMatches ? tools : tools.stream()
+                        .filter(t -> containsIgnoreCase(t.getToolName(), lowerKw)
+                                || containsIgnoreCase(t.getTitle(), lowerKw)
+                                || containsIgnoreCase(t.getFunctionName(), lowerKw)
+                                || containsIgnoreCase(t.getDescription(), lowerKw))
+                        .toList();
+                if (!serverMatches && matchedTools.isEmpty()) {
+                    continue;
+                }
+                totalEnabledTools += s.getEnabledToolCount();
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("id", s.getId());
+                item.put("name", s.getName());
+                item.put("slug", s.getSlug());
+                item.put("transport", s.getTransport());
+                item.put("enabled", s.isEnabled());
+                item.put("lastStatus", s.getLastStatus());
+                if (s.getLastMessage() != null && !s.getLastMessage().isBlank()) {
+                    item.put("lastMessage", truncate(s.getLastMessage(), 120));
+                }
+                item.put("lastCheckedAt", format(s.getLastCheckedAt()));
+                item.put("toolCount", s.getToolCount());
+                item.put("enabledToolCount", s.getEnabledToolCount());
+                item.put("pendingToolCount", s.getPendingToolCount());
+                item.put("tools", matchedTools.stream().limit(MAX_LIMIT).map(t -> {
+                    Map<String, Object> tm = new LinkedHashMap<>();
+                    tm.put("functionName", t.getFunctionName());
+                    tm.put("title", t.getTitle() != null ? t.getTitle() : t.getToolName());
+                    tm.put("category", t.getCategory());
+                    tm.put("enabled", t.isEnabled());
+                    tm.put("reviewStatus", t.getReviewStatus());
+                    tm.put("writeOperation", t.isWriteOperation());
+                    return tm;
+                }).toList());
+                servers.add(item);
+            }
+            Map<String, Object> res = new LinkedHashMap<>();
+            res.put("scope", "超级管理员视图（含全部 MCP 服务状态与工具审核情况，不含地址与密钥）");
+            res.put("serverCount", servers.size());
+            res.put("enabledToolCount", totalEnabledTools);
+            res.put("servers", servers);
+            if (servers.isEmpty()) {
+                res.put("note", "当前平台还没有接入任何 MCP 服务（serverCount=0），请如实告知用户可到「构建 → 工具 → MCP 服务」添加，严禁编造。");
+            }
+            return ok(res);
+        }
+
+        // 非超级管理员：只看已审核启用的 MCP 工具，按服务名称分组，不暴露服务配置与地址
+        List<McpToolView> available = mcpServerService.availableTools();
+        Map<String, List<Map<String, Object>>> byServer = new LinkedHashMap<>();
+        int count = 0;
+        for (McpToolView t : available) {
+            if (lowerKw != null
+                    && !containsIgnoreCase(t.getServerName(), lowerKw)
+                    && !containsIgnoreCase(t.getToolName(), lowerKw)
+                    && !containsIgnoreCase(t.getTitle(), lowerKw)
+                    && !containsIgnoreCase(t.getDescription(), lowerKw)) {
+                continue;
+            }
+            count++;
+            String serverName = t.getServerName() != null ? t.getServerName() : "MCP 服务";
+            Map<String, Object> tm = new LinkedHashMap<>();
+            tm.put("functionName", t.getFunctionName());
+            tm.put("title", t.getTitle() != null ? t.getTitle() : t.getToolName());
+            tm.put("category", t.getCategory());
+            tm.put("writeOperation", t.isWriteOperation());
+            tm.put("description", truncate(t.getDescription(), 100));
+            byServer.computeIfAbsent(serverName, k -> new ArrayList<>()).add(tm);
+        }
+        List<Map<String, Object>> groups = new ArrayList<>();
+        byServer.forEach((serverName, toolList) -> {
+            Map<String, Object> g = new LinkedHashMap<>();
+            g.put("serverName", serverName);
+            g.put("toolCount", toolList.size());
+            g.put("tools", toolList.stream().limit(MAX_LIMIT).toList());
+            groups.add(g);
+        });
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("scope", "可用 MCP 工具视图（仅含已审核启用的工具）");
+        res.put("availableToolCount", count);
+        res.put("servers", groups);
+        if (count == 0) {
+            res.put("note", "当前没有已审核启用的 MCP 工具（availableToolCount=0），请如实告知用户，严禁编造。");
+        }
+        return ok(res);
+    }
+
+    // ==================== list_skills ====================
+
+    Map<String, Object> listSkills(JsonNode args, CurrentActor actor) {
+        if (skillService == null) {
+            return Map.of("ok", false, "error", "技能库模块未启用");
+        }
+        String kw = text(args, "keyword");
+        String lowerKw = kw == null ? null : kw.toLowerCase(Locale.ROOT);
+        String scope = text(args, "scope");
+        int limit = limit(args);
+
+        List<SkillView> visible = skillService.list(actor);
+        List<SkillView> filtered = visible.stream()
+                .filter(s -> {
+                    if ("system".equalsIgnoreCase(scope)) {
+                        return s.isSystem();
+                    }
+                    if ("mine".equalsIgnoreCase(scope)) {
+                        return !s.isSystem() && actor != null && actor.getUserId() != null
+                                && actor.getUserId().equals(s.ownerId());
+                    }
+                    return true;
+                })
+                .filter(s -> lowerKw == null
+                        || containsIgnoreCase(s.name(), lowerKw)
+                        || containsIgnoreCase(s.description(), lowerKw))
+                .toList();
+
+        List<Map<String, Object>> items = filtered.stream().limit(limit).map(s -> {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", s.id());
+            item.put("name", s.name());
+            item.put("description", truncate(s.description(), 120));
+            item.put("requiredTools", s.requiredTools());
+            item.put("enabled", s.enabled());
+            item.put("isSystem", s.isSystem());
+            item.put("owner", s.isSystem() ? "系统内置" : s.ownerUsername());
+            item.put("version", s.version());
+            item.put("loadCount", s.loadCount());
+            item.put("agentCount", s.agentCount());
+            item.put("updatedAt", format(s.updatedAt()));
+            return item;
+        }).toList();
+
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("total", filtered.size());
+        res.put("returned", items.size());
+        res.put("items", items);
+        if (filtered.isEmpty()) {
+            res.put("note", "当前技能库中共有 0 个可见技能（为空），请如实告知用户目前还没有任何技能，可在「构建 → 技能库」新建或导入 SKILL.md，严禁编造不存在的技能。");
+        }
+        return ok(res);
+    }
+
     // ==================== get_usage_summary ====================
 
     Map<String, Object> getUsageSummary(JsonNode args, CurrentActor actor) {
@@ -534,7 +883,57 @@ public class AssistantQueryTools {
         m.put("assistantTokens", assistantTokens);
         m.put("estimatedCostCny", stats.getEstimatedCostCny());
         m.put("tokenChangePercentVsPreviousPeriod", stats.getTokenChangePercent());
-        m.put("tokensByModel", stats.getModelDistribution());
+
+        Map<String, Long> tokensByModel = sortUsageDesc(stats.getModelDistribution());
+        Map<String, Long> callsByModel = sortUsageDesc(stats.getModelCallDistribution());
+        long modelTokenTotal = tokensByModel.values().stream().mapToLong(Long::longValue).sum();
+
+        Set<String> allModels = new LinkedHashSet<>();
+        allModels.addAll(tokensByModel.keySet());
+        allModels.addAll(callsByModel.keySet());
+
+        List<Map<String, Object>> modelRanking = new ArrayList<>();
+        List<String> orderedModels = allModels.stream()
+                .sorted(Comparator.<String>comparingLong(name -> tokensByModel.getOrDefault(name, 0L)).reversed()
+                        .thenComparing(Comparator.<String>comparingLong(name -> callsByModel.getOrDefault(name, 0L)).reversed())
+                        .thenComparing(Comparator.naturalOrder()))
+                .toList();
+        for (int i = 0; i < orderedModels.size(); i++) {
+            String model = orderedModels.get(i);
+            long modelTokens = tokensByModel.getOrDefault(model, 0L);
+            long modelCalls = callsByModel.getOrDefault(model, 0L);
+            double share = modelTokenTotal > 0 ? Math.round(modelTokens * 1000.0 / modelTokenTotal) / 10.0 : 0.0;
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("rank", i + 1);
+            row.put("model", model);
+            row.put("tokens", modelTokens);
+            row.put("tokenSharePercent", share);
+            row.put("calls", modelCalls);
+            modelRanking.add(row);
+        }
+
+        Map<String, Object> topByTokens = null;
+        if (!tokensByModel.isEmpty()) {
+            var first = tokensByModel.entrySet().iterator().next();
+            double share = modelTokenTotal > 0 ? Math.round(first.getValue() * 1000.0 / modelTokenTotal) / 10.0 : 0.0;
+            topByTokens = new LinkedHashMap<>();
+            topByTokens.put("model", first.getKey());
+            topByTokens.put("tokens", first.getValue());
+            topByTokens.put("tokenSharePercent", share);
+        }
+        Map<String, Object> topByCalls = null;
+        if (!callsByModel.isEmpty()) {
+            var first = callsByModel.entrySet().iterator().next();
+            topByCalls = new LinkedHashMap<>();
+            topByCalls.put("model", first.getKey());
+            topByCalls.put("calls", first.getValue());
+        }
+
+        m.put("topModelByTokens", topByTokens);
+        m.put("topModelByCalls", topByCalls);
+        m.put("modelUsageRanking", modelRanking);
+        m.put("tokensByModel", tokensByModel);
+        m.put("callsByModel", callsByModel);
         m.put("agentCallsInPeriod", stats.getPeriodCalls());
         m.put("agentSuccessRatePercentInPeriod", stats.getPeriodCalls() == 0 ? null : stats.getSuccessRate());
         m.put("agentFailoversInPeriod", stats.getFailoverCount());
@@ -542,17 +941,37 @@ public class AssistantQueryTools {
         m.put("topAgentsInPeriod", stats.getRanking().stream().map(r -> {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("name", r.getName());
+            item.put("model", r.getModel());
             item.put("callsInPeriod", r.getCalls());
             item.put("tokensInPeriod", r.getTokens());
             return item;
         }).toList());
         m.put("notes", List.of(
                 "totalTokens = agentTokens（智能体被调用消耗）+ assistantTokens（平台 AI 助手自身对话消耗），均为本时间段内",
+                "modelUsageRanking 与 tokensByModel 对应概览页的「模型分布」图（按 Token 用量从高到低排序，含智能体与 AI 助手）；callsByModel 为按模型回复次数统计",
+                "回答\"使用最多的模型\"时，请直接给出 topModelByTokens（按 Token 消耗）与 topModelByCalls（按调用次数）的具体模型名与数值；两者均为空说明该时间段内暂无对话记录",
                 "agentCallsInPeriod 为本时间段内智能体的调用次数；为 0 时成功率不适用",
                 "agentFailoversInPeriod 为主通道失败、切到备用通道的调用次数，这些调用可能仍算成功",
                 "超级管理员的 totalTokens 含已删除智能体的用量（deletedAgentTokensInPeriod）",
                 "topAgentsInPeriod 只含现存智能体，按本时间段内调用次数排序"));
         return ok(m);
+    }
+
+    private static Map<String, Long> sortUsageDesc(Map<String, Long> source) {
+        Map<String, Long> sorted = new LinkedHashMap<>();
+        if (source == null || source.isEmpty()) {
+            return sorted;
+        }
+        source.entrySet().stream()
+                .filter(e -> e.getValue() != null && e.getValue() > 0)
+                .sorted(Map.Entry.<String, Long>comparingByValue(Comparator.reverseOrder())
+                        .thenComparing(Map.Entry.comparingByKey()))
+                .forEach(e -> sorted.put(e.getKey(), e.getValue()));
+        return sorted;
+    }
+
+    private static boolean containsIgnoreCase(String value, String lowerKeyword) {
+        return value != null && value.toLowerCase(Locale.ROOT).contains(lowerKeyword);
     }
 
     // ==================== diagnose_agent ====================
@@ -576,8 +995,12 @@ public class AssistantQueryTools {
                     "联系智能体创建人授予运行权限，或使用开发者账号"));
         }
 
-        // 2. 模型通道
+        // 2. 模型通道与工具调用兼容性
         checks.add(checkChannel(agent, actor));
+        Map<String, Object> toolCapCheck = checkToolCapabilities(agent, actor);
+        if (toolCapCheck != null) {
+            checks.add(toolCapCheck);
+        }
 
         // 3. 知识库绑定与索引
         checks.addAll(checkKnowledgeBases(agent, actor));
@@ -637,6 +1060,42 @@ public class AssistantQueryTools {
                     "到「模型网关」对该通道重新测试连接，检查 API Key 与额度");
         }
         return check("模型通道", "PASS", detail, null);
+    }
+
+    /** 技能、模型自主检索、外部工具都依赖通道支持工具调用；不支持时主动提醒 */
+    private Map<String, Object> checkToolCapabilities(Agent agent, CurrentActor actor) {
+        boolean agenticKb = Agent.KNOWLEDGE_AGENTIC.equals(Agent.normalizeKnowledgeMode(agent.getKnowledgeMode()))
+                && agent.getKnowledgeBaseIds() != null && !agent.getKnowledgeBaseIds().isEmpty();
+        boolean hasSkills = agent.getSkillIds() != null && agent.getSkillIds().stream().anyMatch(s -> s != null && !s.isBlank());
+        boolean hasTools = !enabledToolNames(agent.getToolsConfig()).isEmpty();
+        if (!agenticKb && !hasSkills && !hasTools) {
+            return null;
+        }
+        AgentRouteChoice choice = AgentRouteChoice.of(agent);
+        Optional<LlmGatewayService.ResolvedRoute> routeOpt = choice.isCustom()
+                ? gatewayService.resolveAgentRoute(choice).map(LlmGatewayService.AgentRoute::route)
+                : gatewayService.resolveRoute(agent.getModelName());
+        if (routeOpt.isEmpty()) {
+            return null;
+        }
+        LlmProvider primary = routeOpt.get().primary();
+        if (LlmGatewayService.supportsTools(primary)) {
+            return null;
+        }
+        List<String> affected = new ArrayList<>();
+        if (agenticKb) {
+            affected.add("知识库「模型自主检索」（会自动退回先检索后回答）");
+        }
+        if (hasSkills) {
+            affected.add("绑定的技能（无法按需加载）");
+        }
+        if (hasTools) {
+            affected.add("已启用的工具（对话时不会下发）");
+        }
+        String suggestion = actor != null && actor.isSuperAdmin()
+                ? "在调试页为该智能体切换支持工具调用的通道，或在「模型网关 → 大语言模型」开启该通道的「支持工具调用」"
+                : "在调试页为该智能体切换支持工具调用的通道，或联系超级管理员调整通道能力设置";
+        return check("工具调用能力", "WARN", "当前生效通道不支持工具调用，以下配置不会生效：" + String.join("、", affected), suggestion);
     }
 
     /** 与 AiChatService 选模型的规则一致：配置的模型在通道模型列表中则使用它，否则用通道默认模型。 */

@@ -39,9 +39,13 @@ public class AssistantUsageService {
             String model = row[1] != null && !row[1].toString().isBlank() ? row[1].toString() : "未知模型";
             long prompt = toLong(row[2]);
             long completion = toLong(row[3]);
+            long calls = row.length > 4 ? toLong(row[4]) : 0L;
             usage.promptTokens += prompt;
             usage.completionTokens += completion;
             usage.tokensByModel.merge(model, prompt + completion, Long::sum);
+            if (calls > 0) {
+                usage.callsByModel.merge(model, calls, Long::sum);
+            }
             if (day != null) {
                 long[] bucket = usage.byDay.computeIfAbsent(day, d -> new long[]{0L, 0L});
                 bucket[0] += prompt;
@@ -72,6 +76,7 @@ public class AssistantUsageService {
         private long promptTokens;
         private long completionTokens;
         private final Map<String, Long> tokensByModel = new LinkedHashMap<>();
+        private final Map<String, Long> callsByModel = new LinkedHashMap<>();
         /** 日期 → [prompt, completion] */
         private final Map<LocalDate, long[]> byDay = new TreeMap<>();
 
@@ -79,6 +84,7 @@ public class AssistantUsageService {
         public long getCompletionTokens() { return completionTokens; }
         public long getTotalTokens() { return promptTokens + completionTokens; }
         public Map<String, Long> getTokensByModel() { return tokensByModel; }
+        public Map<String, Long> getCallsByModel() { return callsByModel; }
         public Map<LocalDate, long[]> getByDay() { return byDay; }
     }
 }
