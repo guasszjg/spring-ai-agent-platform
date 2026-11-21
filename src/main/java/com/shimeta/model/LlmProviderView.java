@@ -20,6 +20,9 @@ public class LlmProviderView {
     private Integer timeoutMs;
     private Integer maxRetries;
     private boolean supportsTools;
+    private boolean supportsToolChoiceRequired;
+    private String modelSizeTier;
+    private boolean supportsAssistantAgentMode;
     private Integer contextWindow;
     private String remark;
     private String lastProbeStatus;
@@ -153,6 +156,30 @@ public class LlmProviderView {
 
     public void setSupportsTools(boolean supportsTools) {
         this.supportsTools = supportsTools;
+    }
+
+    public boolean getSupportsToolChoiceRequired() {
+        return supportsToolChoiceRequired;
+    }
+
+    public void setSupportsToolChoiceRequired(boolean supportsToolChoiceRequired) {
+        this.supportsToolChoiceRequired = supportsToolChoiceRequired;
+    }
+
+    public String getModelSizeTier() {
+        return modelSizeTier;
+    }
+
+    public void setModelSizeTier(String modelSizeTier) {
+        this.modelSizeTier = modelSizeTier;
+    }
+
+    public boolean isSupportsAssistantAgentMode() {
+        return supportsAssistantAgentMode;
+    }
+
+    public void setSupportsAssistantAgentMode(boolean supportsAssistantAgentMode) {
+        this.supportsAssistantAgentMode = supportsAssistantAgentMode;
     }
 
     public Integer getContextWindow() {

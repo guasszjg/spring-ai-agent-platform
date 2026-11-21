@@ -40,19 +40,59 @@ public class AssistantEvalController {
         return ResponseEntity.ok(ApiResponse.ok(evalService.cases()));
     }
 
-    /** 请求体可选 {"caseIds": [...]}，为空表示运行全部用例。 */
+    /** 请求体可选 {"caseIds": [...], "judgeEnabled": false}，caseIds 为空表示运行全部用例。 */
     @PostMapping("/runs")
-    public ResponseEntity<ApiResponse<Map<String, Object>>> start(@RequestBody(required = false) Map<String, List<String>> body) {
+    public ResponseEntity<ApiResponse<Map<String, Object>>> start(@RequestBody(required = false) Map<String, Object> body) {
         if (!isSuperAdmin()) {
             return forbidden();
         }
         try {
-            AssistantEvalRun run = evalService.start(CurrentActor.get(), body != null ? body.get("caseIds") : null);
+            List<String> caseIds = null;
+            boolean judgeEnabled = false;
+            if (body != null) {
+                Object rawIds = body.get("caseIds");
+                if (rawIds instanceof List<?> list) {
+                    caseIds = list.stream().map(String::valueOf).toList();
+                }
+                judgeEnabled = Boolean.TRUE.equals(body.get("judgeEnabled"));
+            }
+            AssistantEvalRun run = evalService.start(CurrentActor.get(), caseIds, judgeEnabled);
             return ResponseEntity.ok(ApiResponse.ok(overview(run)));
         } catch (IllegalStateException e) {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error(e.getMessage()));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    /** 按模型通道与模型维度对比各类别评测通过率（4.7）。 */
+    @GetMapping("/compare")
+    public ResponseEntity<ApiResponse<List<Map<String, Object>>>> compare() {
+        if (!isSuperAdmin()) {
+            return forbidden();
+        }
+        return ResponseEntity.ok(ApiResponse.ok(evalService.channelComparison()));
+    }
+
+    /** 待复盘对话列表：用户点「没用」、工具失败或命中回答校验的近期回复（4.7）。 */
+    @GetMapping("/review-queue")
+    public ResponseEntity<ApiResponse<List<Map<String, Object>>>> reviewQueue() {
+        if (!isSuperAdmin()) {
+            return forbidden();
+        }
+        return ResponseEntity.ok(ApiResponse.ok(evalService.reviewQueue(50)));
+    }
+
+    /** 将待复盘对话一键转换为评测用例草稿（4.7）。 */
+    @PostMapping("/review-queue/{messageId}/draft-case")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> draftCase(@PathVariable String messageId) {
+        if (!isSuperAdmin()) {
+            return forbidden();
+        }
+        try {
+            return ResponseEntity.ok(ApiResponse.ok(evalService.draftCaseFromReview(messageId)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
         }
     }
 
@@ -81,6 +121,10 @@ public class AssistantEvalController {
         m.put("status", run.getStatus());
         m.put("triggeredBy", run.getTriggeredBy());
         m.put("model", run.getModel());
+        m.put("channelId", run.getChannelId());
+        m.put("channelName", run.getChannelName());
+        m.put("judgeEnabled", run.getJudgeEnabled());
+        m.put("judgeTokens", run.getJudgeTokens());
         m.put("total", run.getTotal());
         m.put("completed", run.getCompleted());
         m.put("passed", run.getPassed());

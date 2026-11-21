@@ -12,6 +12,8 @@ public class ChatGeneration {
     private String extraHeaders;
     // Set by the selected server-side channel, never trusted from a chat request.
     private LlmProtocolType providerProtocol = LlmProtocolType.OPENAI;
+    // Server-controlled OpenAI tool_choice (e.g. "required") for forced first-round tool retry.
+    private String toolChoice;
 
     /** 浅拷贝：按通道调整参数（比如 max_tokens）时不改动调用方传进来的对象 */
     public ChatGeneration copy() {
@@ -26,7 +28,17 @@ public class ChatGeneration {
         copy.thinking = thinking;
         copy.extraHeaders = extraHeaders;
         copy.providerProtocol = providerProtocol;
+        copy.toolChoice = toolChoice;
         return copy;
+    }
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    public String getToolChoice() {
+        return toolChoice;
+    }
+
+    public void setToolChoice(String toolChoice) {
+        this.toolChoice = toolChoice;
     }
 
     @com.fasterxml.jackson.annotation.JsonIgnore

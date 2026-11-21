@@ -1,0 +1,176 @@
+[
+  {
+    "id": "metrics",
+    "title": "监控",
+    "items": [
+      {
+        "id": "overview",
+        "name": "概览",
+        "superAdminOnly": false,
+        "roles": [
+          "SUPER_ADMIN",
+          "DEVELOPER",
+          "VIEWER"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "studio",
+    "title": "构建",
+    "items": [
+      {
+        "id": "agents",
+        "name": "智能体",
+        "superAdminOnly": false,
+        "roles": [
+          "SUPER_ADMIN",
+          "DEVELOPER",
+          "VIEWER"
+        ]
+      },
+      {
+        "id": "templates",
+        "name": "场景模板",
+        "superAdminOnly": false,
+        "roles": [
+          "SUPER_ADMIN",
+          "DEVELOPER",
+          "VIEWER"
+        ]
+      },
+      {
+        "id": "tools",
+        "name": "工具",
+        "superAdminOnly": false,
+        "roles": [
+          "SUPER_ADMIN",
+          "DEVELOPER",
+          "VIEWER"
+        ]
+      },
+      {
+        "id": "skills",
+        "name": "技能库",
+        "superAdminOnly": false,
+        "roles": [
+          "SUPER_ADMIN",
+          "DEVELOPER",
+          "VIEWER"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "knowledge",
+    "title": "数据",
+    "items": [
+      {
+        "id": "knowledge",
+        "name": "自建知识库",
+        "superAdminOnly": false,
+        "roles": [
+          "SUPER_ADMIN",
+          "DEVELOPER",
+          "VIEWER"
+        ]
+      },
+      {
+        "id": "knowledge-dify",
+        "name": "Dify 知识库",
+        "superAdminOnly": false,
+        "roles": [
+          "SUPER_ADMIN",
+          "DEVELOPER",
+          "VIEWER"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "governance",
+    "title": "管理",
+    "nonAdminTitle": "规则与安全",
+    "items": [
+      {
+        "id": "gateway",
+        "name": "模型网关",
+        "superAdminOnly": true,
+        "roles": [
+          "SUPER_ADMIN"
+        ],
+        "children": [
+          {
+            "id": "gateway-llm",
+            "name": "大语言模型",
+            "roles": [
+              "SUPER_ADMIN"
+            ]
+          },
+          {
+            "id": "gateway-embedding",
+            "name": "向量模型",
+            "roles": [
+              "SUPER_ADMIN"
+            ]
+          },
+          {
+            "id": "gateway-rerank",
+            "name": "Rerank 模型",
+            "roles": [
+              "SUPER_ADMIN"
+            ]
+          },
+          {
+            "id": "gateway-ocr",
+            "name": "OCR 识别",
+            "roles": [
+              "SUPER_ADMIN"
+            ]
+          },
+          {
+            "id": "gateway-dify",
+            "name": "Dify 知识引擎",
+            "roles": [
+              "SUPER_ADMIN"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "users",
+        "name": "用户",
+        "superAdminOnly": true,
+        "roles": [
+          "SUPER_ADMIN"
+        ]
+      },
+      {
+        "id": "roles",
+        "name": "角色与权限",
+        "superAdminOnly": true,
+        "roles": [
+          "SUPER_ADMIN"
+        ]
+      },
+      {
+        "id": "assistant-eval",
+        "name": "助手评测",
+        "superAdminOnly": true,
+        "roles": [
+          "SUPER_ADMIN"
+        ]
+      },
+      {
+        "id": "security",
+        "name": "开放与安全",
+        "superAdminOnly": false,
+        "roles": [
+          "SUPER_ADMIN",
+          "DEVELOPER",
+          "VIEWER"
+        ]
+      }
+    ]
+  }
+]

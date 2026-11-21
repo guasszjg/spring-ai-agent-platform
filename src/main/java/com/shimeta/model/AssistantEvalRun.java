@@ -33,6 +33,18 @@ public class AssistantEvalRun {
     @Column(length = 128)
     private String model;
 
+    @Column(name = "channel_id", length = 64)
+    private String channelId;
+
+    @Column(name = "channel_name", length = 128)
+    private String channelName;
+
+    @Column(name = "judge_enabled")
+    private Boolean judgeEnabled = false;
+
+    @Column(name = "judge_tokens")
+    private Long judgeTokens = 0L;
+
     @Column(nullable = false)
     private Integer total = 0;
 
@@ -93,6 +105,14 @@ public class AssistantEvalRun {
     public void setTriggeredBy(String triggeredBy) { this.triggeredBy = triggeredBy; }
     public String getModel() { return model; }
     public void setModel(String model) { this.model = model; }
+    public String getChannelId() { return channelId; }
+    public void setChannelId(String channelId) { this.channelId = channelId; }
+    public String getChannelName() { return channelName; }
+    public void setChannelName(String channelName) { this.channelName = channelName; }
+    public Boolean getJudgeEnabled() { return Boolean.TRUE.equals(judgeEnabled); }
+    public void setJudgeEnabled(Boolean judgeEnabled) { this.judgeEnabled = Boolean.TRUE.equals(judgeEnabled); }
+    public Long getJudgeTokens() { return judgeTokens != null ? judgeTokens : 0L; }
+    public void setJudgeTokens(Long judgeTokens) { this.judgeTokens = judgeTokens != null ? judgeTokens : 0L; }
     public Integer getTotal() { return total; }
     public void setTotal(Integer total) { this.total = total; }
     public Integer getCompleted() { return completed; }

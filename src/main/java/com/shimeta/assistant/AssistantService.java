@@ -66,13 +66,15 @@ public class AssistantService {
     static final String NO_CHANNEL_REPLY = "当前还没有可用的大模型通道。请先到「模型网关 → 大语言模型」中添加并启用一个模型通道，然后再来和我对话。";
     static final String CHANNEL_FAILED_REPLY = "模型通道暂时没有返回结果，请稍后重试，或到「模型网关」中检查通道的连通性。";
     static final String TOOLS_UNSUPPORTED_NOTICE = "当前模型通道不支持工具调用，本次已按问答模式回答，无法查询平台数据。";
+    static final String AGENT_MODE_DISABLED_NOTICE = "当前模型不支持执行模式，已自动切换为问答模式；请在模型网关为助手选择 7B 以上、支持工具调用的模型。";
     static final String CARD_CLAIM_NOTICE = "注意：本轮实际没有生成任何操作卡片，上面关于\"卡片已生成\"的说法有误。如需创建或修改，请让助手重新生成。";
     private static final java.util.regex.Pattern CARD_CLAIM = java.util.regex.Pattern.compile(
             "(已|已经)(为你|为您|帮你|帮您)?生成[^。\n]{0,12}卡片|卡片[^。\n]{0,6}已(经)?生成");
-    /** 宁宽勿严的写操作意图判断：纯查询时不挂载 7 个写工具与冗长卡片规则，避免 4096 等小上下文窗口溢出 */
+    /** 宁宽勿严的写操作意图判断：纯查询时不挂载写工具与冗长卡片规则，避免 4096 等小上下文窗口溢出 */
     private static final java.util.regex.Pattern WRITE_INTENT = java.util.regex.Pattern.compile(
-            "(?i)(创建|新建|建一|建个|加一|添加|新增|修改|改成|改为|更新|编辑|调整|调成|换成|绑定|解绑|关联|取消关联|"
-                    + "停用|启用|开启|关闭|暂停|发布|上线|下线|签发|生成|凭证|api\\s*key|apikey|faq|卡片|套用|重命名|删除|移除|撤)");
+            "(?i)(创建|新建|建一|建个|加一|添加|新增|修改|改成|改为|更新|编辑|调整|调成|换成|切换|激活|绑定|解绑|关联|取消关联|"
+                    + "停用|启用|开启|关闭|暂停|发布|上线|下线|签发|生成|凭证|api\\s*key|apikey|faq|卡片|套用|存为|登记|刷新|"
+                    + "回滚|重建|跑.*评测|运行.*评测|重置|吊销|轮换|重命名|删除|移除|撤)");
     /** Ollama OpenAI 兼容接口未配置 contextWindow 时的保守默认窗口，避免输入顶爆 4096 返回空内容 */
     static final int OLLAMA_DEFAULT_CONTEXT_WINDOW = 4096;
 
@@ -185,33 +187,61 @@ public class AssistantService {
         sink.send("start", Map.of("conversationId", conversation.getId()));
 
         List<String> actionNotes = actionService.statusNotes(conversation.getId());
-        boolean agentMode = AssistantChatRequest.MODE_AGENT.equals(mode);
+        var route = gatewayService.resolveAssistantRoute();
+        boolean requestedAgentMode = AssistantChatRequest.MODE_AGENT.equals(mode);
+        boolean agentModeDowngraded = requestedAgentMode && route.isPresent()
+                && !LlmGatewayService.supportsAssistantAgentMode(route.get().route().primary());
+        boolean agentMode = requestedAgentMode && !agentModeDowngraded;
+        if (agentModeDowngraded) {
+            mode = AssistantChatRequest.MODE_CHAT;
+        }
         boolean includeWrite = agentMode && mayNeedWriteTools(effectiveMessage, actionNotes);
-        java.util.Set<String> focusedReadTools = (agentMode && !includeWrite && history.isEmpty())
-                ? selectReadTools(effectiveMessage, request.context()) : null;
-        String system = (AssistantChatRequest.MODE_CHAT.equals(mode)
-                ? AssistantPrompts.chatMode() + docsContext(effectiveMessage)
-                : AssistantPrompts.agentMode(actor, includeWrite)) + pageContext(request.context(), actor);
-        List<Map<String, Object>> messages = buildMessages(system, history, actionNotes, effectiveMessage);
+        java.util.Set<String> prevGroups = agentMode ? conversationGroups.get(conversation.getId()) : null;
+        AssistantToolRouter.ToolSelection selection = agentMode
+                ? toolRouter.route(effectiveMessage, request.context(), prevGroups, actor, includeWrite)
+                : AssistantToolRouter.ToolSelection.ALL;
+        if (agentMode && !selection.groupIds().isEmpty()) {
+            conversationGroups.put(conversation.getId(), selection.groupIds());
+        }
 
         ToolContext toolContext = ToolContext.of(actor, conversation.getId());
         Turn turn = new Turn(contentGuardService.createStreamingGuard(policy), sink);
-        var route = gatewayService.resolveAssistantRoute();
+        if (agentModeDowngraded) {
+            turn.notice = AGENT_MODE_DISABLED_NOTICE;
+        }
+        Integer routeWindow = route.map(r -> effectiveContextWindow(r.route().primary())).orElse(null);
+
+        String system = (AssistantChatRequest.MODE_CHAT.equals(mode)
+                ? AssistantPrompts.chatMode(actor) + docsContext(effectiveMessage, actor, routeWindow)
+                : AssistantPrompts.agentMode(actor, includeWrite)) + pageContext(request.context(), actor);
+        List<Map<String, Object>> messages = buildMessages(system, history, actionNotes, effectiveMessage);
+
         if (route.isEmpty()) {
             turn.degraded = true;
             turn.emit(NO_CHANNEL_REPLY);
         } else {
-            runWithFailover(route.get(), messages, agentMode, includeWrite, focusedReadTools, toolContext, turn, sink);
+            runWithFailover(route.get(), messages, agentMode, includeWrite, selection, toolContext, turn, sink);
         }
         turn.finish();
-        if (AssistantChatRequest.MODE_AGENT.equals(mode) && toolContext.createdActions().isEmpty()
-                && claimsCardGenerated(turn.shown.toString())) {
-            // 模型偶尔会在没有调用写工具的情况下声称"已生成卡片"：明确提示，避免用户误以为操作已在进行
-            turn.notice = CARD_CLAIM_NOTICE;
-            log.warn("Assistant claimed an action card without calling a write tool (conversation {})", conversation.getId());
-        }
 
         String content = turn.finalContent();
+        if (!turn.blocked && !turn.degraded) {
+            int successfulToolCalls = (int) toolContext.calls().stream().filter(ToolContext.ToolCallRecord::ok).count();
+            AssistantAnswerVerifier.VerificationResult verification = answerVerifier.verify(
+                    new AssistantAnswerVerifier.VerificationInput(
+                            conversation.getId(), agentMode, turn.degraded, turn.blocked, turn.toolsUnsupported,
+                            effectiveMessage, content, successfulToolCalls,
+                            toolContext.createdActions().size(), toolContext.allowedLinks()));
+            content = verification.cleanedContent();
+            if (verification.extraNotice() != null) {
+                turn.notice = turn.notice == null || turn.notice.isBlank()
+                        ? verification.extraNotice()
+                        : turn.notice + " " + verification.extraNotice();
+            }
+            if (verification.hasFlags()) {
+                turn.verificationFlags.addAll(verification.flags());
+            }
+        }
         AssistantMessage reply = new AssistantMessage();
         reply.setRole(AssistantMessage.ROLE_ASSISTANT);
         reply.setContent(content);
@@ -222,6 +252,7 @@ public class AssistantService {
         reply.setLatencyMs(System.currentTimeMillis() - start);
         reply.setDegraded(turn.degraded);
         reply.setToolCalls(turn.tools.isEmpty() ? null : toJson(turn.tools));
+        reply.setVerificationFlags(turn.verificationFlags.isEmpty() ? null : toJson(turn.verificationFlags));
         reply = conversationService.append(conversation, reply);
         actionService.attachMessage(reply.getId(), toolContext.createdActions());
 
@@ -243,16 +274,45 @@ public class AssistantService {
         done.put("degraded", turn.degraded);
         done.put("notice", turn.notice);
         done.put("actionIds", toolContext.createdActions().stream().map(AssistantAction::getId).toList());
+        if (!turn.verificationFlags.isEmpty()) {
+            done.put("verificationFlags", turn.verificationFlags);
+        }
         sink.send("done", done);
         return toolContext;
     }
 
     private AssistantQueryTools queryTools;
+    private AssistantAnswerVerifier answerVerifier = new AssistantAnswerVerifier();
+    private AssistantToolRouter toolRouter = new AssistantToolRouter();
+    /** 会话级工具组记忆（LRU 上限 500），支持多轮追问时自动继承上一轮语义工具组 */
+    private final Map<String, java.util.Set<String>> conversationGroups = java.util.Collections.synchronizedMap(
+            new LinkedHashMap<>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, java.util.Set<String>> eldest) {
+                    return size() > 500;
+                }
+            });
 
     /** 可选注入（setter 方式，避免改动已有构造器签名）：用于把页面上下文解析成资源名称。 */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setQueryTools(AssistantQueryTools queryTools) {
         this.queryTools = queryTools;
+    }
+
+    /** 可选注入：后置防编造回答校验器（默认使用内置单例，避免影响现有单测构造）。 */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setAnswerVerifier(AssistantAnswerVerifier answerVerifier) {
+        if (answerVerifier != null) {
+            this.answerVerifier = answerVerifier;
+        }
+    }
+
+    /** 可选注入：语义工具路由器（支持向量相似度选组与多轮组继承）。 */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setToolRouter(AssistantToolRouter toolRouter) {
+        if (toolRouter != null) {
+            this.toolRouter = toolRouter;
+        }
     }
 
     /** 页面上下文（P3）：用户在哪个页面、正在看哪个资源，让模型理解"这个智能体""当前知识库" */
@@ -274,18 +334,49 @@ public class AssistantService {
         return content != null && CARD_CLAIM.matcher(content).find();
     }
 
-    /** 问答模式没有工具：自动检索平台使用文档注入系统提示词；文档未就绪时退回静态功能介绍。 */
-    private String docsContext(String question) {
-        List<RetrievedChunk> chunks = platformDocsService.search(question, 4);
+    /** 问答模式没有工具：按当前通道上下文窗口计算预算，自动检索平台使用文档注入系统提示词。 */
+    private String docsContext(String question, CurrentActor actor, Integer contextWindow) {
+        DocsBudget budget = docsBudgetForWindow(contextWindow);
+        List<RetrievedChunk> chunks = platformDocsService.search(question, budget.topK(), actor);
         if (chunks.isEmpty()) {
             return "";
         }
         StringBuilder sb = new StringBuilder("\n\n【平台使用文档参考】回答平台使用问题时以下面的文档内容为准；文档没有提到的，如实说明不确定：\n");
+        int usedChars = 0;
         for (RetrievedChunk chunk : chunks) {
             String content = chunk.content() == null ? "" : chunk.content().trim();
-            sb.append("---\n").append(content.length() > 1200 ? content.substring(0, 1200) + "…" : content).append('\n');
+            if (content.isEmpty()) {
+                continue;
+            }
+            int remaining = budget.maxTotalChars() - usedChars;
+            if (remaining < 120) {
+                break;
+            }
+            int cap = Math.min(budget.maxCharsPerChunk(), remaining);
+            String snippet = content.length() > cap ? content.substring(0, cap) + "…" : content;
+            sb.append("---\n").append(snippet).append('\n');
+            usedChars += snippet.length();
         }
-        return sb.toString();
+        return usedChars == 0 ? "" : sb.toString();
+    }
+
+    /** 按通道上下文窗口计算问答模式可注入的文档片段预算：小窗口少注几段，大窗口多注几段。 */
+    static DocsBudget docsBudgetForWindow(Integer window) {
+        if (window != null && window > 0) {
+            if (window <= 4096) {
+                return new DocsBudget(2, 600, 1200);
+            }
+            if (window <= 8192) {
+                return new DocsBudget(3, 900, 2500);
+            }
+            if (window > 32768) {
+                return new DocsBudget(6, 1500, 8000);
+            }
+        }
+        return new DocsBudget(4, 1200, 4800);
+    }
+
+    record DocsBudget(int topK, int maxCharsPerChunk, int maxTotalChars) {
     }
 
     static List<Map<String, Object>> buildMessages(String system, List<AssistantMessage> history, String userMessage) {
@@ -319,7 +410,7 @@ public class AssistantService {
 
     /** 主通道按策略重试；仍失败且尚未向用户输出任何内容时切换到降级通道。 */
     private void runWithFailover(LlmGatewayService.AssistantRoute assistantRoute, List<Map<String, Object>> messages,
-                                 boolean agentMode, boolean includeWrite, java.util.Set<String> focusedReadTools,
+                                 boolean agentMode, boolean includeWrite, AssistantToolRouter.ToolSelection selection,
                                  ToolContext toolContext, Turn turn, Sink sink) {
         List<Channel> channels = new ArrayList<>();
         LlmGatewayService.ResolvedRoute route = assistantRoute.route();
@@ -333,7 +424,7 @@ public class AssistantService {
             for (int attempt = 0; attempt < attempts; attempt++) {
                 turn.model = channel.model();
                 try {
-                    runRounds(channel, route.timeoutMs(), messages, agentMode, includeWrite, focusedReadTools, toolContext, turn, sink);
+                    runRounds(channel, route.timeoutMs(), messages, agentMode, includeWrite, selection, toolContext, turn, sink);
                     return;
                 } catch (RuntimeException e) {
                     log.warn("Assistant channel [{}] attempt {} failed: {}", channel.provider().getName(), attempt + 1, e.getMessage());
@@ -351,12 +442,14 @@ public class AssistantService {
     }
 
     private void runRounds(Channel channel, int timeoutMs, List<Map<String, Object>> baseMessages,
-                           boolean agentMode, boolean includeWrite, java.util.Set<String> focusedReadTools,
+                           boolean agentMode, boolean includeWrite, AssistantToolRouter.ToolSelection selection,
                            ToolContext toolContext, Turn turn, Sink sink) {
         CurrentActor actor = toolContext.actor();
         Integer window = effectiveContextWindow(channel.provider());
+        java.util.Set<String> allowedRead = selection != null ? selection.allowedReadTools() : null;
+        java.util.Set<String> allowedWrite = selection != null ? selection.allowedWriteTools() : null;
         List<Map<String, Object>> initialTools = agentMode
-                ? toolRegistry.definitions(actor, includeWrite, focusedReadTools) : null;
+                ? toolRegistry.definitions(actor, includeWrite, allowedRead, allowedWrite) : null;
         List<Map<String, Object>> messages = fitMessagesForWindow(baseMessages, initialTools, window);
         ChatGeneration generation = new ChatGeneration();
         generation.setTemperature(agentMode ? 0.3 : 0.5);
@@ -364,10 +457,17 @@ public class AssistantService {
         while (round < MAX_ROUNDS && !sink.isCancelled() && !turn.blocked) {
             boolean offerTools = agentMode && !turn.toolsUnsupported && round < MAX_ROUNDS - 1;
             List<Map<String, Object>> tools = offerTools
-                    ? toolRegistry.definitions(actor, includeWrite, focusedReadTools) : null;
+                    ? toolRegistry.definitions(actor, includeWrite, allowedRead, allowedWrite) : null;
+            boolean guardEmptyToolCall = round == 0 && offerTools && !includeWrite
+                    && tools != null && !tools.isEmpty()
+                    && selection != null && selection.hitsReadDataGroup()
+                    && LlmGatewayService.supportsToolChoiceRequired(channel.provider());
+            List<String> bufferedDeltas = guardEmptyToolCall ? new ArrayList<>() : null;
+            java.util.function.Consumer<String> deltaSink = guardEmptyToolCall ? bufferedDeltas::add : turn::emit;
+
             OpenAiCompatibleClient.StreamResult result;
             try {
-                result = callModel(channel, timeoutMs, messages, tools, generation, turn, sink);
+                result = callModel(channel, timeoutMs, messages, tools, generation, turn, sink, deltaSink);
             } catch (RuntimeException e) {
                 if (offerTools && !turn.hasShownContent() && looksLikeToolsRejected(e.getMessage())) {
                     log.info("Channel [{}] rejected tool definitions, falling back to chat mode", channel.provider().getName());
@@ -379,6 +479,36 @@ public class AssistantService {
             }
             turn.promptTokens += result.promptTokens();
             turn.completionTokens += result.completionTokens();
+
+            if (guardEmptyToolCall && !result.hasToolCalls() && !sink.isCancelled() && !turn.blocked) {
+                // 4.5：查询类问题第 1 轮跳过调工具时，带 tool_choice=required 强制重试一次（避免编造数据）
+                log.info("Assistant round 0 skipped tools on read-data query (groups={}), retrying once with tool_choice=required",
+                        selection.groupIds());
+                ChatGeneration forcedGeneration = generation.copy();
+                forcedGeneration.setToolChoice("required");
+                try {
+                    OpenAiCompatibleClient.StreamResult retryResult = callModel(
+                            channel, timeoutMs, messages, tools, forcedGeneration, turn, sink, turn::emit);
+                    turn.promptTokens += retryResult.promptTokens();
+                    turn.completionTokens += retryResult.completionTokens();
+                    result = retryResult;
+                } catch (RuntimeException retryEx) {
+                    if (!turn.hasShownContent()) {
+                        log.info("Channel [{}] rejected tool_choice=required ({}), flushing initial reply",
+                                channel.provider().getName(), retryEx.getMessage());
+                        for (String delta : bufferedDeltas) {
+                            turn.emit(delta);
+                        }
+                        return;
+                    }
+                    throw retryEx;
+                }
+            } else if (guardEmptyToolCall && bufferedDeltas != null && !bufferedDeltas.isEmpty()) {
+                for (String delta : bufferedDeltas) {
+                    turn.emit(delta);
+                }
+            }
+
             if (!offerTools || !result.hasToolCalls() || sink.isCancelled()) {
                 return; // 最终回复已在流式回调中推送
             }
@@ -431,6 +561,9 @@ public class AssistantService {
                 }
                 turn.tools.add(toolRecord);
                 toolContext.calls().add(new ToolContext.ToolCallRecord(call.name(), call.arguments(), outcome.ok()));
+                if (outcome.ok()) {
+                    toolContext.allowedLinks().addAll(AssistantAnswerVerifier.extractLinksFromJson(outcome.content()));
+                }
                 String toolContent = trimToolContentForWindow(outcome.content(), messages, tools, window);
                 messages.add(Map.of("role", "tool", "tool_call_id", call.id(), "content", toolContent));
             }
@@ -597,7 +730,7 @@ public class AssistantService {
 
     private OpenAiCompatibleClient.StreamResult callModel(Channel channel, int timeoutMs, List<Map<String, Object>> messages,
                                                           List<Map<String, Object>> tools, ChatGeneration generation,
-                                                          Turn turn, Sink sink) {
+                                                          Turn turn, Sink sink, java.util.function.Consumer<String> deltaConsumer) {
         LlmProvider provider = channel.provider();
         generation.setProviderProtocol(provider.getProtocol());
         if (provider.getProtocol() == LlmProtocolType.CUSTOM_HTTP) {
@@ -608,14 +741,14 @@ public class AssistantService {
             }
             OpenAiCompatibleClient.ChatResult result = customHttpClient.chat(provider, messages, generation, timeoutMs);
             String content = result != null && result.content() != null ? result.content() : "";
-            turn.emit(content);
+            deltaConsumer.accept(content);
             return new OpenAiCompatibleClient.StreamResult(content, List.of(),
                     result != null ? result.promptTokens() : 0, result != null ? result.completionTokens() : 0);
         }
         return openAiClient.streamChat(provider.getBaseUrl(), channel.key(), channel.model(),
                 LlmGatewayService.parseCustomHeaders(provider.getCustomConfig()),
                 LlmGatewayService.isWebSearchEnabled(provider),
-                messages, tools, generation, timeoutMs, turn::emit, () -> sink.isCancelled() || turn.blocked);
+                messages, tools, generation, timeoutMs, deltaConsumer, () -> sink.isCancelled() || turn.blocked);
     }
 
     /** 通道拒绝 tools 参数（不支持 Function Calling）的典型报错 */
@@ -697,6 +830,9 @@ public class AssistantService {
                 int modelCount = node.path("modelUsageRanking").isArray() ? node.path("modelUsageRanking").size() : 0;
                 return modelCount > 0 ? range + " · " + modelCount + " 个模型" : range;
             }
+            if (node.has("hitCount") && node.path("hitCount").canConvertToInt()) {
+                return "命中 " + node.path("hitCount").asInt() + " 条切片";
+            }
             if (node.has("total") && node.path("total").canConvertToInt()) {
                 return "共 " + node.path("total").asInt() + " 条";
             }
@@ -735,6 +871,7 @@ public class AssistantService {
         final StreamingSlidingWindowGuard guard;
         final StringBuilder shown = new StringBuilder();
         final List<Map<String, Object>> tools = new ArrayList<>();
+        final List<String> verificationFlags = new ArrayList<>();
         String model;
         int promptTokens;
         int completionTokens;

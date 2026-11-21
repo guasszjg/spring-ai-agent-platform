@@ -478,6 +478,9 @@ public class OpenAiCompatibleClient {
             payload.put("messages", messages);
             if (tools != null && !tools.isEmpty()) {
                 payload.put("tools", tools);
+                if (generation != null && generation.getToolChoice() != null && !generation.getToolChoice().isBlank()) {
+                    payload.put("tool_choice", generation.getToolChoice().trim());
+                }
             }
             applyGeneration(payload, generation, defaultWebSearch);
             applyOllamaThinking(payload, generation);

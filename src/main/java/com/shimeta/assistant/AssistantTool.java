@@ -44,6 +44,12 @@ public record AssistantTool(String name,
         return new AssistantTool(name, label, description, parameters, true, false, handler);
     }
 
+    /** 仅超级管理员可用的写工具（同样只生成待确认操作卡片） */
+    public static AssistantTool adminWrite(String name, String label, String description,
+                                           Map<String, Object> parameters, Handler handler) {
+        return new AssistantTool(name, label, description, parameters, true, true, handler);
+    }
+
     /** OpenAI 兼容的 function 工具定义。 */
     public Map<String, Object> definition() {
         return Map.of(

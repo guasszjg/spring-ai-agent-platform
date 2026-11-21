@@ -1,9 +1,12 @@
 package com.shimeta.controller;
 
+import com.shimeta.assistant.AssistantActionConfirmRequest;
 import com.shimeta.assistant.AssistantActionService;
 import com.shimeta.assistant.AssistantChatRequest;
 import com.shimeta.assistant.AssistantConversationService;
+import com.shimeta.assistant.AssistantEvalService;
 import com.shimeta.assistant.AssistantService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.shimeta.model.ApiResponse;
 import com.shimeta.model.ChatRequest;
 import com.shimeta.model.ChatResponse;
@@ -41,6 +44,12 @@ public class AssistantController {
     private final AssistantActionService actionService;
     private final RateLimiter rateLimiter;
     private final int rateLimitPerMinute;
+    private AssistantEvalService evalService;
+
+    @Autowired(required = false)
+    public void setEvalService(AssistantEvalService evalService) {
+        this.evalService = evalService;
+    }
 
     public AssistantController(AiChatService aiChatService,
                                AssistantService assistantService,
@@ -95,6 +104,19 @@ public class AssistantController {
                 .body(assistantService.streamChat(normalized, actor));
     }
 
+    /** 查询当前助手通道能力（4.8 按模型规模分级开放执行模式）及该通道最近一次评测摘要。 */
+    @GetMapping("/capabilities")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> capabilities() {
+        CurrentActor actor = CurrentActor.get();
+        if (actor == null || actor.getUserId() == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ApiResponse.error("登录已失效，请重新登录"));
+        }
+        Map<String, Object> data = evalService != null
+                ? evalService.assistantCapabilities(actor)
+                : Map.of("agentModeEnabled", true);
+        return ResponseEntity.ok(ApiResponse.ok(data));
+    }
+
     @GetMapping("/conversations")
     public ResponseEntity<ApiResponse<List<Map<String, Object>>>> conversations() {
         return ResponseEntity.ok(ApiResponse.ok(conversationService.list(CurrentActor.get())));
@@ -111,13 +133,17 @@ public class AssistantController {
                 .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error("会话不存在或已删除")));
     }
 
-    /** 确认执行待确认操作；无论成功失败都返回最新的卡片数据。依赖的前序卡片未执行时返回 409，卡片不消耗。 */
+    /** 确认执行待确认操作；无论成功失败都返回最新的卡片数据。依赖未满足返回 409，D 级名称校验不通过返回 400，卡片均不消耗。 */
     @PostMapping("/actions/{id}/confirm")
-    public ResponseEntity<ApiResponse<Map<String, Object>>> confirmAction(@PathVariable String id) {
+    public ResponseEntity<ApiResponse<Map<String, Object>>> confirmAction(
+            @PathVariable String id,
+            @RequestBody(required = false) AssistantActionConfirmRequest body) {
         try {
-            return ResponseEntity.ok(ApiResponse.ok(actionService.confirm(id, CurrentActor.get())));
+            return ResponseEntity.ok(ApiResponse.ok(actionService.confirm(id, body, CurrentActor.get())));
         } catch (AssistantActionService.DependencyNotMetException e) {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error(e.getMessage()));
+        } catch (AssistantActionService.ConfirmationMismatchException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
         }

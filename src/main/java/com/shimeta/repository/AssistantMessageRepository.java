@@ -42,4 +42,19 @@ public interface AssistantMessageRepository extends JpaRepository<AssistantMessa
     List<Object[]> sumTokensByDayAndModelForUser(@Param("userId") String userId,
                                                 @Param("start") LocalDateTime start,
                                                 @Param("end") LocalDateTime end);
+    /** 待复盘候选回复：用户点「没用」、工具返回 ok=false、或第六步回答校验命中（排除评测虚拟账号）。 */
+    @Query(value = """
+            SELECT * FROM assistant_messages
+            WHERE role = 'assistant'
+              AND content IS NOT NULL
+              AND user_id NOT LIKE 'assistant-eval-%'
+              AND (
+                  feedback = 'DOWN'
+                  OR (verification_flags IS NOT NULL AND verification_flags <> '' AND verification_flags <> '[]')
+                  OR (tool_calls IS NOT NULL AND tool_calls LIKE '%"ok":false%')
+              )
+            ORDER BY created_at DESC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<AssistantMessage> findReviewCandidates(@Param("limit") int limit);
 }

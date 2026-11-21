@@ -58,6 +58,14 @@ public class LlmProvider {
     @Column(name = "supports_tools")
     private Boolean supportsTools;
 
+    /** 是否支持强制工具调用（tool_choice=required）；为空时按协议推断，见 LlmGatewayService.supportsToolChoiceRequired */
+    @Column(name = "supports_tool_choice_required")
+    private Boolean supportsToolChoiceRequired;
+
+    /** 模型规模档位（SMALL_UNDER_7B / STANDARD_7B_PLUS）；为空时 Ollama 默认 SMALL_UNDER_7B，其余默认 STANDARD_7B_PLUS */
+    @Column(name = "model_size_tier", length = 16)
+    private String modelSizeTier;
+
     /** 上下文窗口（输入 + 输出的 token 上限）；为空表示不限制，平台按原来的方式拼装请求 */
     @Column(name = "context_window")
     private Integer contextWindow;
@@ -185,6 +193,22 @@ public class LlmProvider {
 
     public void setSupportsTools(Boolean supportsTools) {
         this.supportsTools = supportsTools;
+    }
+
+    public Boolean getSupportsToolChoiceRequired() {
+        return supportsToolChoiceRequired;
+    }
+
+    public void setSupportsToolChoiceRequired(Boolean supportsToolChoiceRequired) {
+        this.supportsToolChoiceRequired = supportsToolChoiceRequired;
+    }
+
+    public String getModelSizeTier() {
+        return modelSizeTier;
+    }
+
+    public void setModelSizeTier(String modelSizeTier) {
+        this.modelSizeTier = modelSizeTier;
     }
 
     public Integer getContextWindow() {

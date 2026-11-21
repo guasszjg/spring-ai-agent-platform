@@ -20,12 +20,21 @@ import java.util.Map;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record AssistantEvalCase(String id,
                                 String category,
+                                String capabilityId,
+                                String variant,
                                 String role,
                                 String mode,
                                 List<String> setup,
                                 String question,
                                 Map<String, String> context,
+                                String referenceAnswer,
                                 Expect expect) {
+
+    /** 向后兼容 8 参数构造器（无 capabilityId / variant / referenceAnswer） */
+    public AssistantEvalCase(String id, String category, String role, String mode,
+                             List<String> setup, String question, Map<String, String> context, Expect expect) {
+        this(id, category, null, null, role, mode, setup, question, context, null, expect);
+    }
 
     /**
      * 期望。所有列出的条件都要满足才算通过；工具名列表中的 {@code @write} 代表全部写工具。

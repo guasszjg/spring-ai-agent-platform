@@ -76,4 +76,12 @@ class AssistantEvalScorerTest {
         assertTrue(AssistantEvalScorer.score(null, new AssistantEvalScorer.Observation("", List.of(), List.of()))
                 .stream().anyMatch(f -> f.contains("没有回答")));
     }
+
+    @Test
+    void verificationFlagsFailEvaluation() {
+        var o = new AssistantEvalScorer.Observation("你可以去系统设置页查看", List.of(), List.of(),
+                List.of(AssistantAnswerVerifier.FLAG_UNKNOWN_MENU));
+        List<String> failures = AssistantEvalScorer.score(null, o);
+        assertTrue(failures.stream().anyMatch(f -> f.contains("防编造") && f.contains("UNKNOWN_MENU")));
+    }
 }

@@ -4,7 +4,9 @@ import com.shimeta.model.AssistantAction;
 import com.shimeta.security.CurrentActor;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 一次对话中工具调用的上下文。
@@ -13,12 +15,18 @@ import java.util.List;
  * @param conversationId 所在会话；写工具生成的待确认操作归属于该会话
  * @param createdActions 本轮对话中写工具生成的待确认操作，供对话流程推送操作卡片
  * @param calls          本轮对话中模型发起的全部工具调用（含参数），供评测检查"是否选对工具、参数是否正确"
+ * @param allowedLinks   本轮工具结果中返回过的合法跳转链接集合，供后置校验拦截模型编造的链接
  */
 public record ToolContext(CurrentActor actor, String conversationId, List<AssistantAction> createdActions,
-                          List<ToolCallRecord> calls) {
+                          List<ToolCallRecord> calls, Set<String> allowedLinks) {
+
+    public ToolContext(CurrentActor actor, String conversationId, List<AssistantAction> createdActions,
+                       List<ToolCallRecord> calls) {
+        this(actor, conversationId, createdActions, calls, new LinkedHashSet<>());
+    }
 
     public static ToolContext of(CurrentActor actor, String conversationId) {
-        return new ToolContext(actor, conversationId, new ArrayList<>(), new ArrayList<>());
+        return new ToolContext(actor, conversationId, new ArrayList<>(), new ArrayList<>(), new LinkedHashSet<>());
     }
 
     /** 一次工具调用：工具名、模型给出的参数（JSON 原文）与是否成功。 */

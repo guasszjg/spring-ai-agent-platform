@@ -1,0 +1,281 @@
+{
+  "version": "1.1.0",
+  "menus": [
+    {
+      "id": "metrics",
+      "title": "监控",
+      "items": [
+        {
+          "id": "overview",
+          "name": "概览",
+          "summary": "Token 用量、成本、模型分布、调用排行、响应时延",
+          "superAdminOnly": false,
+          "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"],
+          "subpages": ["今日", "近7天", "近30天"]
+        }
+      ]
+    },
+    {
+      "id": "studio",
+      "title": "构建",
+      "items": [
+        {
+          "id": "agents",
+          "name": "智能体",
+          "summary": "编排提示词/版本/变量/主备通道路由/记忆/思考/知识库/技能/工具，卡片与列表视图",
+          "superAdminOnly": false,
+          "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"],
+          "subpages": ["编排", "编排与调试", "调试", "调试预览", "版本", "模型设置", "访问 API", "日志", "监控"]
+        },
+        {
+          "id": "templates",
+          "name": "场景模板",
+          "summary": "行业预置与自定义模板，一键创建智能体",
+          "superAdminOnly": false,
+          "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"],
+          "subpages": []
+        },
+        {
+          "id": "tools",
+          "name": "工具",
+          "summary": "内置工具、自定义 HTTP 工具、MCP 服务与工具调用统计",
+          "superAdminOnly": false,
+          "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"],
+          "subpages": ["内置工具", "自定义 HTTP 工具", "MCP 服务", "工具调用统计"]
+        },
+        {
+          "id": "skills",
+          "name": "技能库",
+          "summary": "Markdown 技能与 SKILL.md / zip 导入导出，按需加载",
+          "superAdminOnly": false,
+          "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"],
+          "subpages": ["版本历史"]
+        }
+      ]
+    },
+    {
+      "id": "knowledge",
+      "title": "数据",
+      "items": [
+        {
+          "id": "knowledge",
+          "name": "自建知识库",
+          "summary": "内置引擎：BM25+向量混合检索、Rerank、FAQ、重建索引、召回测试与评测",
+          "superAdminOnly": false,
+          "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"],
+          "subpages": ["文档", "FAQ", "检索设置", "检索测试", "召回测试", "检索评测", "重建索引"]
+        },
+        {
+          "id": "knowledge-dify",
+          "name": "Dify 知识库",
+          "summary": "外部 Dify 引擎；智能体只能绑定其中一类，可选先检索后回答或模型自主检索",
+          "superAdminOnly": false,
+          "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"],
+          "subpages": ["文档"]
+        }
+      ]
+    },
+    {
+      "id": "governance",
+      "title": "管理",
+      "nonAdminTitle": "规则与安全",
+      "items": [
+        {
+          "id": "gateway",
+          "name": "模型网关",
+          "summary": "大语言模型、向量模型、Rerank 模型、OCR 识别、Dify 知识引擎",
+          "superAdminOnly": true,
+          "roles": ["SUPER_ADMIN"],
+          "children": [
+            { "id": "gateway-llm", "name": "大语言模型", "roles": ["SUPER_ADMIN"] },
+            { "id": "gateway-embedding", "name": "向量模型", "roles": ["SUPER_ADMIN"] },
+            { "id": "gateway-rerank", "name": "Rerank 模型", "roles": ["SUPER_ADMIN"] },
+            { "id": "gateway-ocr", "name": "OCR 识别", "roles": ["SUPER_ADMIN"] },
+            { "id": "gateway-dify", "name": "Dify 知识引擎", "roles": ["SUPER_ADMIN"] }
+          ]
+        },
+        {
+          "id": "users",
+          "name": "用户",
+          "summary": "租户用户创建、角色修改、启停与重置密码",
+          "superAdminOnly": true,
+          "roles": ["SUPER_ADMIN"],
+          "subpages": []
+        },
+        {
+          "id": "roles",
+          "name": "角色与权限",
+          "summary": "超级管理员、开发者、只读观察员权限对照",
+          "superAdminOnly": true,
+          "roles": ["SUPER_ADMIN"],
+          "subpages": []
+        },
+        {
+          "id": "assistant-eval",
+          "name": "助手评测",
+          "summary": "AI 助手回归评测用例、通过率与对比",
+          "superAdminOnly": true,
+          "roles": ["SUPER_ADMIN"],
+          "subpages": []
+        },
+        {
+          "id": "security",
+          "name": "开放与安全",
+          "summary": "风险总览、接入文档、开放凭证、接入终端、用量统计、护栏策略、审计日志、账号对接、告警规则",
+          "superAdminOnly": false,
+          "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"],
+          "subpages": ["风险总览", "接入文档", "开放凭证", "接入终端", "用量统计", "护栏策略", "审计日志", "账号对接", "告警规则"]
+        }
+      ]
+    }
+  ],
+  "extraValidUiTerms": [
+    "个人中心",
+    "知识库",
+    "AI 助手",
+    "执行",
+    "问答",
+    "执行模式",
+    "问答模式",
+    "发布上线",
+    "模型与通道路由"
+  ],
+  "capabilities": [
+    { "id": "overview.usage.summary", "menu": "监控 › 概览", "tabId": "overview", "action": "查询 Token 总量、输入输出与预估成本", "handling": "READ", "tool": "get_usage_summary", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "概览" },
+    { "id": "overview.usage.model_ranking", "menu": "监控 › 概览", "tabId": "overview", "action": "查询模型用量分布与调用排行", "handling": "READ", "tool": "get_usage_summary", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "概览" },
+    { "id": "overview.usage.agent_ranking", "menu": "监控 › 概览", "tabId": "overview", "action": "查询热门智能体调用排行", "handling": "READ", "tool": "get_usage_summary", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "概览" },
+    { "id": "overview.usage.range_explain", "menu": "监控 › 概览", "tabId": "overview", "action": "了解概览口径、周期切换与成本估算说明", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "概览" },
+    { "id": "overview.usage.failover_explain", "menu": "监控 › 概览", "tabId": "overview", "action": "了解概览中主备通道故障切换次数说明", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "概览" },
+
+    { "id": "agent.list", "menu": "构建 › 智能体", "tabId": "agents", "action": "查询可见智能体列表与运行状态", "handling": "READ", "tool": "list_agents", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/智能体列表" },
+    { "id": "agent.detail", "menu": "构建 › 智能体", "tabId": "agents", "action": "查看单个智能体完整配置摘要", "handling": "READ", "tool": "get_agent_detail", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/编排与调试" },
+    { "id": "agent.diagnose", "menu": "构建 › 智能体", "tabId": "agents", "action": "诊断智能体无回复、回答不准或工具/知识库失效问题", "handling": "READ", "tool": "diagnose_agent", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "常见问题/智能体调试时没有回复" },
+    { "id": "agent.create", "menu": "构建 › 智能体", "tabId": "agents", "action": "创建新智能体（或基于模板创建）", "handling": "WRITE", "risk": "A", "tool": "create_agent", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/创建智能体" },
+    { "id": "agent.status.toggle", "menu": "构建 › 智能体", "tabId": "agents", "action": "启用或停用智能体", "handling": "WRITE", "risk": "B", "tool": "set_agent_status", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/智能体列表" },
+    { "id": "agent.prompt.update", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "修改智能体系统提示词", "handling": "WRITE", "risk": "B", "tool": "update_agent_prompt", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/编排与调试" },
+    { "id": "agent.kb.bind", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "给智能体绑定或解绑知识库", "handling": "WRITE", "risk": "B", "tool": "bind_knowledge_base", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/编排与调试" },
+    { "id": "agent.api_key.create", "menu": "构建 › 智能体 › 访问 API", "tabId": "agents", "action": "为智能体签发专属对话 API 凭证", "handling": "WRITE", "risk": "A", "tool": "create_api_key", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "开放与安全/通过开放 API 调用智能体" },
+    { "id": "agent.status.explain", "menu": "构建 › 智能体", "tabId": "agents", "action": "了解智能体运行中/空闲中/已停用三种状态说明", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/智能体列表" },
+    { "id": "agent.copy", "menu": "构建 › 智能体", "tabId": "agents", "action": "复制系统公共或现有智能体为个人副本", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "角色与权限" },
+    { "id": "agent.delete", "menu": "构建 › 智能体", "tabId": "agents", "action": "删除智能体", "handling": "WRITE", "risk": "D", "tool": "delete_resource", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "AI 助手" },
+    { "id": "agent.update.model_route", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "修改智能体主通道、模型与备用通道路由", "handling": "WRITE", "risk": "B", "tool": "update_agent_settings", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "配置项详细说明/智能体模型与对话参数" },
+    { "id": "agent.update.temperature", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "修改智能体温度、Top P 与最大输出长度", "handling": "WRITE", "risk": "B", "tool": "update_agent_settings", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "配置项详细说明/智能体模型与对话参数" },
+    { "id": "agent.update.memory_turns", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "修改智能体上下文记忆轮数（0～10 轮）", "handling": "WRITE", "risk": "B", "tool": "update_agent_settings", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "配置项详细说明/智能体模型与对话参数" },
+    { "id": "agent.update.thinking_mode", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "修改智能体思考模式（OFF/AUTO/ON）", "handling": "WRITE", "risk": "B", "tool": "update_agent_settings", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "配置项详细说明/智能体模型与对话参数" },
+    { "id": "agent.update.knowledge_mode", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "切换先检索后回答与模型自主检索模式", "handling": "WRITE", "risk": "B", "tool": "update_agent_settings", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "配置项详细说明/智能体模型与对话参数" },
+    { "id": "agent.update.variables", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "在提示词中使用变量与提示词缓存说明", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/编排与调试" },
+    { "id": "agent.update.tools", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "在智能体上勾选内置/HTTP/MCP 工具", "handling": "WRITE", "risk": "B", "tool": "update_agent_settings", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/编排与调试" },
+    { "id": "agent.update.skills", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "给智能体关联或取消关联技能", "handling": "WRITE", "risk": "B", "tool": "update_agent_settings", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/编排与调试" },
+    { "id": "agent.prompt.versions.list", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "查看智能体提示词历史版本与差异对比", "handling": "READ", "tool": "list_resources", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/编排与调试" },
+    { "id": "agent.prompt.versions.rollback", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "回滚智能体提示词到历史版本", "handling": "WRITE", "risk": "B", "tool": "rollback_agent_prompt", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/编排与调试" },
+    { "id": "agent.publish", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "将调试页提示词草稿发布上线", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/编排与调试" },
+    { "id": "agent.logs.view", "menu": "构建 › 智能体 › 日志", "tabId": "agents", "action": "查看智能体历史对话与失败调用日志", "handling": "READ", "tool": "get_agent_logs", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/日志与监控" },
+    { "id": "agent.monitor.view", "menu": "构建 › 智能体 › 监控", "tabId": "agents", "action": "查看单个智能体调用量、成功率与耗时趋势", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/日志与监控" },
+    { "id": "agent.slow_reply.troubleshoot", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "排查智能体回复慢的原因与优化方法", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "常见问题/回复很慢" },
+    { "id": "agent.cost.reference", "menu": "构建 › 智能体", "tabId": "agents", "action": "了解对话 Token 消耗、成本与延迟参考", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "4. 成本与延迟参考" },
+
+    { "id": "template.list", "menu": "构建 › 场景模板", "tabId": "templates", "action": "查询可用行业场景模板", "handling": "READ", "tool": "list_templates", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "场景模板" },
+    { "id": "template.apply", "menu": "构建 › 场景模板", "tabId": "templates", "action": "套用场景模板一键创建智能体", "handling": "WRITE", "risk": "A", "tool": "create_agent", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "场景模板" },
+    { "id": "template.create", "menu": "构建 › 场景模板", "tabId": "templates", "action": "创建自定义场景模板或从智能体存为模板", "handling": "WRITE", "risk": "A", "tool": "save_agent_as_template", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "场景模板" },
+    { "id": "template.delete", "menu": "构建 › 场景模板", "tabId": "templates", "action": "删除场景模板", "handling": "WRITE", "risk": "D", "tool": "delete_resource", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "场景模板" },
+
+    { "id": "tool.builtin.explain", "menu": "构建 › 工具", "tabId": "tools", "action": "了解时间工具、DeepSeek 联网搜索与博查联网搜索", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "工具" },
+    { "id": "tool.bocha.config", "menu": "构建 › 工具", "tabId": "tools", "action": "配置博查联网搜索 API Key", "handling": "GUIDE", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "工具" },
+    { "id": "tool.http.explain", "menu": "构建 › 工具", "tabId": "tools", "action": "查看内置与自定义 HTTP 工具清单与状态", "handling": "READ", "tool": "list_resources", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "工具" },
+    { "id": "tool.http.create", "menu": "构建 › 工具", "tabId": "tools", "action": "新建自定义 HTTP 工具", "handling": "WRITE", "risk": "A", "tool": "create_http_tool", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "工具" },
+    { "id": "tool.http.delete", "menu": "构建 › 工具", "tabId": "tools", "action": "删除自定义 HTTP 工具", "handling": "WRITE", "risk": "D", "tool": "delete_resource", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "工具" },
+    { "id": "tool.max_rounds.config", "menu": "构建 › 工具", "tabId": "tools", "action": "调整单次回答最多调用工具轮数（1～10 轮）", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "配置项详细说明/模型网关与工具全局参数" },
+    { "id": "tool.usage.view", "menu": "构建 › 工具", "tabId": "tools", "action": "查看各工具调用次数、成功率、耗时与估算费用", "handling": "READ", "tool": "get_tool_usage", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "3. 智能体、工具与技能库/3.2 工具与 MCP 服务" },
+    { "id": "mcp.list", "menu": "构建 › 工具 › MCP 服务", "tabId": "tools", "action": "查询已接入的 MCP 服务及已审核启用工具", "handling": "READ", "tool": "list_mcp_servers", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "工具" },
+    { "id": "mcp.register", "menu": "构建 › 工具 › MCP 服务", "tabId": "tools", "action": "添加远程 MCP 服务（Streamable HTTP / SSE）", "handling": "WRITE", "risk": "A", "tool": "register_mcp_server", "roles": ["SUPER_ADMIN"], "docAnchor": "工具" },
+    { "id": "mcp.refresh", "menu": "构建 › 工具 › MCP 服务", "tabId": "tools", "action": "测试 MCP 连接并刷新工具列表", "handling": "WRITE", "risk": "C", "tool": "refresh_mcp_server", "roles": ["SUPER_ADMIN"], "docAnchor": "工具" },
+    { "id": "mcp.review", "menu": "构建 › 工具 › MCP 服务", "tabId": "tools", "action": "审核启用或停用 MCP 工具", "handling": "GUIDE", "roles": ["SUPER_ADMIN"], "docAnchor": "工具" },
+    { "id": "mcp.delete", "menu": "构建 › 工具 › MCP 服务", "tabId": "tools", "action": "删除 MCP 服务", "handling": "WRITE", "risk": "D", "tool": "delete_resource", "roles": ["SUPER_ADMIN"], "docAnchor": "工具" },
+
+    { "id": "skill.list", "menu": "构建 › 技能库", "tabId": "skills", "action": "查询可用技能（Skill）列表与使用统计", "handling": "READ", "tool": "list_skills", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "技能库" },
+    { "id": "skill.explain", "menu": "构建 › 技能库", "tabId": "skills", "action": "了解技能按需加载原理、版本管理与导入导出", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "技能库" },
+    { "id": "skill.create", "menu": "构建 › 技能库", "tabId": "skills", "action": "新建 Markdown 技能", "handling": "WRITE", "risk": "A", "tool": "create_skill", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "技能库" },
+    { "id": "skill.import_export", "menu": "构建 › 技能库", "tabId": "skills", "action": "导入或导出 SKILL.md / zip 技能包", "handling": "GUIDE", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "技能库" },
+    { "id": "skill.delete", "menu": "构建 › 技能库", "tabId": "skills", "action": "删除技能", "handling": "WRITE", "risk": "D", "tool": "delete_resource", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "技能库" },
+
+    { "id": "kb.list", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "查询当前用户可见的知识库列表", "handling": "READ", "tool": "list_knowledge_bases", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "知识库/两种引擎" },
+    { "id": "kb.create", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "创建平台内置引擎自建知识库", "handling": "WRITE", "risk": "A", "tool": "create_knowledge_base", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "知识库/两种引擎" },
+    { "id": "kb.documents.list", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "查询知识库内文档列表、索引状态与失败原因", "handling": "READ", "tool": "list_knowledge_documents", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "知识库/文档与 FAQ" },
+    { "id": "kb.faq.add", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "向知识库添加一条 FAQ 问答对", "handling": "WRITE", "risk": "A", "tool": "add_faq", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "知识库/文档与 FAQ" },
+    { "id": "kb.faq.list", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "查看知识库 FAQ 列表与附图说明", "handling": "READ", "tool": "list_resources", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "知识库/文档与 FAQ" },
+    { "id": "kb.faq.update", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "修改知识库 FAQ 内容", "handling": "WRITE", "risk": "B", "tool": "update_faq", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "知识库/文档与 FAQ" },
+    { "id": "kb.faq.delete", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "删除知识库 FAQ", "handling": "WRITE", "risk": "D", "tool": "delete_resource", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "知识库/文档与 FAQ" },
+    { "id": "kb.documents.upload", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "上传文档文件到知识库（不支持在助手面板上传）", "handling": "GUIDE", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "知识库/文档与 FAQ" },
+    { "id": "kb.documents.formats", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "了解支持上传的文件格式、15MB 与单批 5 个限制", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "2. 知识库/2.2 支持的文件格式（自建知识库）" },
+    { "id": "kb.documents.delete", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "删除知识库中的文档", "handling": "WRITE", "risk": "D", "tool": "delete_resource", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "知识库/文档与 FAQ" },
+    { "id": "kb.settings.explain", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "了解切片大小、重叠、Top K、阈值、混合权重与 Rerank 参数", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "配置项详细说明/知识库切分与检索参数" },
+    { "id": "kb.settings.update", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "修改知识库检索参数（Top K/阈值/权重/Rerank）", "handling": "WRITE", "risk": "B", "tool": "update_kb_settings", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "配置项详细说明/知识库切分与检索参数" },
+    { "id": "kb.retrieval.test", "menu": "数据 › 自建知识库 › 召回测试", "tabId": "knowledge", "action": "对知识库执行召回测试查看命中切片与得分", "handling": "READ", "tool": "run_retrieval_test", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "知识库/文档与 FAQ" },
+    { "id": "kb.retrieval.troubleshoot", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "排查知识库检索不到内容的原因", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "知识库/检索不到内容时的排查" },
+    { "id": "kb.index.rebuild", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "重建知识库索引（更换向量模型或补上下文标题后）", "handling": "WRITE", "risk": "C", "tool": "rebuild_kb_index", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "2. 知识库/2.3 检索设置与重建索引" },
+    { "id": "kb.cache.clear", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "清空知识库语义缓存", "handling": "GUIDE", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "配置项详细说明/知识库切分与检索参数" },
+    { "id": "kb.eval.view", "menu": "数据 › 自建知识库 › 检索评测", "tabId": "knowledge", "action": "查看自建知识库检索评测指标与历史运行记录", "handling": "READ", "tool": "list_resources", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "2. 知识库/2.4 检索评测（自建知识库）" },
+    { "id": "kb.eval.run", "menu": "数据 › 自建知识库 › 检索评测", "tabId": "knowledge", "action": "运行知识库检索评测", "handling": "WRITE", "risk": "C", "tool": "run_rag_eval", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "2. 知识库/2.4 检索评测（自建知识库）" },
+    { "id": "kb.delete", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "删除自建知识库", "handling": "WRITE", "risk": "D", "tool": "delete_resource", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "AI 助手" },
+    { "id": "kb.engines.compare", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "了解平台内置引擎与 Dify 外部引擎的区别", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "知识库/两种引擎" },
+
+    { "id": "kb_dify.list", "menu": "数据 › Dify 知识库", "tabId": "knowledge-dify", "action": "查询 Dify 外部引擎知识库", "handling": "READ", "tool": "list_knowledge_bases", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "知识库/两种引擎" },
+    { "id": "kb_dify.manage", "menu": "数据 › Dify 知识库", "tabId": "knowledge-dify", "action": "创建、同步和管理 Dify 知识库文档", "handling": "GUIDE", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "1. 模型网关（仅超级管理员）/1.5 Dify 知识引擎" },
+
+    { "id": "gateway.status", "menu": "管理 › 模型网关", "tabId": "gateway", "action": "查询模型网关总览、通道状态、向量模型与 Dify 就绪度", "handling": "READ", "tool": "get_gateway_status", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "模型网关/大语言模型" },
+    { "id": "gateway.llm.test", "menu": "管理 › 模型网关 › 大语言模型", "tabId": "gateway-llm", "action": "实时测试指定大模型通道的连通性", "handling": "READ", "tool": "test_gateway_channel", "roles": ["SUPER_ADMIN"], "docAnchor": "模型网关/大语言模型" },
+    { "id": "gateway.llm.create", "menu": "管理 › 模型网关 › 大语言模型", "tabId": "gateway-llm", "action": "添加 OpenAI 兼容、Ollama 或自定义 HTTP 模型通道", "handling": "WRITE", "risk": "D", "tool": "manage_gateway_channel", "roles": ["SUPER_ADMIN"], "docAnchor": "1. 模型网关（仅超级管理员）/1.1 大语言模型" },
+    { "id": "gateway.llm.update_key", "menu": "管理 › 模型网关 › 大语言模型", "tabId": "gateway-llm", "action": "修改大模型通道配置、密钥、启停或上下文窗口", "handling": "WRITE", "risk": "D", "tool": "manage_gateway_channel", "roles": ["SUPER_ADMIN"], "docAnchor": "配置项详细说明/模型网关与工具全局参数" },
+    { "id": "gateway.llm.policy", "menu": "管理 › 模型网关 › 大语言模型", "tabId": "gateway-llm", "action": "了解与设置默认通道、降级备用通道、故障转移与 AI 助手专用模型", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "模型网关/大语言模型" },
+    { "id": "gateway.llm.custom_http", "menu": "管理 › 模型网关 › 大语言模型", "tabId": "gateway-llm", "action": "了解自定义 HTTP 通道模板与自定义请求头配置", "handling": "DOC", "roles": ["SUPER_ADMIN"], "docAnchor": "1. 模型网关（仅超级管理员）/1.1 大语言模型" },
+    { "id": "gateway.embedding.explain", "menu": "管理 › 模型网关 › 向量模型", "tabId": "gateway-embedding", "action": "了解向量模型配置、激活与自定义请求头说明", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "模型网关/向量模型、OCR 与 Dify 知识引擎" },
+    { "id": "gateway.embedding.manage", "menu": "管理 › 模型网关 › 向量模型", "tabId": "gateway-embedding", "action": "切换激活的向量模型", "handling": "WRITE", "risk": "D", "tool": "manage_gateway_channel", "roles": ["SUPER_ADMIN"], "docAnchor": "1. 模型网关（仅超级管理员）/1.2 向量模型" },
+    { "id": "gateway.embedding.troubleshoot", "menu": "管理 › 模型网关 › 向量模型", "tabId": "gateway-embedding", "action": "排查向量模型测试连接失败原因", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "常见问题/向量模型测试连接失败" },
+    { "id": "gateway.rerank.explain", "menu": "管理 › 模型网关 › Rerank 模型", "tabId": "gateway-rerank", "action": "了解 Rerank 重排模型配置、计费与失败退回机制", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "1. 模型网关（仅超级管理员）/1.3 Rerank 模型" },
+    { "id": "gateway.rerank.manage", "menu": "管理 › 模型网关 › Rerank 模型", "tabId": "gateway-rerank", "action": "切换激活 Rerank 模型", "handling": "WRITE", "risk": "D", "tool": "manage_gateway_channel", "roles": ["SUPER_ADMIN"], "docAnchor": "1. 模型网关（仅超级管理员）/1.3 Rerank 模型" },
+    { "id": "gateway.ocr.explain", "menu": "管理 › 模型网关 › OCR 识别", "tabId": "gateway-ocr", "action": "了解本地 PaddleOCR 与在线云端 OCR 识别配置", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "1. 模型网关（仅超级管理员）/1.4 OCR 识别" },
+    { "id": "gateway.ocr.manage", "menu": "管理 › 模型网关 › OCR 识别", "tabId": "gateway-ocr", "action": "配置并激活 OCR 识别服务", "handling": "GUIDE", "roles": ["SUPER_ADMIN"], "docAnchor": "1. 模型网关（仅超级管理员）/1.4 OCR 识别" },
+    { "id": "gateway.dify.explain", "menu": "管理 › 模型网关 › Dify 知识引擎", "tabId": "gateway-dify", "action": "了解 Dify 外部知识引擎接入前提与配置说明", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "1. 模型网关（仅超级管理员）/1.5 Dify 知识引擎" },
+    { "id": "gateway.dify.manage", "menu": "管理 › 模型网关 › Dify 知识引擎", "tabId": "gateway-dify", "action": "更新 Dify 知识引擎密钥", "handling": "WRITE", "risk": "D", "tool": "manage_gateway_channel", "roles": ["SUPER_ADMIN"], "docAnchor": "1. 模型网关（仅超级管理员）/1.5 Dify 知识引擎" },
+
+    { "id": "user.list", "menu": "管理 › 用户", "tabId": "users", "action": "查看租户用户列表与状态", "handling": "READ", "tool": "list_resources", "roles": ["SUPER_ADMIN"], "docAnchor": "用户管理" },
+    { "id": "user.create", "menu": "管理 › 用户", "tabId": "users", "action": "新建平台用户与分配初始角色", "handling": "WRITE", "risk": "D", "tool": "manage_user", "roles": ["SUPER_ADMIN"], "docAnchor": "用户管理" },
+    { "id": "user.role.change", "menu": "管理 › 用户", "tabId": "users", "action": "修改用户角色", "handling": "WRITE", "risk": "D", "tool": "manage_user", "roles": ["SUPER_ADMIN"], "docAnchor": "用户管理" },
+    { "id": "user.status.toggle", "menu": "管理 › 用户", "tabId": "users", "action": "启用或停用用户账号", "handling": "WRITE", "risk": "D", "tool": "manage_user", "roles": ["SUPER_ADMIN"], "docAnchor": "用户管理" },
+    { "id": "user.password.reset", "menu": "管理 › 用户", "tabId": "users", "action": "重置用户临时密码", "handling": "WRITE", "risk": "D", "tool": "manage_user", "roles": ["SUPER_ADMIN"], "docAnchor": "用户管理" },
+    { "id": "user.profile.password", "menu": "管理 › 用户", "tabId": "users", "action": "用户个人中心修改昵称与登录密码", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "角色与权限" },
+
+    { "id": "role.matrix.explain", "menu": "管理 › 角色与权限", "tabId": "roles", "action": "了解超级管理员、开发者、只读观察员三种角色与资源归属权限", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "角色与权限" },
+    { "id": "role.list", "menu": "管理 › 角色与权限", "tabId": "roles", "action": "查看系统固定角色权限对照矩阵", "handling": "READ", "tool": "list_resources", "roles": ["SUPER_ADMIN"], "docAnchor": "用户管理" },
+
+    { "id": "assistant_eval.view", "menu": "管理 › 助手评测", "tabId": "assistant-eval", "action": "查看与运行平台 AI 助手回归评测", "handling": "GUIDE", "roles": ["SUPER_ADMIN"], "docAnchor": "AI 助手" },
+    { "id": "assistant.usage.explain", "menu": "管理 › 助手评测", "tabId": "assistant-eval", "action": "了解 AI 助手执行模式、问答模式、操作卡片与页面上下文", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "AI 助手" },
+
+    { "id": "security.overview", "menu": "管理 › 开放与安全", "tabId": "security", "action": "了解开放与安全模块功能结构与风险总览", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "开放与安全" },
+    { "id": "security.docs.chat_api", "menu": "管理 › 开放与安全 › 接入文档", "tabId": "security", "action": "了解通过开放 API 调用智能体对话（阻塞/流式/FAQ附图）", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "3. 对话接口" },
+    { "id": "security.docs.endpoints", "menu": "管理 › 开放与安全 › 接入文档", "tabId": "security", "action": "了解开放平台完整接口清单与权限 scope", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "7. 接口清单" },
+    { "id": "security.docs.scopes", "menu": "管理 › 开放与安全 › 开放凭证", "tabId": "security", "action": "了解 API Key 权限 scope、轮换宽限期与智能体范围", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "2. 凭证：权限与范围" },
+    { "id": "security.api_key.list", "menu": "管理 › 开放与安全 › 开放凭证", "tabId": "security", "action": "查看已签发的开放 API 凭证元数据", "handling": "READ", "tool": "list_resources", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "开放与安全" },
+    { "id": "security.api_key.revoke", "menu": "管理 › 开放与安全 › 开放凭证", "tabId": "security", "action": "停用、轮换或吊销开放 API 凭证", "handling": "WRITE", "risk": "D", "tool": "revoke_api_key", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "2. 凭证：权限与范围" },
+    { "id": "security.terminal.explain", "menu": "管理 › 开放与安全 › 接入终端", "tabId": "security", "action": "了解接入终端管控模式与 X-Client-Id 请求头规范", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "4. 接入终端（X-Client-Id）" },
+    { "id": "security.terminal.list", "menu": "管理 › 开放与安全 › 接入终端", "tabId": "security", "action": "查看接入终端设备列表与状态", "handling": "READ", "tool": "list_resources", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "4. 接入终端（X-Client-Id）" },
+    { "id": "security.usage.ratelimit", "menu": "管理 › 开放与安全 › 用量统计", "tabId": "security", "action": "了解开放接口限流（RPM）、每日 Token 配额与幂等（Idempotency-Key）", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "6. 限流、配额与幂等" },
+    { "id": "security.guardrail.explain", "menu": "管理 › 开放与安全 › 护栏策略", "tabId": "security", "action": "查看当前生效的护栏策略（敏感词、PII 脱敏、注入检测、紧急停用、最大历史轮数）", "handling": "READ", "tool": "get_resource", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "开放与安全" },
+    { "id": "security.guardrail.update", "menu": "管理 › 开放与安全 › 护栏策略", "tabId": "security", "action": "修改护栏策略配置", "handling": "WRITE", "risk": "D", "tool": "update_guardrail_policy", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "开放与安全" },
+    { "id": "security.audit.view", "menu": "管理 › 开放与安全 › 审计日志", "tabId": "security", "action": "查看安全审计日志与拦截记录", "handling": "READ", "tool": "list_resources", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "开放与安全" },
+    { "id": "security.identity.manage", "menu": "管理 › 开放与安全 › 账号对接", "tabId": "security", "action": "配置外部身份源对接与账号绑定", "handling": "GUIDE", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "5. 开放与安全" },
+    { "id": "security.alert.manage", "menu": "管理 › 开放与安全 › 告警规则", "tabId": "security", "action": "查看安全告警规则列表与阈值配置", "handling": "READ", "tool": "list_resources", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "开放与安全" },
+
+    { "id": "docs.search", "menu": "管理 › 开放与安全 › 接入文档", "tabId": "security", "action": "检索平台使用文档与报错字典", "handling": "READ", "tool": "search_platform_docs", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "AI 助手" },
+    { "id": "error.openapi.codes", "menu": "管理 › 开放与安全 › 接入文档", "tabId": "security", "action": "排查开放接口 401/403/422/429 等错误码", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "一、开放接口错误码（/open/v1/*）" },
+    { "id": "error.gateway.connect", "menu": "管理 › 模型网关 › 大语言模型", "tabId": "gateway-llm", "action": "排查模型网关、Embedding、自定义 HTTP 与 SSRF 拦截报错", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "二、模型网关与通道报错" },
+    { "id": "error.kb.indexing", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "排查知识库重复上传、格式不支持、扫描件待识别等报错", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "三、知识库、文档与索引报错" },
+    { "id": "error.permission.account", "menu": "管理 › 角色与权限", "tabId": "roles", "action": "排查系统公共资产保护、越权、账号禁用与临时密码过期报错", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "四、权限、账号与资源保护报错" },
+
+    { "id": "ops.requirements", "menu": "管理 › 模型网关", "tabId": "gateway", "action": "了解平台部署环境要求（JDK 21、PG 17 + pgvector）", "handling": "DOC", "roles": ["SUPER_ADMIN"], "docAnchor": "1. 环境要求" },
+    { "id": "ops.build_package", "menu": "管理 › 模型网关", "tabId": "gateway", "action": "了解前后端构建打包流程", "handling": "DOC", "roles": ["SUPER_ADMIN"], "docAnchor": "2. 构建与打包" },
+    { "id": "ops.config_startup", "menu": "管理 › 模型网关", "tabId": "gateway", "action": "了解 dev/prod 启动配置与 APP_CRYPTO_SECRET 加密主密钥说明", "handling": "DOC", "roles": ["SUPER_ADMIN"], "docAnchor": "3. 配置与启动" },
+    { "id": "ops.flyway_migration", "menu": "管理 › 模型网关", "tabId": "gateway", "action": "了解 Flyway 数据库迁移与幂等规则", "handling": "DOC", "roles": ["SUPER_ADMIN"], "docAnchor": "4. 数据库迁移（Flyway）" },
+    { "id": "ops.first_deploy", "menu": "管理 › 模型网关", "tabId": "gateway", "action": "了解首次部署检查清单", "handling": "DOC", "roles": ["SUPER_ADMIN"], "docAnchor": "5. 首次部署检查清单" }
+  ]
+}

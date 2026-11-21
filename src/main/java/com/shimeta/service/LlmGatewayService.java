@@ -664,6 +664,12 @@ public class LlmGatewayService {
         if (request.getSupportsTools() != null) {
             provider.setSupportsTools(request.getSupportsTools());
         }
+        if (request.getSupportsToolChoiceRequired() != null) {
+            provider.setSupportsToolChoiceRequired(request.getSupportsToolChoiceRequired());
+        }
+        if (request.getModelSizeTier() != null && !request.getModelSizeTier().isBlank()) {
+            provider.setModelSizeTier(normalizeModelSizeTier(request.getModelSizeTier()));
+        }
         if (request.getContextWindow() != null) {
             provider.setContextWindow(normalizeContextWindow(request.getContextWindow()));
         }
@@ -733,6 +739,9 @@ public class LlmGatewayService {
         view.setMaxRetries(provider.getMaxRetries());
         view.setRemark(provider.getRemark());
         view.setSupportsTools(supportsTools(provider));
+        view.setSupportsToolChoiceRequired(supportsToolChoiceRequired(provider));
+        view.setModelSizeTier(effectiveModelSizeTier(provider));
+        view.setSupportsAssistantAgentMode(supportsAssistantAgentMode(provider));
         view.setContextWindow(provider.getContextWindow());
         view.setLastProbeStatus(provider.getLastProbeStatus());
         view.setLastProbeMessage(provider.getLastProbeMessage());
@@ -942,6 +951,52 @@ public class LlmGatewayService {
             return provider.getSupportsTools();
         }
         return provider.getProtocol() != LlmProtocolType.CUSTOM_HTTP;
+    }
+
+    /** 通道是否支持强制工具调用（tool_choice=required）：未显式设置时，OpenAI 兼容云端通道默认支持，Ollama 与自定义 HTTP 默认不支持。 */
+    public static boolean supportsToolChoiceRequired(LlmProvider provider) {
+        if (!supportsTools(provider)) {
+            return false;
+        }
+        if (provider.getSupportsToolChoiceRequired() != null) {
+            return provider.getSupportsToolChoiceRequired();
+        }
+        return provider.getProtocol() == LlmProtocolType.OPENAI;
+    }
+
+    public static final String TIER_UNDER_7B = "SMALL_UNDER_7B";
+    public static final String TIER_7B_PLUS = "STANDARD_7B_PLUS";
+
+    /** 归一化模型规模档位：只接受 SMALL_UNDER_7B 或 STANDARD_7B_PLUS。 */
+    public static String normalizeModelSizeTier(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String upper = raw.trim().toUpperCase(Locale.ROOT);
+        if (TIER_UNDER_7B.equals(upper) || "UNDER_7B".equals(upper) || "SMALL".equals(upper)) {
+            return TIER_UNDER_7B;
+        }
+        return TIER_7B_PLUS;
+    }
+
+    /** 通道生效的模型规模档位：管理员明确设置过的以设置为准；否则 Ollama 默认小于 7B，云端 OpenAI 兼容通道默认 7B 及以上。 */
+    public static String effectiveModelSizeTier(LlmProvider provider) {
+        if (provider == null) {
+            return TIER_UNDER_7B;
+        }
+        String explicit = normalizeModelSizeTier(provider.getModelSizeTier());
+        if (explicit != null) {
+            return explicit;
+        }
+        return provider.getProtocol() == LlmProtocolType.OLLAMA ? TIER_UNDER_7B : TIER_7B_PLUS;
+    }
+
+    /**
+     * 平台 AI 助手执行模式（4.8）准入判断：仅对「支持工具调用」且「模型规模 ≥ 7B」的通道开放执行模式；
+     * 小于 7B 或不支持工具调用的通道只开放问答模式。
+     */
+    public static boolean supportsAssistantAgentMode(LlmProvider provider) {
+        return provider != null && supportsTools(provider) && TIER_7B_PLUS.equals(effectiveModelSizeTier(provider));
     }
 
     public record ResolvedRoute(

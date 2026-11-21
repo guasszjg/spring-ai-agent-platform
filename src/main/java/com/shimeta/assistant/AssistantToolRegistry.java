@@ -33,9 +33,42 @@ public class AssistantToolRegistry {
     private final Map<String, AssistantTool> tools;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    @Autowired
     public AssistantToolRegistry(AssistantQueryTools queryTools, AssistantWriteTools writeTools) {
-        this(java.util.stream.Stream.concat(queryTools.tools().stream(), writeTools.tools().stream()).toList());
+        this(queryTools, null, writeTools, null);
+    }
+
+    public AssistantToolRegistry(AssistantQueryTools queryTools,
+                                 AssistantExtendedQueryTools extendedQueryTools,
+                                 AssistantWriteTools writeTools) {
+        this(queryTools, extendedQueryTools, writeTools, null);
+    }
+
+    @Autowired
+    public AssistantToolRegistry(AssistantQueryTools queryTools,
+                                 @Autowired(required = false) AssistantExtendedQueryTools extendedQueryTools,
+                                 AssistantWriteTools writeTools,
+                                 @Autowired(required = false) AssistantExtendedWriteTools extendedWriteTools) {
+        this(mergeTools(queryTools, extendedQueryTools, writeTools, extendedWriteTools));
+    }
+
+    private static List<AssistantTool> mergeTools(AssistantQueryTools queryTools,
+                                                  AssistantExtendedQueryTools extendedQueryTools,
+                                                  AssistantWriteTools writeTools,
+                                                  AssistantExtendedWriteTools extendedWriteTools) {
+        java.util.ArrayList<AssistantTool> all = new java.util.ArrayList<>();
+        if (queryTools != null) {
+            all.addAll(queryTools.tools());
+        }
+        if (extendedQueryTools != null) {
+            all.addAll(extendedQueryTools.tools());
+        }
+        if (writeTools != null) {
+            all.addAll(writeTools.tools());
+        }
+        if (extendedWriteTools != null) {
+            all.addAll(extendedWriteTools.tools());
+        }
+        return all;
     }
 
     AssistantToolRegistry(List<AssistantTool> tools) {
@@ -60,6 +93,19 @@ public class AssistantToolRegistry {
      */
     public List<Map<String, Object>> definitions(CurrentActor actor, boolean includeWrite,
                                                  java.util.Set<String> allowedReadTools) {
+        return definitions(actor, includeWrite, allowedReadTools, null);
+    }
+
+    /**
+     * 按语义工具分组同时收窄只读工具与写工具子集（4.5 选对工具）：
+     * <ul>
+     *   <li>{@code allowedReadTools} 非空且命中至少一个只读工具时收窄只读工具；</li>
+     *   <li>{@code includeWrite} 为 true 且 {@code allowedWriteTools} 非空且命中至少一个写工具时收窄写工具。</li>
+     * </ul>
+     */
+    public List<Map<String, Object>> definitions(CurrentActor actor, boolean includeWrite,
+                                                 java.util.Set<String> allowedReadTools,
+                                                 java.util.Set<String> allowedWriteTools) {
         if (actor == null) {
             return List.of();
         }
@@ -73,6 +119,14 @@ public class AssistantToolRegistry {
                     .toList();
             // 若命中子集至少包含一个只读工具才收窄，否则保留全量（兼容最小工具注册表）
             if (narrowed.stream().anyMatch(tool -> !tool.write())) {
+                visible = narrowed;
+            }
+        }
+        if (includeWrite && allowedWriteTools != null && !allowedWriteTools.isEmpty()) {
+            List<AssistantTool> narrowed = visible.stream()
+                    .filter(tool -> !tool.write() || allowedWriteTools.contains(tool.name()))
+                    .toList();
+            if (narrowed.stream().anyMatch(AssistantTool::write)) {
                 visible = narrowed;
             }
         }

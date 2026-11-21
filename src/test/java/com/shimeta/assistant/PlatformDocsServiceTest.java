@@ -3,8 +3,11 @@ package com.shimeta.assistant;
 import com.shimeta.model.EmbeddingConfig;
 import com.shimeta.model.KnowledgeBase;
 import com.shimeta.model.KnowledgeDocument;
+import com.shimeta.model.UserRole;
+import com.shimeta.rag.RetrievedChunk;
 import com.shimeta.repository.KnowledgeBaseRepository;
 import com.shimeta.repository.KnowledgeDocumentRepository;
+import com.shimeta.security.CurrentActor;
 import com.shimeta.service.EmbeddingConfigService;
 import com.shimeta.service.KnowledgeBaseService;
 import com.shimeta.storage.ObjectStorageService;
@@ -18,7 +21,9 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -26,10 +31,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -56,12 +63,18 @@ class PlatformDocsServiceTest {
         when(embeddingConfigService.getActiveConfig()).thenReturn(Optional.of(new EmbeddingConfig()));
     }
 
-    private KnowledgeDocument guideDoc(String sha) {
-        KnowledgeDocument doc = new KnowledgeDocument();
-        doc.setId("doc-1");
-        doc.setName(PlatformDocsService.GUIDE_FILE_NAME);
-        doc.setSha256(sha);
-        return doc;
+    private List<KnowledgeDocument> allCurrentDocs() throws Exception {
+        List<KnowledgeDocument> list = new ArrayList<>();
+        int idx = 1;
+        for (PlatformDocsService.DocSpec spec : PlatformDocsService.bundledDocs()) {
+            KnowledgeDocument doc = new KnowledgeDocument();
+            doc.setId("doc-" + idx++);
+            doc.setName(spec.fileName());
+            doc.setSha256(PlatformDocsService.sha256(PlatformDocsService.readDoc(spec)));
+            doc.setObjectKey("kb/kb-docs/docs/" + doc.getId() + "/" + spec.fileName());
+            list.add(doc);
+        }
+        return list;
     }
 
     @Test
@@ -76,7 +89,7 @@ class PlatformDocsServiceTest {
     }
 
     @Test
-    void createsSystemKnowledgeBaseAndUploadsBundledGuide() throws Exception {
+    void createsSystemKnowledgeBaseAndUploadsAllBundledDocs() throws Exception {
         when(knowledgeBaseRepository.findAll()).thenReturn(List.of());
         when(knowledgeBaseService.createKnowledgeBase(any(), isNull())).thenReturn(docsKb);
         when(documentRepository.findByKnowledgeBaseId("kb-docs")).thenReturn(List.of());
@@ -86,17 +99,20 @@ class PlatformDocsServiceTest {
         assertTrue(service.isReady());
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<MultipartFile>> files = ArgumentCaptor.forClass(List.class);
-        verify(knowledgeBaseService).uploadDocuments(eq("kb-docs"), files.capture(), any());
-        MultipartFile file = files.getValue().get(0);
-        assertEquals(PlatformDocsService.GUIDE_FILE_NAME, file.getOriginalFilename());
-        assertArrayEquals(PlatformDocsService.readGuide(), file.getBytes());
+        verify(knowledgeBaseService, times(PlatformDocsService.bundledDocs().size()))
+                .uploadDocuments(eq("kb-docs"), files.capture(), any());
+        List<String> uploadedNames = files.getAllValues().stream()
+                .map(list -> list.get(0).getOriginalFilename())
+                .toList();
+        assertEquals(PlatformDocsService.bundledDocs().stream().map(PlatformDocsService.DocSpec::fileName).toList(),
+                uploadedNames);
+        assertArrayEquals(PlatformDocsService.readGuide(), files.getAllValues().get(0).get(0).getBytes());
     }
 
     @Test
-    void unchangedGuideIsNotReuploaded() throws Exception {
+    void unchangedDocsAreNotReuploaded() throws Exception {
         when(knowledgeBaseRepository.findAll()).thenReturn(List.of(docsKb));
-        String sha = PlatformDocsService.sha256(PlatformDocsService.readGuide());
-        when(documentRepository.findByKnowledgeBaseId("kb-docs")).thenReturn(List.of(guideDoc(sha)));
+        when(documentRepository.findByKnowledgeBaseId("kb-docs")).thenReturn(allCurrentDocs());
 
         service.sync();
 
@@ -106,19 +122,19 @@ class PlatformDocsServiceTest {
     }
 
     @Test
-    void missingArchiveOnThisMachineTriggersReimport() throws Exception {
+    void missingArchiveOnThisMachineTriggersReimportOnlyForAffectedDoc() throws Exception {
         ObjectStorageService storage = org.mockito.Mockito.mock(ObjectStorageService.class);
         service.setObjectStorageService(storage);
         when(knowledgeBaseRepository.findAll()).thenReturn(List.of(docsKb));
-        KnowledgeDocument doc = guideDoc(PlatformDocsService.sha256(PlatformDocsService.readGuide()));
-        doc.setObjectKey("kb/kb-docs/docs/doc-1/platform-guide.md");
-        when(documentRepository.findByKnowledgeBaseId("kb-docs")).thenReturn(List.of(doc));
-        when(storage.exists("kb/kb-docs/docs/doc-1/platform-guide.md")).thenReturn(false);
+        List<KnowledgeDocument> docs = allCurrentDocs();
+        when(documentRepository.findByKnowledgeBaseId("kb-docs")).thenReturn(docs);
+        when(storage.exists(anyString())).thenReturn(true);
+        when(storage.exists(docs.get(0).getObjectKey())).thenReturn(false);
 
         service.sync();
 
-        verify(knowledgeBaseService).deleteDocument(eq("kb-docs"), eq("doc-1"), any());
-        verify(knowledgeBaseService).uploadDocuments(eq("kb-docs"), any(), any());
+        verify(knowledgeBaseService, times(1)).deleteDocument(eq("kb-docs"), eq(docs.get(0).getId()), any());
+        verify(knowledgeBaseService, times(1)).uploadDocuments(eq("kb-docs"), any(), any());
         assertTrue(service.isReady());
     }
 
@@ -127,9 +143,7 @@ class PlatformDocsServiceTest {
         ObjectStorageService storage = org.mockito.Mockito.mock(ObjectStorageService.class);
         service.setObjectStorageService(storage);
         when(knowledgeBaseRepository.findAll()).thenReturn(List.of(docsKb));
-        KnowledgeDocument doc = guideDoc(PlatformDocsService.sha256(PlatformDocsService.readGuide()));
-        doc.setObjectKey("kb/kb-docs/docs/doc-1/platform-guide.md");
-        when(documentRepository.findByKnowledgeBaseId("kb-docs")).thenReturn(List.of(doc));
+        when(documentRepository.findByKnowledgeBaseId("kb-docs")).thenReturn(allCurrentDocs());
         when(storage.exists(anyString())).thenReturn(true);
 
         service.sync();
@@ -138,26 +152,60 @@ class PlatformDocsServiceTest {
     }
 
     @Test
-    void changedGuideReplacesOnlyTheBundledDocument() throws Exception {
+    void changedSingleDocReplacesOnlyThatDocAndKeepsAdminUploads() throws Exception {
         when(knowledgeBaseRepository.findAll()).thenReturn(List.of(docsKb));
+        List<KnowledgeDocument> docs = allCurrentDocs();
+        docs.get(0).setSha256("old-sha"); // 仅 platform-guide.md 内容变动
         KnowledgeDocument adminDoc = new KnowledgeDocument();
         adminDoc.setId("doc-admin");
         adminDoc.setName("内部补充说明.md");
-        when(documentRepository.findByKnowledgeBaseId("kb-docs")).thenReturn(List.of(guideDoc("old-sha"), adminDoc));
+        docs.add(adminDoc);
+        when(documentRepository.findByKnowledgeBaseId("kb-docs")).thenReturn(docs);
 
         service.sync();
 
-        verify(knowledgeBaseService).deleteDocument(eq("kb-docs"), eq("doc-1"), any());
+        verify(knowledgeBaseService, times(1)).deleteDocument(eq("kb-docs"), eq(docs.get(0).getId()), any());
         verify(knowledgeBaseService, never()).deleteDocument(eq("kb-docs"), eq("doc-admin"), any());
-        verify(knowledgeBaseService).uploadDocuments(eq("kb-docs"), any(), any());
+        verify(knowledgeBaseService, times(1)).uploadDocuments(eq("kb-docs"), any(), any());
     }
 
     @Test
-    void bundledGuideExistsAndCoversKeyTopics() throws Exception {
-        String guide = new String(PlatformDocsService.readGuide(), java.nio.charset.StandardCharsets.UTF_8);
+    void deployOpsDocIsOnlyRetrievableBySuperAdmin() throws Exception {
+        when(knowledgeBaseRepository.findAll()).thenReturn(List.of(docsKb));
+        when(documentRepository.findByKnowledgeBaseId("kb-docs")).thenReturn(allCurrentDocs());
+        service.sync();
+
+        RetrievedChunk opsChunk = new RetrievedChunk("APP_CRYPTO_SECRET 说明", PlatformDocsService.OPS_FILE_NAME, 0.92);
+        RetrievedChunk guideChunk = new RetrievedChunk("知识库使用说明", PlatformDocsService.GUIDE_FILE_NAME, 0.88);
+        when(knowledgeBaseService.retrieveChunks(eq("kb-docs"), anyString(), anyInt()))
+                .thenReturn(List.of(opsChunk, guideChunk));
+
+        CurrentActor dev = new CurrentActor("u-dev", "dev", UserRole.DEVELOPER);
+        CurrentActor admin = new CurrentActor("u-admin", "admin", UserRole.SUPER_ADMIN);
+
+        List<RetrievedChunk> devResults = service.search("如何配置环境变量", 2, dev);
+        assertEquals(1, devResults.size());
+        assertEquals(PlatformDocsService.GUIDE_FILE_NAME, devResults.get(0).sourceName());
+
+        List<RetrievedChunk> adminResults = service.search("如何配置环境变量", 2, admin);
+        assertEquals(2, adminResults.size());
+        assertEquals(PlatformDocsService.OPS_FILE_NAME, adminResults.get(0).sourceName());
+    }
+
+    @Test
+    void bundledDocsExistAndCoverKeyTopicsConfigDetailsAndErrors() throws Exception {
+        Map<String, String> allDocs = PlatformDocsService.readAllBundledDocs();
+        assertEquals(5, allDocs.size());
+
+        String guide = allDocs.get(PlatformDocsService.GUIDE_FILE_NAME);
         for (String topic : List.of("## 知识库", "## 模型网关", "## 开放与安全", "## AI 助手", "## 常见问题",
-                "**运行中**、**空闲中**、**已停用**")) {
-            assertTrue(guide.contains(topic), "缺少：" + topic);
+                "## 配置项详细说明", "**运行中**、**空闲中**、**已停用**", "温度", "记忆轮数", "Top K", "上下文窗口")) {
+            assertTrue(guide.contains(topic), "platform-guide.md 缺少：" + topic);
+        }
+
+        String errors = allDocs.get("error-dictionary.md");
+        for (String code : List.of("key_invalid", "agent_not_running", "rate_limited", "Connect timed out", "系统公共预置资产受平台保护")) {
+            assertTrue(errors.contains(code), "error-dictionary.md 缺少：" + code);
         }
     }
 }

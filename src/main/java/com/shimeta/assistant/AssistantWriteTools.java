@@ -447,11 +447,16 @@ public class AssistantWriteTools {
 
     // ==================== 确认后执行 ====================
 
-    /** 执行结果：资源类型与 ID、给用户看的说明，以及跳转链接（可为空）。 */
+    /** 执行结果：资源类型与 ID、给用户看的说明、跳转链接（可为空）、一次性展示密钥（不落库）与执行后回读摘要。 */
     public record ExecutionResult(String resourceType, String resourceId, String message, String linkLabel, String linkUrl,
-                                  String secret) {
+                                  String secret, String readback) {
         public ExecutionResult(String resourceType, String resourceId, String message, String linkLabel, String linkUrl) {
-            this(resourceType, resourceId, message, linkLabel, linkUrl, null);
+            this(resourceType, resourceId, message, linkLabel, linkUrl, null, null);
+        }
+
+        public ExecutionResult(String resourceType, String resourceId, String message, String linkLabel, String linkUrl,
+                               String secret) {
+            this(resourceType, resourceId, message, linkLabel, linkUrl, secret, null);
         }
     }
 

@@ -31,6 +31,7 @@ import com.shimeta.skill.SkillService;
 import com.shimeta.skill.SkillView;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -80,6 +81,8 @@ public class AssistantQueryTools {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private McpServerService mcpServerService;
     private SkillService skillService;
+    private AssistantExtendedQueryTools extendedQueryTools;
+    private ObjectProvider<AssistantExtendedQueryTools> extendedQueryToolsProvider;
 
     public AssistantQueryTools(AgentService agentService,
                                KnowledgeBaseService knowledgeBaseService,
@@ -113,6 +116,23 @@ public class AssistantQueryTools {
     @Autowired(required = false)
     public void setSkillService(SkillService skillService) {
         this.skillService = skillService;
+    }
+
+    @Autowired(required = false)
+    public void setExtendedQueryToolsProvider(ObjectProvider<AssistantExtendedQueryTools> provider) {
+        this.extendedQueryToolsProvider = provider;
+    }
+
+    /** 供单元测试手动注入扩展只读工具；Spring 运行期走 {@link #setExtendedQueryToolsProvider} 避免构造循环依赖。 */
+    public void setExtendedQueryTools(AssistantExtendedQueryTools extendedQueryTools) {
+        this.extendedQueryTools = extendedQueryTools;
+    }
+
+    private AssistantExtendedQueryTools resolveExtendedQueryTools() {
+        if (extendedQueryTools != null) {
+            return extendedQueryTools;
+        }
+        return extendedQueryToolsProvider != null ? extendedQueryToolsProvider.getIfAvailable() : null;
     }
 
     public List<AssistantTool> tools() {
@@ -182,7 +202,7 @@ public class AssistantQueryTools {
                 AssistantTool.read("search_platform_docs", "检索平台文档",
                         "检索平台使用文档。回答\"怎么用\"\"在哪里设置\"\"是什么意思\"\"报错怎么办\"等平台使用问题前先调用，以文档为准回答。",
                         schema(Map.of("query", prop("string", "检索问题，用完整的一句话描述")), "query"),
-                        (args, ctx) -> searchPlatformDocs(args)),
+                        (args, ctx) -> searchPlatformDocs(args, ctx.actor())),
                 AssistantTool.adminRead("test_gateway_channel", "测试模型通道",
                         "对一个大模型通道发起一次连通性测试并返回结果（仅超级管理员）。用户问\"XX 通道还能用吗\"\"帮我测一下通道\"时使用。",
                         schema(Map.of("channel", prop("string", "通道名称或 ID")), "channel"),
@@ -308,15 +328,19 @@ public class AssistantQueryTools {
     // ==================== search_platform_docs ====================
 
     Map<String, Object> searchPlatformDocs(JsonNode args) {
+        return searchPlatformDocs(args, null);
+    }
+
+    Map<String, Object> searchPlatformDocs(JsonNode args, CurrentActor actor) {
         String query = text(args, "query");
         if (query == null) {
             throw new IllegalArgumentException("请提供检索问题");
         }
         if (!platformDocsService.isReady()) {
-            platformDocsService.search(query, 1); // 触发后台导入
+            platformDocsService.search(query, 1, actor); // 触发后台导入
             return Map.of("ok", false, "error", "平台文档尚未就绪（未激活向量模型或正在导入），请根据你已知的平台功能介绍回答，并说明可能不够准确");
         }
-        List<Map<String, Object>> snippets = platformDocsService.search(query, 4).stream().map(chunk -> {
+        List<Map<String, Object>> snippets = platformDocsService.search(query, 4, actor).stream().map(chunk -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("source", chunk.sourceName());
             m.put("content", truncate(chunk.content(), 1200));
@@ -1005,8 +1029,12 @@ public class AssistantQueryTools {
         // 3. 知识库绑定与索引
         checks.addAll(checkKnowledgeBases(agent, actor));
 
-        // 4. 近 7 天调用情况
+        // 4. 近 7 天调用情况、近期对话日志与工具失败率
         checks.add(checkRecentCalls(agent));
+        AssistantExtendedQueryTools ext = resolveExtendedQueryTools();
+        if (ext != null) {
+            checks.addAll(ext.diagnoseLogsAndTools(agent, actor));
+        }
 
         long fails = checks.stream().filter(c -> "FAIL".equals(c.get("status"))).count();
         long warns = checks.stream().filter(c -> "WARN".equals(c.get("status"))).count();

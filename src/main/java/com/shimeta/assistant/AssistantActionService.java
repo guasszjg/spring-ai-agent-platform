@@ -4,9 +4,11 @@ import com.shimeta.model.AssistantAction;
 import com.shimeta.repository.AssistantActionRepository;
 import com.shimeta.security.CurrentActor;
 import com.shimeta.service.AuditRecorder;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -32,6 +34,7 @@ public class AssistantActionService {
     private final AssistantWriteTools writeTools;
     private final AuditRecorder auditRecorder;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private AssistantExtendedWriteTools extendedWriteTools;
 
     public AssistantActionService(AssistantActionRepository actionRepository,
                                   AssistantWriteTools writeTools,
@@ -41,6 +44,11 @@ public class AssistantActionService {
         this.auditRecorder = auditRecorder;
     }
 
+    @Autowired(required = false)
+    public void setExtendedWriteTools(AssistantExtendedWriteTools extendedWriteTools) {
+        this.extendedWriteTools = extendedWriteTools;
+    }
+
     /** 依赖的前序卡片尚未执行成功：拒绝确认，卡片保持 PENDING（不消耗）。 */
     public static class DependencyNotMetException extends IllegalStateException {
         public DependencyNotMetException(String message) {
@@ -48,13 +56,26 @@ public class AssistantActionService {
         }
     }
 
+    /** D 级高危卡片名称校验未通过或必填密码框为空：拒绝确认，卡片保持 PENDING（不消耗）。 */
+    public static class ConfirmationMismatchException extends IllegalArgumentException {
+        public ConfirmationMismatchException(String message) {
+            super(message);
+        }
+    }
+
+    public Map<String, Object> confirm(String actionId, CurrentActor actor) {
+        return confirm(actionId, null, actor);
+    }
+
     /**
      * 用户确认执行，返回最新的卡片数据，前端据此刷新卡片。
-     * 执行结果中的敏感信息（如新签发的 API Key 明文）只放在本次返回的卡片 secret 字段中，不落库。
+     * 执行结果中的敏感信息（如新签发的 API Key 明文）只放在本次返回的卡片 secret 字段中，不落库；
+     * 请求中的密码框输入（secretValue）仅直接传给目标 Service，不落库、不进审计与对话记录。
      *
-     * @throws DependencyNotMetException 依赖的前序卡片还未确认执行成功
+     * @throws DependencyNotMetException     依赖的前序卡片还未确认执行成功
+     * @throws ConfirmationMismatchException D 级高危卡片名称未输入正确或必填密码框为空（不消耗卡片）
      */
-    public Map<String, Object> confirm(String actionId, CurrentActor actor) {
+    public Map<String, Object> confirm(String actionId, AssistantActionConfirmRequest request, CurrentActor actor) {
         AssistantAction action = load(actionId, actor);
         if (!AssistantAction.PENDING.equals(action.getStatus())) {
             return card(action);
@@ -63,6 +84,7 @@ public class AssistantActionService {
         if (unmet != null) {
             throw new DependencyNotMetException(unmet);
         }
+        validateHighRiskConfirmation(action, request);
         if (actionRepository.claim(actionId, actor.getUserId(), LocalDateTime.now()) != 1) {
             // 并发确认、刚好过期或已被取消：以数据库中的最新状态为准
             return card(load(actionId, actor));
@@ -71,12 +93,18 @@ public class AssistantActionService {
         Map<String, Object> result = new LinkedHashMap<>();
         String secret = null;
         try {
-            AssistantWriteTools.ExecutionResult executed = writeTools.execute(action.getToolName(), action.getPayload(), actor);
+            AssistantWriteTools.ExecutionResult executed = (extendedWriteTools != null
+                    && extendedWriteTools.supports(action.getToolName()))
+                    ? extendedWriteTools.execute(action.getToolName(), action.getPayload(), request, actor)
+                    : writeTools.execute(action.getToolName(), action.getPayload(), actor);
             action.setStatus(AssistantAction.EXECUTED);
             action.setResourceType(executed.resourceType());
             action.setResourceId(executed.resourceId());
             secret = executed.secret();
             result.put("message", executed.message());
+            if (executed.readback() != null && !executed.readback().isBlank()) {
+                result.put("readback", executed.readback());
+            }
             if (executed.linkUrl() != null) {
                 result.put("link", Map.of("label", executed.linkLabel(), "url", executed.linkUrl()));
             }
@@ -98,6 +126,34 @@ public class AssistantActionService {
             card.put("secret", secret);
         }
         return card;
+    }
+
+    /** D 级高危卡片：校验手输资源名称（必须完全一致）与卡片密码框必填项；不通过抛出异常且不消耗卡片。 */
+    private void validateHighRiskConfirmation(AssistantAction action, AssistantActionConfirmRequest request) {
+        if (!"D".equalsIgnoreCase(action.getRiskLevel())) {
+            return;
+        }
+        JsonNode previewNode = readJsonNode(action.getPreview());
+        String expectedName = previewNode != null ? previewNode.path("confirmTargetName").asText("").trim() : "";
+        if (!expectedName.isEmpty()) {
+            String supplied = request != null && request.confirmName() != null ? request.confirmName().trim() : "";
+            if (!expectedName.equals(supplied)) {
+                throw new ConfirmationMismatchException("高危操作确认失败：请手动输入完整名称「" + expectedName + "」后再确认");
+            }
+        }
+        JsonNode secretInput = previewNode != null ? previewNode.get("secretInput") : null;
+        if (secretInput != null && secretInput.isObject()) {
+            boolean required = secretInput.path("required").asBoolean(false);
+            String label = secretInput.path("label").asText("密钥或密码");
+            int minLength = secretInput.path("minLength").asInt(0);
+            String secretVal = request != null && request.secretValue() != null ? request.secretValue().trim() : "";
+            if (required && secretVal.isEmpty()) {
+                throw new ConfirmationMismatchException("请在卡片输入框中填写" + label);
+            }
+            if (!secretVal.isEmpty() && minLength > 0 && secretVal.length() < minLength) {
+                throw new ConfirmationMismatchException(label + "长度不能少于 " + minLength + " 位");
+            }
+        }
     }
 
     public Map<String, Object> cancel(String actionId, CurrentActor actor) {
@@ -130,8 +186,17 @@ public class AssistantActionService {
                 // 模型在后续轮次中编排依赖此卡片的操作时需要卡片 ID
                 note += "（pendingActionId " + action.getId() + "）";
             }
-            if (AssistantAction.EXECUTED.equals(status) && action.getResourceId() != null) {
-                note += "（资源 ID " + action.getResourceId() + "）";
+            if (AssistantAction.EXECUTED.equals(status)) {
+                if (action.getResourceId() != null) {
+                    note += "（资源 ID " + action.getResourceId() + "）";
+                }
+                if (action.getResult() != null) {
+                    JsonNode resNode = readJsonNode(action.getResult());
+                    String readback = resNode != null ? resNode.path("readback").asText("") : "";
+                    if (!readback.isBlank()) {
+                        note += "；实际生效：" + readback;
+                    }
+                }
             }
             if (AssistantAction.FAILED.equals(status) && action.getResult() != null) {
                 try {
@@ -206,18 +271,62 @@ public class AssistantActionService {
     }
 
     private void audit(AssistantAction action, String result, String error) {
-        String detail = "via=assistant; tool=" + action.getToolName() + "; action=" + action.getId()
-                + "; conversation=" + action.getConversationId() + "; title=" + action.getTitle()
-                + (error != null ? "; error=" + error : "");
+        StringBuilder detail = new StringBuilder();
+        detail.append("via=assistant; tool=").append(action.getToolName())
+                .append("; risk=").append(action.getRiskLevel())
+                .append("; action=").append(action.getId())
+                .append("; conversation=").append(action.getConversationId())
+                .append("; title=").append(action.getTitle());
+        if ("D".equalsIgnoreCase(action.getRiskLevel())) {
+            JsonNode previewNode = readJsonNode(action.getPreview());
+            if (previewNode != null) {
+                String targetName = previewNode.path("confirmTargetName").asText("");
+                if (!targetName.isBlank()) {
+                    detail.append("; targetName=").append(targetName);
+                }
+                JsonNode impacts = previewNode.get("impacts");
+                if (impacts != null && impacts.isArray() && !impacts.isEmpty()) {
+                    List<String> impactList = new ArrayList<>();
+                    impacts.forEach(n -> {
+                        String t = n.asText("").trim();
+                        if (!t.isEmpty()) {
+                            impactList.add(t);
+                        }
+                    });
+                    if (!impactList.isEmpty()) {
+                        detail.append("; impacts=").append(String.join(" | ", impactList));
+                    }
+                }
+            }
+        }
+        if (error != null) {
+            detail.append("; error=").append(error);
+        }
+        String auditRisk = switch (action.getRiskLevel() == null ? "" : action.getRiskLevel().toUpperCase(java.util.Locale.ROOT)) {
+            case "D" -> "HIGH";
+            case "B", "W2" -> "MEDIUM";
+            default -> "LOW";
+        };
         try {
             auditRecorder.record("assistant.action." + action.getToolName(),
                     action.getResourceType() != null ? action.getResourceType() : "ASSISTANT",
                     action.getResourceId() != null ? action.getResourceId() : action.getId(),
                     result, error != null ? "execution_failed" : null,
-                    "W2".equals(action.getRiskLevel()) ? "MEDIUM" : "LOW", detail);
+                    auditRisk, detail.toString());
         } catch (Exception e) {
             // 审计写入失败不能影响执行结果的记录
             log.warn("Failed to audit assistant action [{}]: {}", action.getId(), e.getMessage());
+        }
+    }
+
+    private JsonNode readJsonNode(String json) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        try {
+            return objectMapper.readTree(json);
+        } catch (Exception e) {
+            return null;
         }
     }
 

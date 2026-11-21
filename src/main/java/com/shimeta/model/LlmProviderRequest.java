@@ -13,6 +13,8 @@ public class LlmProviderRequest {
     private Integer timeoutMs;
     private Integer maxRetries;
     private Boolean supportsTools;
+    private Boolean supportsToolChoiceRequired;
+    private String modelSizeTier;
     private Integer contextWindow;
     private String remark;
 
@@ -94,6 +96,22 @@ public class LlmProviderRequest {
 
     public void setSupportsTools(Boolean supportsTools) {
         this.supportsTools = supportsTools;
+    }
+
+    public Boolean getSupportsToolChoiceRequired() {
+        return supportsToolChoiceRequired;
+    }
+
+    public void setSupportsToolChoiceRequired(Boolean supportsToolChoiceRequired) {
+        this.supportsToolChoiceRequired = supportsToolChoiceRequired;
+    }
+
+    public String getModelSizeTier() {
+        return modelSizeTier;
+    }
+
+    public void setModelSizeTier(String modelSizeTier) {
+        this.modelSizeTier = modelSizeTier;
     }
 
     public Integer getContextWindow() {

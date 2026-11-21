@@ -63,6 +63,10 @@ public class AssistantMessage {
     @Column(name = "feedback_at")
     private LocalDateTime feedbackAt;
 
+    /** 第六步回答后置校验命中的标记（JSON 数组，如 ["UNGROUNDED_DATA"]），用于待复盘闭环 */
+    @Column(name = "verification_flags", columnDefinition = "TEXT")
+    private String verificationFlags;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
@@ -104,6 +108,8 @@ public class AssistantMessage {
     public void setFeedback(String feedback) { this.feedback = feedback; }
     public LocalDateTime getFeedbackAt() { return feedbackAt; }
     public void setFeedbackAt(LocalDateTime feedbackAt) { this.feedbackAt = feedbackAt; }
+    public String getVerificationFlags() { return verificationFlags; }
+    public void setVerificationFlags(String verificationFlags) { this.verificationFlags = verificationFlags; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
 }

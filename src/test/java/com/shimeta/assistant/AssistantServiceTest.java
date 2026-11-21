@@ -88,6 +88,7 @@ class AssistantServiceTest {
         when(actionService.statusNotes(any())).thenReturn(List.of());
         when(actionService.card(any())).thenAnswer(inv -> Map.of("id", ((AssistantAction) inv.getArgument(0)).getId()));
         when(platformDocsService.search(anyString(), anyInt())).thenReturn(List.of());
+        when(platformDocsService.search(anyString(), anyInt(), any())).thenReturn(List.of());
         sink = new AssistantService.Sink(new SseEmitter()) {
             @Override
             synchronized void send(String event, Object data) {
@@ -137,9 +138,9 @@ class AssistantServiceTest {
                 Map.of("page", "debug", "resourceType", "AGENT", "resourceId", "agent-1")), actor, sink);
 
         ArgumentCaptor<List<Map<String, Object>>> messages = ArgumentCaptor.forClass(List.class);
-        verify(openAiClient).streamChat(anyString(), anyString(), eq("qwen-max"), any(), anyBoolean(),
+        verify(openAiClient, atLeastOnce()).streamChat(anyString(), anyString(), eq("qwen-max"), any(), anyBoolean(),
                 messages.capture(), any(), any(), anyInt(), any(), any());
-        String system = String.valueOf(messages.getValue().get(0).get("content"));
+        String system = String.valueOf(messages.getAllValues().get(0).get(0).get("content"));
         assertTrue(system.contains("【页面上下文】"));
         assertTrue(system.contains("agent-1"));
     }
@@ -322,7 +323,7 @@ class AssistantServiceTest {
 
     @Test
     void chatModeInjectsPlatformDocsIntoSystemPrompt() {
-        when(platformDocsService.search(anyString(), anyInt())).thenReturn(List.of(new com.shimeta.rag.RetrievedChunk(
+        when(platformDocsService.search(anyString(), anyInt(), eq(actor))).thenReturn(List.of(new com.shimeta.rag.RetrievedChunk(
                 "c1", "d1", null, "platform-guide.md", null, null, null, null,
                 "平台内置引擎必须先激活向量模型", null, 0.9, null, null, null, "HYBRID", 10, Map.of())));
         when(openAiClient.streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(), any(), isNull(), any(), anyInt(), any(), any()))
@@ -398,9 +399,9 @@ class AssistantServiceTest {
         service.converse(new AssistantChatRequest(null, "技能库里有哪些技能？", "AGENT"), actor, sink);
 
         ArgumentCaptor<List<Map<String, Object>>> toolsCap = ArgumentCaptor.forClass(List.class);
-        verify(openAiClient).streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(),
+        verify(openAiClient, atLeastOnce()).streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(),
                 any(), toolsCap.capture(), any(), anyInt(), any(), any());
-        String sentTools = String.valueOf(toolsCap.getValue());
+        String sentTools = String.valueOf(toolsCap.getAllValues().get(0));
         assertTrue(sentTools.contains("list_agents"));
         assertFalse(sentTools.contains("create_agent"));
     }
@@ -438,5 +439,115 @@ class AssistantServiceTest {
         assertTrue(usageTools.size() <= 3);
         // 泛问/未指明模块时返回 null（下发全量只读工具）
         assertEquals(null, AssistantService.selectReadTools("「售后客服」用的是什么模型？", null));
+    }
+
+    @Test
+    void chatModeDocsBudgetScalesWithChannelContextWindow() {
+        var small = AssistantService.docsBudgetForWindow(4096);
+        var medium = AssistantService.docsBudgetForWindow(8192);
+        var normal = AssistantService.docsBudgetForWindow(null);
+        var large = AssistantService.docsBudgetForWindow(65536);
+
+        assertEquals(2, small.topK());
+        assertEquals(3, medium.topK());
+        assertEquals(4, normal.topK());
+        assertEquals(6, large.topK());
+        assertTrue(small.maxTotalChars() < medium.maxTotalChars());
+        assertTrue(normal.maxTotalChars() < large.maxTotalChars());
+    }
+
+    @Test
+    void postTurnVerifierStripsFabricatedLinksAndFlagsPrematureCompletion() {
+        when(openAiClient.streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(), any(), any(), any(), anyInt(), any(), any()))
+                .thenReturn(new OpenAiCompatibleClient.StreamResult("", List.of(
+                        new OpenAiCompatibleClient.ToolCall("call_1", "create_agent", "{}")), 80, 10))
+                .thenAnswer(inv -> {
+                    String text = "已为你创建成功，可以去 [编造入口](/debug/fake-id) 查看。";
+                    contentCallback(inv).accept(text);
+                    return new OpenAiCompatibleClient.StreamResult(text, List.of(), 90, 20);
+                });
+
+        service.converse(new AssistantChatRequest(null, "帮我创建一个客服智能体", "AGENT"), actor, sink);
+
+        ArgumentCaptor<AssistantMessage> saved = ArgumentCaptor.forClass(AssistantMessage.class);
+        verify(conversationService, times(2)).append(any(), saved.capture());
+        AssistantMessage reply = saved.getAllValues().get(1);
+        assertFalse(reply.getContent().contains("/debug/fake-id"), "编造的链接应被去掉");
+        assertTrue(reply.getContent().contains("编造入口"), "去掉链接后应保留文字");
+        assertTrue(payloadOf("done").contains("尚未执行"), "卡片未确认却宣称创建成功时应附加提醒");
+        assertTrue(payloadOf("done").contains(AssistantAnswerVerifier.FLAG_FABRICATED_LINK));
+        assertTrue(payloadOf("done").contains(AssistantAnswerVerifier.FLAG_PREMATURE_COMPLETION));
+    }
+
+    @Test
+    void readDataQuerySkippingToolsRetriesOnceWithToolChoiceRequiredWithoutDuplicateText() {
+        when(openAiClient.streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(), any(), any(), any(), anyInt(), any(), any()))
+                // 第 1 次：跳过调工具直接张嘴编造（应被缓冲不推给前端）
+                .thenAnswer(inv -> {
+                    contentCallback(inv).accept("我猜你有 5 个智能体。");
+                    return new OpenAiCompatibleClient.StreamResult("我猜你有 5 个智能体。", List.of(), 50, 10);
+                })
+                // 第 2 次：带 tool_choice=required 重试，模型正确调用 list_agents
+                .thenReturn(new OpenAiCompatibleClient.StreamResult("", List.of(
+                        new OpenAiCompatibleClient.ToolCall("call_retry", "list_agents", "{}")), 60, 12))
+                // 第 3 次：拿到工具结果后输出真实回复
+                .thenAnswer(inv -> {
+                    contentCallback(inv).accept("你当前共有 2 个智能体。");
+                    return new OpenAiCompatibleClient.StreamResult("你当前共有 2 个智能体。", List.of(), 90, 15);
+                });
+
+        service.converse(new AssistantChatRequest(null, "我有哪些智能体？", "AGENT"), actor, sink);
+
+        ArgumentCaptor<com.shimeta.model.ChatGeneration> genCap = ArgumentCaptor.forClass(com.shimeta.model.ChatGeneration.class);
+        verify(openAiClient, times(3)).streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(),
+                any(), any(), genCap.capture(), anyInt(), any(), any());
+        assertEquals(null, genCap.getAllValues().get(0).getToolChoice());
+        assertEquals("required", genCap.getAllValues().get(1).getToolChoice());
+        assertEquals(null, genCap.getAllValues().get(2).getToolChoice());
+
+        String shown = events.stream().filter(e -> e[0].equals("message")).map(e -> e[1]).reduce("", String::concat);
+        assertFalse(shown.contains("我猜你有 5 个智能体"), "被缓冲的未调工具草稿不得推送给前端");
+        assertTrue(shown.contains("你当前共有 2 个智能体。"));
+    }
+
+    @Test
+    void toolChoiceRequiredRejectionFlushesInitialBufferedReplyGracefully() {
+        when(openAiClient.streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(), any(), any(), any(), anyInt(), any(), any()))
+                .thenAnswer(inv -> {
+                    contentCallback(inv).accept("初版回答内容。");
+                    return new OpenAiCompatibleClient.StreamResult("初版回答内容。", List.of(), 40, 8);
+                })
+                .thenThrow(new IllegalStateException("HTTP 400 {\"error\":\"tool_choice required is not supported\"}"));
+
+        service.converse(new AssistantChatRequest(null, "我有哪些智能体？", "AGENT"), actor, sink);
+
+        String shown = events.stream().filter(e -> e[0].equals("message")).map(e -> e[1]).reduce("", String::concat);
+        assertTrue(shown.contains("初版回答内容。"), "重试被通道拒绝时应平滑吐出初版缓冲文本");
+        assertTrue(payloadOf("done").contains("degraded=false"));
+    }
+
+    @Test
+    void under7bModelAutomaticallyDowngradesAgentModeToChatModeWithNotice() {
+        LlmProvider smallOllama = new LlmProvider();
+        smallOllama.setName("Board Ollama 1.7B");
+        smallOllama.setProtocol(com.shimeta.model.LlmProtocolType.OLLAMA);
+        smallOllama.setBaseUrl("http://127.0.0.1:11434/v1");
+        smallOllama.setDefaultModel("qwen3:1.7b");
+        smallOllama.setSupportsTools(true);
+        // Ollama 默认 modelSizeTier 为 SMALL_UNDER_7B，应自动降级为问答模式
+        when(gatewayService.resolveAssistantRoute()).thenReturn(Optional.of(new LlmGatewayService.AssistantRoute(
+                new LlmGatewayService.ResolvedRoute(smallOllama, null, 30000, 0, "", null), null, false)));
+        when(openAiClient.streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(), any(), isNull(), any(), anyInt(), any(), any()))
+                .thenAnswer(inv -> {
+                    contentCallback(inv).accept("请到智能体列表查看。");
+                    return new OpenAiCompatibleClient.StreamResult("请到智能体列表查看。", List.of(), 20, 10);
+                });
+
+        service.converse(new AssistantChatRequest(null, "我有哪些智能体？", "AGENT"), actor, sink);
+
+        verify(openAiClient).streamChat(anyString(), anyString(), eq("qwen3:1.7b"), any(), anyBoolean(),
+                any(), isNull(), any(), anyInt(), any(), any());
+        assertTrue(payloadOf("done").contains("mode=CHAT"));
+        assertTrue(payloadOf("done").contains("7B 以上"));
     }
 }

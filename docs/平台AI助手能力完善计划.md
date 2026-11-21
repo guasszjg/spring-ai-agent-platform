@@ -233,12 +233,18 @@ D 级高危卡片的人工确认规则：
 
 | 事项 | 状态 | 说明 |
 | --- | --- | --- |
-| 第零步 基线 | 未开工 | |
-| 第一步 能力清单 | 未开工 | |
-| 第二步 平台知识 | 未开工 | |
-| 第三步 查询能力 | 未开工 | |
-| 第四步 执行能力 | 未开工 | |
-| 第五步 选对工具 | 未开工 | |
-| 第六步 回答校验 | 未开工 | |
-| 第七步 评测扩充 | 未开工 | |
-| 第八步 模型分级 | 未开工 | |
+| 第零步 基线 | 代码已合入 · 待跑基线 | 助手优化已合入 main（`da4c1ad` / `22276af`），待在控制台跑 DeepSeek 与 qwen3.5:9b 67 题基线入表 |
+| 第一步 能力清单 | 已完成 | 新增 `capabilities.json`（116 条目）、`AssistantCapabilities` 动态按角色生成菜单总览；前端抽出 `navMenus.js` 并在 `npm run build` 自动导出 `frontend-menus.json`；`AssistantCapabilitiesTest` 守门菜单/工具/文档锚点一致 |
+| 第二步 平台知识 | 已完成 | `PlatformDocsService` 支持 5 篇内置文档按 SHA-256 增量同步（含功能说明、开放接口指南、报错字典及仅超管可检索的部署运维）；`platform-guide.md` 补齐全部配置项说明；问答模式按通道上下文窗口动态分配文档预算 |
+| 第三步 查询能力 | 已完成 | 新增 `AssistantExtendedQueryTools` 5 个只读工具：`list_resources` / `get_resource`（覆盖 12 类资源，严格按角色过滤与字段白名单脱敏）、`run_retrieval_test`、`get_agent_logs`、`get_tool_usage`；`diagnose_agent` 接入近期对话日志失败线索与高失败率工具诊断；同步更新 `capabilities.json` 与 `AssistantCapabilitiesTest` |
+| 第四步 执行能力 | 已完成 | 新增写工具框架 `AssistantWriteActionSupport` 与 `AssistantExtendedWriteTools`（16 个 A/B/C/D 级新写工具，总计 23 个写工具，全覆盖能力清单全部 WRITE 项）；B 级卡片展示前后对比并做基线乐观锁与执行回读；C 级运行卡片注明耗时与成本；D 级高危卡片强制 5 分钟过期、每轮限 1 张、禁串联、展示影响范围、前后端双重名称一致校验（不通过不消耗卡片）、密钥/密码仅走卡片密码框直传不入库不进审计、审计风险标 `HIGH`；前端 `AssistantDock.vue` 同步支持四级卡片与密码框 |
+| 第五步 选对工具 | 已完成 | 新增 `AssistantToolRouter` 10 组语义工具分组、向量相似度选组（批量嵌入缓存 + 异常冷却降级关键词）、多轮追问组继承与读写工具双收窄；新增 Flyway `V44` 通道 `supports_tool_choice_required` 开关（含模型网关 UI 配置项），查询类首轮跳过调工具时缓冲草稿并带 `tool_choice=required` 重试一次 |
+| 第六步 回答校验 | 已完成 | 新增 `AssistantAnswerVerifier` 零延迟后置校验：无依据报数据提示、未知菜单名告警、编造链接自动去链留字、未确认卡片提前宣布完成提醒；接入 `AssistantService` 并完成单测 |
+| 第七步 评测扩充 | 已完成 | 评测用例由 67 条扩充至 319 条，100% 覆盖 `capabilities.json` 全部 123 项能力（每项含标准问法 + 同义/口语改写，全部 44 项 `WRITE` 能力含只读观察员越权用例），由 `AssistantEvalServiceTest` 单测守门；评分加入数据核对占位符、第六步防编造告警零容忍与可选「文档类模型评分」（默认关闭，记录 `judgeTokens`）；新增按通道对比（`/api/assistant/evals/compare`）与待复盘列表/一键转草稿（`/api/assistant/evals/review-queue`），同步升级 `AssistantEvalPanel.vue` |
+| 第八步 模型分级 | 已完成 | 新增 Flyway `V45` 通道 `model_size_tier` 字段（Ollama 默认 `<7B`，其余默认 `≥7B`），`LlmGatewayService.supportsAssistantAgentMode` 仅对「支持工具调用且 ≥7B」开放执行模式；新增 `GET /api/assistant/capabilities`、`AssistantService` 服务端降级兜底、模型网关规模与最近评测通过率展示（`GatewayLlmSection.vue`），以及助手面板自动置灰「执行」按钮并提示原因（`AssistantDock.vue`） |
+
+## PR 自查清单（助手回归门槛）
+
+- 新增或改名菜单、配置字段、报错文案时，同步更新 `capabilities.json`、`frontend-menus.json`（前端 `npm run build` 自动导出）与内置文档，确保 `AssistantCapabilitiesTest` 全通过。
+- 新增或修改助手工具时，同步补充 `resources/assistant/eval/cases.json` 用例（标准问法 + 同义改写 + 写工具越权用例），确保 `AssistantEvalServiceTest` 100% 覆盖率守门通过。
+- 合并助手相关重大改动前，在 DeepSeek 通道跑全量评测（必要时打开「文档类模型评分」），确保所有类别通过率不下降且「权限与安全」保持 100%。
