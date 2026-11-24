@@ -226,11 +226,12 @@ public class AssistantExtendedWriteTools {
 
                 // ---------- B 级：修改 ----------
                 AssistantTool.write(UPDATE_AGENT_SETTINGS, "生成修改智能体设置操作",
-                        "统一修改智能体的模型、主备通道路由、温度、Top P、最大输出长度、上下文记忆轮数、思考模式、知识库检索方式以及绑定的技能和工具（B 级修改对比卡片）。只传要修改的字段即可。",
+                        "统一修改智能体的模型、主备通道路由、温度、Top P、最大输出长度、上下文记忆轮数、思考模式、知识库检索方式以及绑定的技能和工具（B 级修改对比卡片）。只传要修改的字段即可。"
+                                + "修改模型或切换通道前，请先从 get_agent_detail 返回的 availableModelChoices 中确认准确的通道名与模型名，切勿猜测模型名；切换不同通道的模型时须同时传入 primaryChannel 和 modelName。",
                         schema(Map.ofEntries(
                                 Map.entry("agent", prop("string", "智能体 ID、编码或名称")),
-                                Map.entry("modelName", prop("string", "模型名称，可选")),
-                                Map.entry("primaryChannel", prop("string", "主通道名称或 ID；传 \"DEFAULT\" 表示切回跟随平台默认，可选")),
+                                Map.entry("modelName", prop("string", "模型名称（须为目标通道可用模型列表中的准确名称），可选")),
+                                Map.entry("primaryChannel", prop("string", "主通道名称或 ID（切换其他通道的模型时必须同时指定）；传 \"DEFAULT\" 表示切回跟随平台默认，可选")),
                                 Map.entry("fallbackChannel", prop("string", "备用通道名称或 ID；传 \"DEFAULT\" 表示切回跟随平台默认，可选")),
                                 Map.entry("temperature", prop("number", "温度 0~2，可选")),
                                 Map.entry("topP", prop("number", "Top P 0~1，可选")),
@@ -513,54 +514,74 @@ public class AssistantExtendedWriteTools {
         var pb = previewBuilder().addField("智能体", agent.getName());
         int changes = 0;
 
-        // 1. 主备通道与模型路由
+        // 1. 主备通道与模型路由（强校验可选通道与模型名，杜绝猜测不存在的模型名或漏设主通道导致切换无效）
         String primaryRef = text(args, "primaryChannel");
+        String modelName = text(args, "modelName");
         LlmProviderView resolvedPrimary = null;
+        String currentPrimaryName = resolveProviderNameOrDefault(agent.getPrimaryProviderId());
         if (primaryRef != null) {
             if ("DEFAULT".equalsIgnoreCase(primaryRef) || "跟随默认".equals(primaryRef)) {
                 if (agent.getPrimaryProviderId() != null && !agent.getPrimaryProviderId().isBlank()) {
                     payload.put("primaryProviderId", "");
-                    pb.addDiff("主通道", agent.getPrimaryProviderId(), "跟随平台默认");
+                    pb.addDiff("主通道", currentPrimaryName, "跟随平台默认");
                     changes++;
                 }
             } else {
-                resolvedPrimary = resolveProvider(primaryRef);
+                resolvedPrimary = resolveProviderForAgent(primaryRef);
                 if (!Objects.equals(resolvedPrimary.getId(), agent.getPrimaryProviderId())) {
                     payload.put("primaryProviderId", resolvedPrimary.getId());
-                    pb.addDiff("主通道", blankOr(agent.getPrimaryProviderId(), "跟随平台默认"), resolvedPrimary.getName());
+                    pb.addDiff("主通道", currentPrimaryName, resolvedPrimary.getName());
                     changes++;
                 }
             }
         }
         String fallbackRef = text(args, "fallbackChannel");
         if (fallbackRef != null) {
+            String currentFallbackName = resolveProviderNameOrDefault(agent.getFallbackProviderId());
             if ("DEFAULT".equalsIgnoreCase(fallbackRef) || "跟随默认".equals(fallbackRef)) {
                 if (agent.getFallbackProviderId() != null && !agent.getFallbackProviderId().isBlank()) {
                     payload.put("fallbackProviderId", "");
-                    pb.addDiff("备用通道", agent.getFallbackProviderId(), "跟随平台默认");
+                    pb.addDiff("备用通道", currentFallbackName, "跟随平台默认");
                     changes++;
                 }
             } else {
-                LlmProviderView fb = resolveProvider(fallbackRef);
+                LlmProviderView fb = resolveProviderForAgent(fallbackRef);
                 if (!Objects.equals(fb.getId(), agent.getFallbackProviderId())) {
                     payload.put("fallbackProviderId", fb.getId());
-                    pb.addDiff("备用通道", blankOr(agent.getFallbackProviderId(), "跟随平台默认"), fb.getName());
+                    pb.addDiff("备用通道", currentFallbackName, fb.getName());
                     changes++;
                 }
             }
         }
-        String modelName = text(args, "modelName");
-        if (modelName != null && !modelName.equals(agent.getModelName())) {
-            if (resolvedPrimary != null && resolvedPrimary.getModels() != null && !resolvedPrimary.getModels().isBlank()) {
-                boolean listed = Arrays.stream(resolvedPrimary.getModels().split("[,，]"))
-                        .map(String::trim).anyMatch(m -> m.equalsIgnoreCase(modelName));
-                if (!listed && !modelName.equalsIgnoreCase(resolvedPrimary.getDefaultModel())) {
-                    throw new IllegalArgumentException("模型「" + modelName + "」不在通道「" + resolvedPrimary.getName() + "」的可用模型列表中");
+        if (modelName != null) {
+            String effectiveModel = modelName;
+            if (resolvedPrimary != null) {
+                effectiveModel = matchModelOnProvider(resolvedPrimary, modelName);
+            } else {
+                // 未显式传 primaryChannel 时，在所有可选通道中按精确→模糊查找所属通道，自动补全 primaryProviderId
+                ModelChannelMatch matched = resolveModelAcrossSelectableChannels(modelName, agent.getPrimaryProviderId());
+                if (matched != null) {
+                    effectiveModel = matched.model();
+                    if (!Objects.equals(matched.provider().getId(), agent.getPrimaryProviderId())) {
+                        payload.put("primaryProviderId", matched.provider().getId());
+                        pb.addDiff("主通道", currentPrimaryName, matched.provider().getName());
+                        changes++;
+                    }
                 }
             }
-            payload.put("modelName", modelName);
-            pb.addDiff("模型", blankOr(agent.getModelName(), "跟随通道默认"), modelName);
-            changes++;
+            if (!Objects.equals(effectiveModel, agent.getModelName())) {
+                payload.put("modelName", effectiveModel);
+                pb.addDiff("模型", blankOr(agent.getModelName(), "跟随通道默认"), effectiveModel);
+                changes++;
+            }
+        } else if (resolvedPrimary != null && resolvedPrimary.getDefaultModel() != null && !resolvedPrimary.getDefaultModel().isBlank()) {
+            // 切换主通道但未指定模型时，同步切到目标通道的默认模型，避免旧通道的模型名在新通道下校验失败
+            String targetDefault = resolvedPrimary.getDefaultModel().trim();
+            if (!Objects.equals(targetDefault, agent.getModelName())) {
+                payload.put("modelName", targetDefault);
+                pb.addDiff("模型", blankOr(agent.getModelName(), "跟随通道默认"), targetDefault);
+                changes++;
+            }
         }
 
         // 2. 数值与枚举参数
@@ -1553,7 +1574,9 @@ public class AssistantExtendedWriteTools {
 
         Agent saved = agentService.update(current.getId(), patch, actor);
         Agent readbackAgent = agentService.getById(current.getId(), actor).orElse(saved);
-        String readback = "模型=" + blankOr(readbackAgent.getModelName(), "跟随默认")
+        String channelLabel = resolveProviderNameOrDefault(readbackAgent.getPrimaryProviderId());
+        String readback = "主通道=" + channelLabel
+                + "，模型=" + blankOr(readbackAgent.getModelName(), "跟随默认")
                 + "，温度=" + readbackAgent.getTemperature()
                 + "，记忆=" + readbackAgent.resolveMemoryTurns() + "轮"
                 + "，思考=" + Agent.normalizeThinkingMode(readbackAgent.getThinkingMode())
@@ -1905,6 +1928,168 @@ public class AssistantExtendedWriteTools {
                 .filter(p -> ref.equalsIgnoreCase(p.getId()) || ref.equalsIgnoreCase(p.getName()))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("未找到模型通道「" + ref + "」"));
+    }
+
+    private record ModelChannelMatch(LlmProviderView provider, String model) {
+    }
+
+    private List<LlmProviderView> selectableProviders() {
+        if (gatewayService == null) {
+            return List.of();
+        }
+        GatewayOverview ov = gatewayService.overview();
+        List<LlmProviderView> all = ov != null && ov.getProviders() != null ? ov.getProviders() : List.of();
+        List<LlmProviderView> ready = all.stream()
+                .filter(p -> p.isEnabled() && "SUCCESS".equalsIgnoreCase(p.getLastProbeStatus()))
+                .toList();
+        if (!ready.isEmpty()) {
+            return ready;
+        }
+        return all.stream().filter(LlmProviderView::isEnabled).toList();
+    }
+
+    private String resolveProviderNameOrDefault(String providerId) {
+        if (providerId == null || providerId.isBlank()) {
+            return "跟随平台默认";
+        }
+        if (gatewayService == null) {
+            return providerId;
+        }
+        try {
+            GatewayOverview ov = gatewayService.overview();
+            if (ov != null && ov.getProviders() != null) {
+                return ov.getProviders().stream()
+                        .filter(p -> providerId.equals(p.getId()))
+                        .map(LlmProviderView::getName)
+                        .findFirst()
+                        .orElse(providerId);
+            }
+        } catch (RuntimeException ignored) {
+        }
+        return providerId;
+    }
+
+    private static List<String> providerModels(LlmProviderView p) {
+        LinkedHashSet<String> set = new LinkedHashSet<>();
+        if (p.getDefaultModel() != null && !p.getDefaultModel().isBlank()) {
+            set.add(p.getDefaultModel().trim());
+        }
+        if (p.getModels() != null && !p.getModels().isBlank()) {
+            for (String m : p.getModels().split("[,，\\n]")) {
+                if (!m.isBlank()) {
+                    set.add(m.trim());
+                }
+            }
+        }
+        return new ArrayList<>(set);
+    }
+
+    private String formatSelectableChannelsHint(List<LlmProviderView> providers) {
+        if (providers.isEmpty()) {
+            return "（当前没有已启用且连通测试通过的通道）";
+        }
+        return String.join("、", providers.stream()
+                .map(p -> p.getName() + " [" + String.join(", ", providerModels(p)) + "]")
+                .toList());
+    }
+
+    private LlmProviderView resolveProviderForAgent(String ref) {
+        List<LlmProviderView> pool = selectableProviders();
+        String key = ref.trim();
+        String lower = key.toLowerCase(Locale.ROOT);
+        // 1. 精确匹配 ID 或名称
+        for (LlmProviderView p : pool) {
+            if (key.equalsIgnoreCase(p.getId()) || key.equalsIgnoreCase(p.getName())) {
+                return p;
+            }
+        }
+        // 2. 模糊匹配通道名或模型名（如用户传 "qwen3.5-9b" / "9b"）
+        List<LlmProviderView> fuzzy = pool.stream()
+                .filter(p -> (p.getName() != null && p.getName().toLowerCase(Locale.ROOT).contains(lower))
+                        || providerModels(p).stream().anyMatch(m -> m.toLowerCase(Locale.ROOT).contains(lower)))
+                .toList();
+        if (fuzzy.size() == 1) {
+            return fuzzy.get(0);
+        }
+        if (fuzzy.size() > 1) {
+            throw new IllegalArgumentException("匹配到多个可选通道，请明确指定：" + formatSelectableChannelsHint(fuzzy));
+        }
+        throw new IllegalArgumentException("未找到可用的模型通道「" + key + "」；当前可选通道与模型："
+                + formatSelectableChannelsHint(pool));
+    }
+
+    private String matchModelOnProvider(LlmProviderView provider, String requestedModel) {
+        List<String> models = providerModels(provider);
+        if (models.isEmpty()) {
+            return requestedModel.trim();
+        }
+        String key = requestedModel.trim();
+        String lower = key.toLowerCase(Locale.ROOT);
+        for (String m : models) {
+            if (m.equalsIgnoreCase(key)) {
+                return m;
+            }
+        }
+        List<String> fuzzy = models.stream().filter(m -> m.toLowerCase(Locale.ROOT).contains(lower)).toList();
+        if (fuzzy.size() == 1) {
+            return fuzzy.get(0);
+        }
+        throw new IllegalArgumentException("模型「" + key + "」不在通道「" + provider.getName()
+                + "」的可用模型列表中（可用：" + String.join("、", models) + "）");
+    }
+
+    private ModelChannelMatch resolveModelAcrossSelectableChannels(String requestedModel, String currentPrimaryId) {
+        List<LlmProviderView> pool = selectableProviders();
+        if (pool.isEmpty()) {
+            return null;
+        }
+        String key = requestedModel.trim();
+        String lower = key.toLowerCase(Locale.ROOT);
+        // 1. 精确匹配任意可选通道的模型名（若当前绑定通道已命中则优先）
+        List<ModelChannelMatch> exact = new ArrayList<>();
+        for (LlmProviderView p : pool) {
+            for (String m : providerModels(p)) {
+                if (m.equalsIgnoreCase(key)) {
+                    exact.add(new ModelChannelMatch(p, m));
+                }
+            }
+        }
+        if (exact.size() == 1) {
+            return exact.get(0);
+        }
+        if (exact.size() > 1) {
+            if (currentPrimaryId != null) {
+                for (ModelChannelMatch hit : exact) {
+                    if (currentPrimaryId.equals(hit.provider().getId())) {
+                        return hit;
+                    }
+                }
+            }
+            throw new IllegalArgumentException("模型「" + key + "」存在于多个通道，请指定 primaryChannel："
+                    + formatSelectableChannelsHint(exact.stream().map(ModelChannelMatch::provider).distinct().toList()));
+        }
+        // 2. 模糊子串匹配（例如 "9b" 匹配 "qwen3.5:9b" / "ollama(qwen3.5-9b)"）
+        List<ModelChannelMatch> fuzzy = new ArrayList<>();
+        for (LlmProviderView p : pool) {
+            List<String> models = providerModels(p);
+            List<String> hitModels = models.stream().filter(m -> m.toLowerCase(Locale.ROOT).contains(lower)).toList();
+            if (!hitModels.isEmpty()) {
+                for (String m : hitModels) {
+                    fuzzy.add(new ModelChannelMatch(p, m));
+                }
+            } else if (p.getName() != null && p.getName().toLowerCase(Locale.ROOT).contains(lower) && !models.isEmpty()) {
+                fuzzy.add(new ModelChannelMatch(p, models.get(0)));
+            }
+        }
+        if (fuzzy.size() == 1) {
+            return fuzzy.get(0);
+        }
+        if (fuzzy.size() > 1) {
+            throw new IllegalArgumentException("模型关键词「" + key + "」匹配到多个可选模型，请明确指定 primaryChannel 和 modelName："
+                    + formatSelectableChannelsHint(fuzzy.stream().map(ModelChannelMatch::provider).distinct().toList()));
+        }
+        throw new IllegalArgumentException("模型「" + key + "」不在任何可用通道中，无法切换。当前可选通道与模型："
+                + formatSelectableChannelsHint(pool) + "。请传入准确的 primaryChannel 和 modelName。");
     }
 
     private List<String> describeProviderImpacts(LlmProviderView p) {

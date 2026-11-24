@@ -60,6 +60,13 @@ class AssistantToolRouterTest {
         assertFalse(chitchat.hitsReadDataGroup());
         assertEquals("chitchat", chitchat.strategy());
 
+        var pingOnAgentsPage = router.route("在吗?", Map.of("page", "agents"), null, admin, false);
+        assertFalse(pingOnAgentsPage.hitsReadDataGroup(), "在智能体页寒暄「在吗?」不得触发强制调工具");
+        assertEquals("chitchat", pingOnAgentsPage.strategy());
+
+        var generalChatOnAgentsPage = router.route("帮我讲个冷笑话", Map.of("page", "agents"), null, admin, false);
+        assertFalse(generalChatOnAgentsPage.hitsReadDataGroup(), "仅因页面上下文补入工具组时不得触发 tool_choice=required");
+
         var howTo = router.route("先检索后回答和模型自主检索有什么区别？", null, null, dev, false);
         assertFalse(howTo.hitsReadDataGroup(), "纯概念/使用文档问题不应触发查询强制重试");
         assertTrue(howTo.allowedReadTools() == null || howTo.allowedReadTools().contains("search_platform_docs"));

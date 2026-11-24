@@ -386,4 +386,52 @@ class AssistantExtendedWriteToolsTest {
         extendedWriteTools.draftUpdateGuardrailPolicy(mapper.readTree("{\"killSwitch\":true}"), gpCtx);
         assertTrue(gpCtx.createdActions().get(0).getPreview().contains("立即拦截"));
     }
+
+    @Test
+    void updateAgentSettingsResolvesChannelForModelAndRejectsFabricatedModelName() throws Exception {
+        Agent agent = new Agent();
+        agent.setId("ag-test01");
+        agent.setName("test01");
+        agent.setTemperature(0.7);
+        when(agentService.getById("test01", dev)).thenReturn(Optional.of(agent));
+        when(authorizationService.canManageAgent(dev, agent)).thenReturn(true);
+
+        LlmProviderView p28 = new LlmProviderView();
+        p28.setId("prov-28b");
+        p28.setName("公司服务器(qw3.8-28b)");
+        p28.setDefaultModel("Qwen3.8-27B");
+        p28.setModels("Qwen3.8-27B");
+        p28.setEnabled(true);
+        p28.setLastProbeStatus("SUCCESS");
+
+        LlmProviderView p9 = new LlmProviderView();
+        p9.setId("prov-9b");
+        p9.setName("ollama(qwen3.5-9b)");
+        p9.setDefaultModel("qwen3.5:9b");
+        p9.setModels("qwen3.5:9b");
+        p9.setEnabled(true);
+        p9.setLastProbeStatus("SUCCESS");
+
+        GatewayOverview ov = new GatewayOverview();
+        ov.setProviders(List.of(p28, p9));
+        when(gatewayService.overview()).thenReturn(ov);
+
+        // 1. 猜测不存在的模型名（Qwen3.8-9B）时必须拒绝并回传真实可选通道列表
+        IllegalArgumentException fakeEx = assertThrows(IllegalArgumentException.class,
+                () -> extendedWriteTools.draftUpdateAgentSettings(
+                        mapper.readTree("{\"agent\":\"test01\",\"modelName\":\"Qwen3.8-9B\"}"),
+                        ToolContext.of(dev, "asc-m1")));
+        assertTrue(fakeEx.getMessage().contains("ollama(qwen3.5-9b)"));
+        assertTrue(fakeEx.getMessage().contains("qwen3.5:9b"));
+
+        // 2. 传 "9b" 或 "qwen3.5:9b" 时自动绑定对应主通道 prov-9b 与准确模型名 qwen3.5:9b
+        ToolContext okCtx = ToolContext.of(dev, "asc-m2");
+        extendedWriteTools.draftUpdateAgentSettings(
+                mapper.readTree("{\"agent\":\"test01\",\"modelName\":\"9b\"}"), okCtx);
+        AssistantAction action = okCtx.createdActions().get(0);
+        assertTrue(action.getPayload().contains("\"primaryProviderId\":\"prov-9b\""));
+        assertTrue(action.getPayload().contains("\"modelName\":\"qwen3.5:9b\""));
+        assertTrue(action.getPreview().contains("ollama(qwen3.5-9b)"));
+        assertTrue(action.getPreview().contains("qwen3.5:9b"));
+    }
 }

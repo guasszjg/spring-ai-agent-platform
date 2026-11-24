@@ -315,9 +315,10 @@ class AssistantServiceTest {
         verify(openAiClient).streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(),
                 messages.capture(), any(), any(), anyInt(), any(), any());
         List<Map<String, Object>> sent = messages.getValue();
-        Map<String, Object> notes = sent.get(sent.size() - 2);
-        assertEquals("system", notes.get("role"));
-        assertTrue(notes.get("content").toString().contains("agent-9"));
+        // 卡片状态必须并入首条 system 消息，禁止在对话中间出现第二条 system（兼容 Qwen3 / vLLM Jinja 模板）
+        assertEquals("system", sent.get(0).get("role"));
+        assertTrue(sent.get(0).get("content").toString().contains("agent-9"));
+        assertEquals(1, sent.stream().filter(m -> "system".equals(m.get("role"))).count());
         assertEquals("再给它绑定售后知识库", sent.get(sent.size() - 1).get("content"));
     }
 
@@ -549,5 +550,75 @@ class AssistantServiceTest {
                 any(), isNull(), any(), anyInt(), any(), any());
         assertTrue(payloadOf("done").contains("mode=CHAT"));
         assertTrue(payloadOf("done").contains("7B 以上"));
+    }
+
+    @Test
+    void writeRequestClaimingCardWithoutToolCallRetriesAndGeneratesRealCard() {
+        when(actionService.statusNotes("asc-1")).thenReturn(List.of("「创建智能体：test01」：等待用户确认（pendingActionId act-old）"));
+        when(openAiClient.streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(), any(), any(), any(), anyInt(), any(), any()))
+                // 第 1 次：误以为已有待确认卡片就跳过调工具并口头声称卡片已生成（应被缓冲并触发纠正重试）
+                .thenAnswer(inv -> {
+                    String bad = "「创建智能体：test01」的操作卡片已经生成，目前正等待你确认，无需重复创建。";
+                    contentCallback(inv).accept(bad);
+                    return new OpenAiCompatibleClient.StreamResult(bad, List.of(), 50, 12);
+                })
+                // 第 2 次：纠正重试后模型真正调用 create_agent
+                .thenReturn(new OpenAiCompatibleClient.StreamResult("", List.of(
+                        new OpenAiCompatibleClient.ToolCall("call_create", "create_agent", "{\"name\":\"test01\"}")), 60, 15))
+                // 第 3 次：生成最终回复
+                .thenAnswer(inv -> {
+                    contentCallback(inv).accept("已为你重新生成创建 test01 的待确认卡片，请点击确认。");
+                    return new OpenAiCompatibleClient.StreamResult("已为你重新生成创建 test01 的待确认卡片，请点击确认。", List.of(), 80, 18);
+                });
+
+        service.converse(new AssistantChatRequest("asc-1", "帮我创建一个 test01 的智能体", "AGENT"), actor, sink);
+
+        ArgumentCaptor<List<Map<String, Object>>> msgCap = ArgumentCaptor.forClass(List.class);
+        ArgumentCaptor<com.shimeta.model.ChatGeneration> genCap = ArgumentCaptor.forClass(com.shimeta.model.ChatGeneration.class);
+        verify(openAiClient, times(3)).streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(),
+                msgCap.capture(), any(), genCap.capture(), anyInt(), any(), any());
+        // 初次请求的历史卡片提示应明确允许对未执行卡片重新生成
+        String firstNotes = msgCap.getAllValues().get(0).stream()
+                .map(m -> String.valueOf(m.get("content")))
+                .filter(c -> c.contains("act-old"))
+                .findFirst().orElse("");
+        assertTrue(firstNotes.contains("必须重新调用对应的写工具"));
+        // 重试请求携带系统纠正（并入首条 system，不新增尾部 system）与 tool_choice=required
+        assertEquals("required", genCap.getAllValues().get(1).getToolChoice());
+        List<Map<String, Object>> retrySent = msgCap.getAllValues().get(1);
+        assertEquals(1, retrySent.stream().filter(m -> "system".equals(m.get("role"))).count());
+        assertTrue(retrySent.get(0).get("content").toString().contains("系统纠正"));
+        // 前端未收到口头误报草稿，且收到了真实 action 卡片、无误报 notice
+        String shown = events.stream().filter(e -> e[0].equals("message")).map(e -> e[1]).reduce("", String::concat);
+        assertFalse(shown.contains("无需重复创建"));
+        assertTrue(shown.contains("重新生成创建 test01"));
+        assertTrue(payloadOf("action").contains("act-1"));
+        assertFalse(payloadOf("done").contains(AssistantService.CARD_CLAIM_NOTICE));
+    }
+
+    @Test
+    void streamingRepetitionLoopIsDetectedTruncatedAndAbortsUpstreamStream() {
+        String repeatedBlock = "在的！我是 AgentMatrix 平台的 AI 助手，可以帮你查询智能体、排查问题、查看用量和知识库等。你现在在智能体列表页面，有什么需要帮忙的，直接说就行。你想做什么？";
+        when(openAiClient.streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(), any(), any(), any(), anyInt(), any(), any()))
+                .thenAnswer(inv -> {
+                    Consumer<String> onContent = contentCallback(inv);
+                    java.util.function.BooleanSupplier cancelled = inv.getArgument(10);
+                    onContent.accept(repeatedBlock + "\n\n");
+                    assertFalse(cancelled.getAsBoolean());
+                    onContent.accept(repeatedBlock + "\n\n");
+                    assertTrue(cancelled.getAsBoolean(), "检测到连续复读后应立即触发上游流中止信号");
+                    onContent.accept(repeatedBlock);
+                    return new OpenAiCompatibleClient.StreamResult(repeatedBlock, List.of(), 50, 120);
+                });
+
+        service.converse(new AssistantChatRequest(null, "在吗?", "AGENT", Map.of("page", "agents")), actor, sink);
+
+        ArgumentCaptor<AssistantMessage> saved = ArgumentCaptor.forClass(AssistantMessage.class);
+        verify(conversationService, times(2)).append(any(), saved.capture());
+        String finalText = saved.getAllValues().get(1).getContent();
+        assertEquals(repeatedBlock, finalText, "最终保存与 done 事件应只保留首份，裁掉重复尾部");
+        // 且「在吗?」不应触发 tool_choice=required 重试，仅调用模型 1 次
+        verify(openAiClient, times(1)).streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(),
+                any(), any(), any(), anyInt(), any(), any());
     }
 }

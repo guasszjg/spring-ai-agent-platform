@@ -45,13 +45,19 @@ public class AssistantToolRouter {
     private static final Pattern FOLLOWUP_CUE = Pattern.compile(
             "(这个|那个|它|刚才|上面|前面|继续|再看|详细|具体|顺便|还有|改成|调成|帮我改|帮我查|那它|它的|里面的)");
     private static final Pattern PURE_CHITCHAT = Pattern.compile(
-            "^(你好|您好|嗨|hi|hello|早上好|下午好|晚上好|谢谢|多谢|感谢|再见|拜拜|你是谁|你能做什么|介绍一下你自己)[！!。.?？\\s]*$",
+            "^(你好|您好|嗨|hi|hello|hey|在吗|在不在|在么|有人吗|在呢|测试|测试一下|test|ping|早|早安|早上好|中午好|下午好|晚上好|晚安|"
+                    + "谢谢|多谢|感谢|再见|拜拜|好的|好|ok|okay|嗯|嗯嗯|收到|明白|明白了|哈哈|哈哈哈|辛苦了|没事|不用了|"
+                    + "你是谁|你能做什么|介绍一下你自己|你有什么功能)[！!。.?？~～\\s]*$",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern HOWTO_CUE = Pattern.compile(
             "(怎么|如何|在哪里|在哪|什么意思|啥意思|区别|对比|原理|步骤|教程|怎么配|如何配置|如何接入|文档)");
     private static final Pattern INSTANCE_DATA_CUE = Pattern.compile(
-            "(有哪些|有多少|几个|哪几个|列表|清单|查一下|查看|看看|帮我查|帮我测|测试一下|诊断|排查|统计|排行|最多|花了|花费|用了多少|"
-                    + "我的|当前|现在|目前|最近|今日|今天|近7天|近30天|日志|报错|失败|索引失败|没回复|没有回复|回答不对|通不通|能不能用|召回)");
+            "(有哪些|有多少|几个|哪几个|列表|清单|查一下|查看|看看|帮我查|帮我测|测试一下|诊断|排查|统计|排行|最多|最费钱|花了|花费|用了多少|"
+                    + "我的|当前|现在|目前|最近|今日|今天|近7天|近30天|日志|报错|失败|索引失败|没回复|没有回复|回答不对|通不通|能不能用|召回|配置|详情|状态|账单)");
+
+    static boolean isPureChitchat(String message) {
+        return message != null && PURE_CHITCHAT.matcher(message.trim()).matches();
+    }
 
     public record ToolGroup(
             String id,
@@ -270,7 +276,8 @@ public class AssistantToolRouter {
             strategy = "hybrid";
         }
 
-        // 3. 页面上下文联动
+        // 3. 页面上下文联动（仅由页面上下文兜底补入时，不视为明确查询平台数据，避免寒暄/闲聊误触发 tool_choice=required）
+        boolean matchedByMessage = !selectedGroups.isEmpty();
         String contextGroup = groupFromPageContext(pageContext, isSuperAdmin);
         if (contextGroup != null && (selectedGroups.isEmpty() || looksLikeFollowUp(trimmed))) {
             selectedGroups.add(contextGroup);
@@ -330,11 +337,15 @@ public class AssistantToolRouter {
             readTools.add("list_knowledge_documents");
         }
 
-        boolean pureHowTo = HOWTO_CUE.matcher(trimmed).find() && !INSTANCE_DATA_CUE.matcher(trimmed).find() && !includeWrite;
+        boolean hasInstanceCue = INSTANCE_DATA_CUE.matcher(trimmed).find();
+        boolean pureHowTo = HOWTO_CUE.matcher(trimmed).find() && !hasInstanceCue && !includeWrite;
         if (pureHowTo) {
             readTools.add("search_platform_docs");
         }
-        boolean hitsReadData = anyReadDataGroup && !pureHowTo;
+        // 仅当用户消息本身命中业务域且带有明确数据查询/排查意图时，才启用 tool_choice=required 兜底；
+        // 仅靠页面上下文补入或泛聊/寒暄绝不强制调工具
+        boolean hitsReadData = anyReadDataGroup && !pureHowTo
+                && (hasInstanceCue || (matchedByMessage && (!keywordMatched.isEmpty() || trimmed.length() >= 8)));
 
         Set<String> effectiveRead = readTools.isEmpty() || readTools.size() > MAX_FOCUSED_READ_TOOLS ? null : readTools;
         Set<String> effectiveWrite = includeWrite && !writeTools.isEmpty() ? writeTools : null;

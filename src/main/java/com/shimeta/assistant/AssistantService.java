@@ -69,7 +69,7 @@ public class AssistantService {
     static final String AGENT_MODE_DISABLED_NOTICE = "当前模型不支持执行模式，已自动切换为问答模式；请在模型网关为助手选择 7B 以上、支持工具调用的模型。";
     static final String CARD_CLAIM_NOTICE = "注意：本轮实际没有生成任何操作卡片，上面关于\"卡片已生成\"的说法有误。如需创建或修改，请让助手重新生成。";
     private static final java.util.regex.Pattern CARD_CLAIM = java.util.regex.Pattern.compile(
-            "(已|已经)(为你|为您|帮你|帮您)?生成[^。\n]{0,12}卡片|卡片[^。\n]{0,6}已(经)?生成");
+            "(已|已经)(为你|为您|帮你|帮您)?生成[^。\n]{0,12}卡片|卡片[^。\n]{0,6}已(经)?(为你|为您|帮你|帮您)?生成");
     /** 宁宽勿严的写操作意图判断：纯查询时不挂载写工具与冗长卡片规则，避免 4096 等小上下文窗口溢出 */
     private static final java.util.regex.Pattern WRITE_INTENT = java.util.regex.Pattern.compile(
             "(?i)(创建|新建|建一|建个|加一|添加|新增|修改|改成|改为|更新|编辑|调整|调成|换成|切换|激活|绑定|解绑|关联|取消关联|"
@@ -389,7 +389,16 @@ public class AssistantService {
     static List<Map<String, Object>> buildMessages(String system, List<AssistantMessage> history,
                                                    List<String> actionNotes, String userMessage) {
         List<Map<String, Object>> messages = new ArrayList<>();
-        messages.add(Map.of("role", "system", "content", system));
+        // 严格保证只有首条 role=system：vLLM / llama.cpp / Qwen3 Jinja 模板禁止在对话中间出现第二条 system 消息
+        String effectiveSystem = system;
+        if (actionNotes != null && !actionNotes.isEmpty()) {
+            effectiveSystem = (effectiveSystem == null ? "" : effectiveSystem)
+                    + "\n\n【本会话历史操作卡片状态】（仅用于了解哪些已执行成功、哪些可作为依赖；不要重复生成已执行成功的操作）：\n- "
+                    + String.join("\n- ", actionNotes)
+                    + "\n注意：如果用户本轮再次明确要求创建、修改或重新生成操作，且对应操作尚未执行成功（如仍在等待确认、已过期、已取消或失败），"
+                    + "必须重新调用对应的写工具生成一张新的待确认卡片，不要只口头回复\"卡片已经生成/等待确认\"。";
+        }
+        messages.add(Map.of("role", "system", "content", effectiveSystem));
         for (AssistantMessage item : history) {
             if (item.getContent() == null || item.getContent().isBlank() || Boolean.TRUE.equals(item.getDegraded())) {
                 continue;
@@ -400,12 +409,20 @@ public class AssistantService {
                     : item.getContent();
             messages.add(Map.of("role", role, "content", content));
         }
-        if (actionNotes != null && !actionNotes.isEmpty()) {
-            messages.add(Map.of("role", "system", "content",
-                    "本会话中操作卡片的最新状态（以此为准，不要重复生成已执行的操作）：\n- " + String.join("\n- ", actionNotes)));
-        }
         messages.add(Map.of("role", "user", "content", userMessage));
         return messages;
+    }
+
+    /** 将系统级纠正指令并入首条 system 消息，避免在消息尾部追加第二条 system 导致本地 Jinja 模板报 400。 */
+    private static List<Map<String, Object>> withAppendedSystemInstruction(List<Map<String, Object>> messages, String instruction) {
+        List<Map<String, Object>> copy = new ArrayList<>(messages);
+        if (!copy.isEmpty() && "system".equals(copy.get(0).get("role"))) {
+            String prev = String.valueOf(copy.get(0).get("content"));
+            copy.set(0, Map.of("role", "system", "content", prev + "\n\n" + instruction));
+        } else {
+            copy.add(0, Map.of("role", "system", "content", instruction));
+        }
+        return copy;
     }
 
     /** 主通道按策略重试；仍失败且尚未向用户输出任何内容时切换到降级通道。 */
@@ -453,17 +470,20 @@ public class AssistantService {
         List<Map<String, Object>> messages = fitMessagesForWindow(baseMessages, initialTools, window);
         ChatGeneration generation = new ChatGeneration();
         generation.setTemperature(agentMode ? 0.3 : 0.5);
+        generation.setMaxTokens(window != null && window > 0 ? Math.min(2048, Math.max(512, window / 3)) : 2048);
         int round = 0;
-        while (round < MAX_ROUNDS && !sink.isCancelled() && !turn.blocked) {
+        while (round < MAX_ROUNDS && !sink.isCancelled() && !turn.blocked && !turn.repetitionLoopDetected) {
             boolean offerTools = agentMode && !turn.toolsUnsupported && round < MAX_ROUNDS - 1;
             List<Map<String, Object>> tools = offerTools
                     ? toolRegistry.definitions(actor, includeWrite, allowedRead, allowedWrite) : null;
-            boolean guardEmptyToolCall = round == 0 && offerTools && !includeWrite
-                    && tools != null && !tools.isEmpty()
+            boolean hasTools = offerTools && tools != null && !tools.isEmpty();
+            boolean guardReadEmptyToolCall = round == 0 && hasTools && !includeWrite
                     && selection != null && selection.hitsReadDataGroup()
                     && LlmGatewayService.supportsToolChoiceRequired(channel.provider());
-            List<String> bufferedDeltas = guardEmptyToolCall ? new ArrayList<>() : null;
-            java.util.function.Consumer<String> deltaSink = guardEmptyToolCall ? bufferedDeltas::add : turn::emit;
+            boolean guardWriteCardClaim = round == 0 && hasTools && includeWrite && !actor.isViewer();
+            boolean bufferRoundZero = guardReadEmptyToolCall || guardWriteCardClaim;
+            List<String> bufferedDeltas = bufferRoundZero ? new ArrayList<>() : null;
+            java.util.function.Consumer<String> deltaSink = bufferRoundZero ? bufferedDeltas::add : turn::emit;
 
             OpenAiCompatibleClient.StreamResult result;
             try {
@@ -480,21 +500,37 @@ public class AssistantService {
             turn.promptTokens += result.promptTokens();
             turn.completionTokens += result.completionTokens();
 
-            if (guardEmptyToolCall && !result.hasToolCalls() && !sink.isCancelled() && !turn.blocked) {
-                // 4.5：查询类问题第 1 轮跳过调工具时，带 tool_choice=required 强制重试一次（避免编造数据）
-                log.info("Assistant round 0 skipped tools on read-data query (groups={}), retrying once with tool_choice=required",
-                        selection.groupIds());
+            boolean shouldRetryRead = guardReadEmptyToolCall && !result.hasToolCalls() && !sink.isCancelled() && !turn.blocked;
+            boolean shouldRetryWrite = guardWriteCardClaim && !result.hasToolCalls() && !sink.isCancelled() && !turn.blocked
+                    && claimsCardGenerated(result.content());
+            if (shouldRetryRead || shouldRetryWrite) {
                 ChatGeneration forcedGeneration = generation.copy();
-                forcedGeneration.setToolChoice("required");
+                List<Map<String, Object>> retryMessages = messages;
+                if (shouldRetryWrite) {
+                    // 写操作轮次模型未调工具却口头声称"卡片已生成"时，纠正并强制重试一次，确保真正调用写工具生成卡片
+                    log.info("Assistant round 0 claimed action card without calling write tool, retrying once");
+                    retryMessages = withAppendedSystemInstruction(messages,
+                            "系统纠正：你刚才没有调用任何写工具，本轮实际未生成任何操作卡片。"
+                                    + "若用户要求创建、修改、运行或重新生成操作，请立即调用对应的写工具生成新的待确认卡片；"
+                                    + "不要仅口头回复\"卡片已经生成/等待确认\"。");
+                    if (LlmGatewayService.supportsToolChoiceRequired(channel.provider())) {
+                        forcedGeneration.setToolChoice("required");
+                    }
+                } else {
+                    // 4.5：查询类问题第 1 轮跳过调工具时，带 tool_choice=required 强制重试一次（避免编造数据）
+                    log.info("Assistant round 0 skipped tools on read-data query (groups={}), retrying once with tool_choice=required",
+                            selection.groupIds());
+                    forcedGeneration.setToolChoice("required");
+                }
                 try {
                     OpenAiCompatibleClient.StreamResult retryResult = callModel(
-                            channel, timeoutMs, messages, tools, forcedGeneration, turn, sink, turn::emit);
+                            channel, timeoutMs, retryMessages, tools, forcedGeneration, turn, sink, turn::emit);
                     turn.promptTokens += retryResult.promptTokens();
                     turn.completionTokens += retryResult.completionTokens();
                     result = retryResult;
                 } catch (RuntimeException retryEx) {
                     if (!turn.hasShownContent()) {
-                        log.info("Channel [{}] rejected tool_choice=required ({}), flushing initial reply",
+                        log.info("Channel [{}] rejected forced retry ({}), flushing initial reply",
                                 channel.provider().getName(), retryEx.getMessage());
                         for (String delta : bufferedDeltas) {
                             turn.emit(delta);
@@ -503,13 +539,13 @@ public class AssistantService {
                     }
                     throw retryEx;
                 }
-            } else if (guardEmptyToolCall && bufferedDeltas != null && !bufferedDeltas.isEmpty()) {
+            } else if (bufferRoundZero && bufferedDeltas != null && !bufferedDeltas.isEmpty()) {
                 for (String delta : bufferedDeltas) {
                     turn.emit(delta);
                 }
             }
 
-            if (!offerTools || !result.hasToolCalls() || sink.isCancelled()) {
+            if (!offerTools || !result.hasToolCalls() || sink.isCancelled() || turn.repetitionLoopDetected) {
                 return; // 最终回复已在流式回调中推送
             }
 
@@ -572,8 +608,11 @@ public class AssistantService {
         }
     }
 
-    /** 判断本轮是否可能涉及写操作：纯查询问题不挂载 7 个写工具，节省约 1500 tokens 并提高选工具准确率 */
+    /** 判断本轮是否可能涉及写操作：纯查询或纯寒暄不挂载写工具，节省上下文并提高选工具准确率 */
     static boolean mayNeedWriteTools(String message, List<String> actionNotes) {
+        if (AssistantToolRouter.isPureChitchat(message)) {
+            return false;
+        }
         if (actionNotes != null && !actionNotes.isEmpty()) {
             return true;
         }
@@ -748,7 +787,8 @@ public class AssistantService {
         return openAiClient.streamChat(provider.getBaseUrl(), channel.key(), channel.model(),
                 LlmGatewayService.parseCustomHeaders(provider.getCustomConfig()),
                 LlmGatewayService.isWebSearchEnabled(provider),
-                messages, tools, generation, timeoutMs, deltaConsumer, () -> sink.isCancelled() || turn.blocked);
+                messages, tools, generation, timeoutMs, deltaConsumer,
+                () -> sink.isCancelled() || turn.blocked || turn.repetitionLoopDetected);
     }
 
     /** 通道拒绝 tools 参数（不支持 Function Calling）的典型报错 */
@@ -879,17 +919,19 @@ public class AssistantService {
         boolean blocked;
         boolean interrupted;
         boolean toolsUnsupported;
+        volatile boolean repetitionLoopDetected;
         String notice;
         private boolean pendingSeparator;
+        private int lastRepetitionCheckLen;
 
         Turn(StreamingSlidingWindowGuard guard, Sink sink) {
             this.guard = guard;
             this.sink = sink;
         }
 
-        /** 模型增量 → 护栏 → 推送。命中护栏后不再推送任何内容。 */
+        /** 模型增量 → 护栏 → 推送。命中护栏或检测到复读死循环后不再推送任何内容。 */
         void emit(String delta) {
-            if (blocked || delta == null || delta.isEmpty()) {
+            if (blocked || repetitionLoopDetected || delta == null || delta.isEmpty()) {
                 return;
             }
             String text = delta;
@@ -919,13 +961,15 @@ public class AssistantService {
             if (blocked) {
                 return;
             }
-            String rest = guard.flush();
-            if (isBlocking()) {
-                block();
-                return;
-            }
-            if (rest != null && !rest.isEmpty()) {
-                push(List.of(rest));
+            if (!repetitionLoopDetected) {
+                String rest = guard.flush();
+                if (isBlocking()) {
+                    block();
+                    return;
+                }
+                if (rest != null && !rest.isEmpty()) {
+                    push(List.of(rest));
+                }
             }
             if (interrupted) {
                 push(List.of("\n\n（回复中断：模型通道异常，请重试）"));
@@ -943,6 +987,8 @@ public class AssistantService {
             completionTokens = 0;
             tools.clear();
             pendingSeparator = false;
+            repetitionLoopDetected = false;
+            lastRepetitionCheckLen = 0;
             guard.flush();
         }
 
@@ -961,12 +1007,90 @@ public class AssistantService {
 
         private void push(List<String> chunks) {
             for (String chunk : chunks) {
+                if (repetitionLoopDetected) {
+                    return;
+                }
                 if (chunk != null && !chunk.isEmpty()) {
                     shown.append(chunk);
+                    if (shown.length() - lastRepetitionCheckLen >= 24) {
+                        lastRepetitionCheckLen = shown.length();
+                        int cutIdx = detectRepetitionCutIndex(shown);
+                        if (cutIdx >= 0) {
+                            repetitionLoopDetected = true;
+                            shown.setLength(cutIdx);
+                            log.warn("Assistant streaming repetition loop detected at {} chars, truncated to {}",
+                                    lastRepetitionCheckLen, cutIdx);
+                            return;
+                        }
+                    }
                     sink.send("message", Map.of("delta", chunk));
                 }
             }
         }
+    }
+
+    /**
+     * 检测模型流式输出是否陷入连续复读死循环（本地 Qwen/Ollama 模型低温度或强制工具调用下偶发退化）：
+     * <ul>
+     *   <li>长度 60~500 的段落紧邻重复 2 次（允许中间隔少量空白/换行）；或</li>
+     *   <li>长度 20~59 的短句紧邻重复 3 次。</li>
+     * </ul>
+     * 命中时返回应截断位置（保留首份，裁掉重复尾部），未命中返回 -1。
+     */
+    static int detectRepetitionCutIndex(CharSequence text) {
+        if (text == null) {
+            return -1;
+        }
+        int end = text.length();
+        while (end > 0 && Character.isWhitespace(text.charAt(end - 1))) {
+            end--;
+        }
+        if (end < 60) {
+            return -1;
+        }
+        int maxUnit = Math.min(500, end / 2);
+        for (int unitLen = 60; unitLen <= maxUnit; unitLen++) {
+            int secondStart = end - unitLen;
+            int firstEnd = skipTrailingWs(text, secondStart, 6);
+            int firstStart = firstEnd - unitLen;
+            if (firstStart >= 0 && regionEquals(text, firstStart, secondStart, unitLen)) {
+                return firstEnd;
+            }
+        }
+        int maxShort = Math.min(59, end / 3);
+        for (int unitLen = 20; unitLen <= maxShort; unitLen++) {
+            int thirdStart = end - unitLen;
+            int secondEnd = skipTrailingWs(text, thirdStart, 6);
+            int secondStart = secondEnd - unitLen;
+            if (secondStart < 0 || !regionEquals(text, secondStart, thirdStart, unitLen)) {
+                continue;
+            }
+            int firstEnd = skipTrailingWs(text, secondStart, 6);
+            int firstStart = firstEnd - unitLen;
+            if (firstStart >= 0 && regionEquals(text, firstStart, secondStart, unitLen)) {
+                return firstEnd;
+            }
+        }
+        return -1;
+    }
+
+    private static int skipTrailingWs(CharSequence text, int pos, int maxSkip) {
+        int i = pos;
+        int skipped = 0;
+        while (i > 0 && skipped < maxSkip && Character.isWhitespace(text.charAt(i - 1))) {
+            i--;
+            skipped++;
+        }
+        return i;
+    }
+
+    private static boolean regionEquals(CharSequence text, int startA, int startB, int len) {
+        for (int i = 0; i < len; i++) {
+            if (text.charAt(startA + i) != text.charAt(startB + i)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** SSE 发送端：前端断开后停止发送，并通过 isCancelled 通知模型读取循环尽快结束。 */

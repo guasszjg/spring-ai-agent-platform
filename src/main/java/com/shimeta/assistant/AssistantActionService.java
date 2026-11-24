@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -232,6 +233,11 @@ public class AssistantActionService {
         m.put("dependsOn", writeTools.dependencies(action));
         // 时间统一输出 ISO 字符串：卡片既走 SSE（普通 ObjectMapper）也走 REST，两边格式一致
         m.put("expiresAt", iso(action.getExpiresAt()));
+        if (AssistantAction.PENDING.equals(status) && action.getExpiresAt() != null) {
+            // 显式返回剩余秒数，避免服务端与浏览器时区/时钟不一致导致卡片刚生成就被前端误判为已过期
+            long remaining = Math.max(0L, Duration.between(LocalDateTime.now(), action.getExpiresAt()).getSeconds());
+            m.put("remainingSeconds", remaining);
+        }
         m.put("createdAt", iso(action.getCreatedAt()));
         m.put("executedAt", iso(action.getExecutedAt()));
         return m;

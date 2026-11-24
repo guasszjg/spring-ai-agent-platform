@@ -438,9 +438,41 @@ public class AssistantQueryTools {
         m.put("knowledgeBases", knowledgeBaseRefs(a, actor));
         m.put("skills", skillRefs(a, actor));
         m.put("enabledTools", enabledToolNames(a.getToolsConfig()));
-        m.put("canEdit", authorizationService.canManageAgent(actor, a));
+        boolean canEdit = authorizationService.canManageAgent(actor, a);
+        m.put("canEdit", canEdit);
         m.put("canRun", authorizationService.canRunAgent(actor, a));
+        if (canEdit) {
+            List<Map<String, Object>> choices = selectableModelChoices();
+            if (!choices.isEmpty()) {
+                m.put("availableModelChoices", choices);
+            }
+        }
         return ok(m);
+    }
+
+    /** 供可编辑智能体的角色（含开发者）在切换模型时查看可选通道与模型名（与调试页下拉列表一致，不含地址/密钥）。 */
+    private List<Map<String, Object>> selectableModelChoices() {
+        try {
+            var options = gatewayService.chatRouteOptions();
+            if (options == null || options.channels() == null) {
+                return List.of();
+            }
+            List<Map<String, Object>> list = new ArrayList<>();
+            for (var ch : options.channels()) {
+                if (!ch.selectable()) {
+                    continue;
+                }
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("channel", ch.name());
+                row.put("defaultModel", ch.defaultModel());
+                row.put("models", ch.models());
+                row.put("supportsTools", ch.supportsTools());
+                list.add(row);
+            }
+            return list;
+        } catch (RuntimeException e) {
+            return List.of();
+        }
     }
 
     private Map<String, Object> agentRouteSummary(Agent agent, CurrentActor actor) {
