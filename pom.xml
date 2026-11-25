@@ -15,11 +15,11 @@
     <artifactId>spring-ai-agent-platform</artifactId>
     <version>1.2.0</version>
     <name>spring-ai-agent-platform</name>
-    <description>Agent Management Platform based on Spring Boot 4.x and Spring AI 2.0.1</description>
+    <description>Agent Management Platform based on Spring Boot 4.x and Spring AI 2.0.3</description>
 
     <properties>
         <java.version>21</java.version>
-        <spring-ai.version>2.0.1</spring-ai.version>
+        <spring-ai.version>2.0.3</spring-ai.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <maven.compiler.encoding>UTF-8</maven.compiler.encoding>
@@ -64,7 +64,8 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-flyway</artifactId>
         </dependency>
-        <!-- MCP 客户端：连接远程 MCP 服务（Streamable HTTP / SSE），版本与 Spring AI 2.0.1 使用的一致 -->
+        <!-- MCP 客户端：连接远程 MCP 服务（Streamable HTTP / SSE）。直接使用 MCP SDK，未引入 spring-ai-mcp。
+             固定 2.0.0（Spring AI 2.0.1 的 MCP 模块所用版本）；Spring AI 2.0.3 的 MCP 模块已改用 2.1.0，升级需单独验证 -->
         <dependency>
             <groupId>io.modelcontextprotocol.sdk</groupId>
             <artifactId>mcp</artifactId>

@@ -1,6 +1,6 @@
 # 🤖 Spring AI 智能体管理平台 (Agent Management Platform)
 
-基于 **Spring Boot 4.0.0** 与 **Spring AI 2.0.1** 构建的现代化企业级智能体统一管理与编排平台。
+基于 **Spring Boot 4.0.0** 与 **Spring AI 2.0.3** 构建的现代化企业级智能体统一管理与编排平台。
 
 ---
 
@@ -8,7 +8,7 @@
 
 1. **最新技术栈底座**
    - **Spring Boot 4.x (4.0.0)**
-   - **Spring AI 2.0.1 (最新正式稳定版)**
+   - **Spring AI 2.0.3**
    - **Java 21 LTS**
    - 原生支持 Spring AI `ChatClient` 链式调用、Prompt 模板编排与 Function Calling 工具生态。
 
@@ -46,7 +46,7 @@
 
 ```text
 spring_ai/
-  ├── pom.xml                                      # Maven 依赖（Spring Boot 4.0.0 + Spring AI 2.0.1 BOM）
+  ├── pom.xml                                      # Maven 依赖（Spring Boot 4.0.0 + Spring AI 2.0.3 BOM）
   ├── README.md                                    # 项目详细说明文档
   └── src/main/
       ├── java/com/shimeta/

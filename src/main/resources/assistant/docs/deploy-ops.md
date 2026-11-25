@@ -6,7 +6,7 @@
 
 - JDK 21、Maven 3.6+、Node.js（前端 `spring_ai_ui` 构建）
 - PostgreSQL 17，需安装 `pgvector` 与 `pg_trgm` 扩展
-- 后端框架：Spring Boot 4.0 + Spring AI 2.0.1
+- 后端框架：Spring Boot 4.0 + Spring AI 2.0.3
 
 ## 2. 构建与打包
 
