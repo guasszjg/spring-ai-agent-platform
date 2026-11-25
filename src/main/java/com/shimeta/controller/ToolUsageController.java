@@ -115,11 +115,22 @@ public class ToolUsageController {
         if (actor == null || !actor.isSuperAdmin()) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error("权限不足：仅超级管理员可修改平台设置"));
         }
+        Object publicShare = body == null ? null : body.get("sharePublicEnabled");
+        if (publicShare != null && !(publicShare instanceof Boolean)) {
+            return ResponseEntity.badRequest().body(ApiResponse.error("sharePublicEnabled 需为 true 或 false"));
+        }
         Object raw = body == null ? null : body.get("maxToolRounds");
+        if (raw == null && publicShare != null) {
+            settingService.setSharePublicEnabled((Boolean) publicShare);
+            return ResponseEntity.ok(ApiResponse.ok("已保存", settingsView()));
+        }
         if (!(raw instanceof Number number) || number.doubleValue() != Math.floor(number.doubleValue())) {
             return ResponseEntity.badRequest().body(ApiResponse.error("maxToolRounds 需为整数"));
         }
         try {
+            if (publicShare != null) {
+                settingService.setSharePublicEnabled((Boolean) publicShare);
+            }
             settingService.setMaxToolRounds(number.intValue());
             return ResponseEntity.ok(ApiResponse.ok("已保存，对新的提问立即生效", settingsView()));
         } catch (IllegalArgumentException e) {
@@ -133,6 +144,7 @@ public class ToolUsageController {
         view.put("min", PlatformSettingService.MIN_TOOL_ROUNDS);
         view.put("max", PlatformSettingService.MAX_TOOL_ROUNDS_LIMIT);
         view.put("default", PlatformSettingService.DEFAULT_MAX_TOOL_ROUNDS);
+        view.put("sharePublicEnabled", settingService.sharePublicEnabled());
         return view;
     }
 

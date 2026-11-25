@@ -54,7 +54,9 @@ public class WebMvcConfig implements WebMvcConfigurer {
                         if (requested.exists() && requested.isReadable()) {
                             return requested;
                         }
-                        if (resourcePath.startsWith("api/") || resourcePath.startsWith("open/")) {
+                        // 接口路径不回退到前端页面；其余路径（包括 /chat/{code} 分享页）交给前端路由
+                        if (resourcePath.startsWith("api/") || resourcePath.startsWith("open/")
+                                || resourcePath.startsWith("share/")) {
                             return null;
                         }
                         return new ClassPathResource("/static/index.html");

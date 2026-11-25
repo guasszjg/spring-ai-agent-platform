@@ -22,6 +22,7 @@ final class AssistantEvalScorer {
             AssistantExtendedWriteTools.SAVE_AGENT_AS_TEMPLATE, AssistantExtendedWriteTools.REGISTER_MCP_SERVER,
             AssistantExtendedWriteTools.UPDATE_AGENT_SETTINGS, AssistantExtendedWriteTools.UPDATE_KB_SETTINGS,
             AssistantExtendedWriteTools.UPDATE_FAQ, AssistantExtendedWriteTools.ROLLBACK_AGENT_PROMPT,
+            AssistantExtendedWriteTools.DISABLE_SHARE_LINK,
             AssistantExtendedWriteTools.REBUILD_KB_INDEX, AssistantExtendedWriteTools.RUN_RAG_EVAL,
             AssistantExtendedWriteTools.REFRESH_MCP_SERVER, AssistantExtendedWriteTools.DELETE_RESOURCE,
             AssistantExtendedWriteTools.MANAGE_USER, AssistantExtendedWriteTools.MANAGE_GATEWAY_CHANNEL,

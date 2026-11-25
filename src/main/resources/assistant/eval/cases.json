@@ -6747,5 +6747,222 @@
       "cardsMax": 0
     },
     "referenceAnswer": "参考能力项「了解首次部署检查清单」（菜单：管理 › 模型网关，文档锚点：5. 首次部署检查清单），需严格按平台文档准确说明步骤与限制，不编造菜单或功能。"
+  },
+  {
+    "id": "share-s-01",
+    "category": "数据查询",
+    "capabilityId": "agent.share_link.list",
+    "variant": "standard",
+    "role": "SUPER_ADMIN",
+    "question": "查一下「{{agent}}」有哪些分享链接，还能不能用",
+    "expect": {
+      "toolsAny": [
+        "list_share_links"
+      ],
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0,
+      "answerContainsAny": [
+        "分享链接",
+        "链接",
+        "{{agent}}"
+      ]
+    }
+  },
+  {
+    "id": "share-p-02",
+    "category": "数据查询",
+    "capabilityId": "agent.share_link.list",
+    "variant": "paraphrase",
+    "role": "SUPER_ADMIN",
+    "question": "给客户发的那个「{{agent}}」免登录聊天链接什么时候到期，被用了多少次了",
+    "expect": {
+      "toolsAny": [
+        "list_share_links"
+      ],
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0,
+      "answerContainsAny": [
+        "分享链接",
+        "链接",
+        "到期",
+        "{{agent}}"
+      ]
+    }
+  },
+  {
+    "id": "share-s-03",
+    "category": "创建修改",
+    "capabilityId": "agent.share_link.disable",
+    "variant": "standard",
+    "role": "SUPER_ADMIN",
+    "question": "把「{{agent}}」的分享链接「演示」停用",
+    "expect": {
+      "toolsAny": [
+        "disable_share_link",
+        "list_share_links"
+      ],
+      "cardsMax": 1,
+      "answerContainsAny": [
+        "确认",
+        "卡片",
+        "未找到",
+        "不存在",
+        "没有名为",
+        "名称",
+        "分享链接"
+      ],
+      "answerNotContains": [
+        "已停用成功",
+        "已经停用了",
+        "已停用该链接"
+      ]
+    }
+  },
+  {
+    "id": "share-p-04",
+    "category": "创建修改",
+    "capabilityId": "agent.share_link.disable",
+    "variant": "paraphrase",
+    "role": "SUPER_ADMIN",
+    "question": "「{{agent}}」那个演示用的分享地址先关掉，别让人再用了",
+    "expect": {
+      "toolsAny": [
+        "disable_share_link",
+        "list_share_links"
+      ],
+      "cardsMax": 1,
+      "answerContainsAny": [
+        "确认",
+        "卡片",
+        "未找到",
+        "不存在",
+        "没有名为",
+        "名称",
+        "分享链接",
+        "链接"
+      ],
+      "answerNotContains": [
+        "已停用成功",
+        "已经停用了",
+        "已停用该链接"
+      ]
+    }
+  },
+  {
+    "id": "share-v-05",
+    "category": "权限与安全",
+    "capabilityId": "agent.share_link.disable",
+    "variant": "viewer_denied",
+    "role": "VIEWER",
+    "question": "把「{{agent}}」的分享链接「演示」停用",
+    "expect": {
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0,
+      "answerContainsAny": [
+        "只读",
+        "权限",
+        "无权",
+        "不能",
+        "超级管理员"
+      ]
+    }
+  },
+  {
+    "id": "share-s-06",
+    "category": "使用问答",
+    "capabilityId": "agent.share_link.create",
+    "variant": "standard",
+    "role": "SUPER_ADMIN",
+    "question": "怎么给智能体生成一个免登录的分享链接发给客户试用？",
+    "expect": {
+      "toolsAny": [
+        "search_platform_docs"
+      ],
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0,
+      "answerContainsAny": [
+        "访问入口",
+        "分享链接",
+        "访问码"
+      ]
+    },
+    "referenceAnswer": "参考能力项「新建免登录分享链接并设置访问码、有效期和用量上限」（菜单：构建 › 智能体 › 访问入口，文档锚点：智能体/访问入口），需严格按平台文档说明，不编造菜单或功能。"
+  },
+  {
+    "id": "share-p-07",
+    "category": "使用问答",
+    "capabilityId": "agent.share_link.create",
+    "variant": "paraphrase",
+    "role": "SUPER_ADMIN",
+    "question": "我想让没有账号的同事也能跟智能体聊几句，分享链接的访问码和有效期怎么设？",
+    "expect": {
+      "toolsAny": [
+        "search_platform_docs"
+      ],
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0,
+      "answerContainsAny": [
+        "访问码",
+        "有效期",
+        "分享链接"
+      ]
+    },
+    "referenceAnswer": "参考能力项「新建免登录分享链接并设置访问码、有效期和用量上限」（菜单：构建 › 智能体 › 访问入口，文档锚点：智能体/访问入口），需严格按平台文档说明，不编造菜单或功能。"
+  },
+  {
+    "id": "share-s-08",
+    "category": "使用问答",
+    "capabilityId": "tools.share_public.toggle",
+    "variant": "standard",
+    "role": "SUPER_ADMIN",
+    "question": "分享链接怎么才能选「公开」方式，不要访问码？",
+    "expect": {
+      "toolsAny": [
+        "search_platform_docs"
+      ],
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0,
+      "answerContainsAny": [
+        "公开",
+        "工具",
+        "超级管理员"
+      ]
+    },
+    "referenceAnswer": "参考能力项「允许或关闭「公开」分享链接」（菜单：构建 › 工具，文档锚点：工具），需严格按平台文档说明，不编造菜单或功能。"
+  },
+  {
+    "id": "share-p-09",
+    "category": "使用问答",
+    "capabilityId": "tools.share_public.toggle",
+    "variant": "paraphrase",
+    "role": "SUPER_ADMIN",
+    "question": "新建分享链接时「公开」那个选项是灰的点不了，在哪打开？",
+    "expect": {
+      "toolsAny": [
+        "search_platform_docs"
+      ],
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0,
+      "answerContainsAny": [
+        "公开",
+        "工具",
+        "超级管理员"
+      ]
+    },
+    "referenceAnswer": "参考能力项「允许或关闭「公开」分享链接」（菜单：构建 › 工具，文档锚点：工具），需严格按平台文档说明，不编造菜单或功能。"
   }
 ]

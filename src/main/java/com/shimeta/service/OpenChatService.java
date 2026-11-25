@@ -74,6 +74,15 @@ public class OpenChatService {
     }
 
     public Object chat(OpenApiChatRequest request, HttpServletRequest httpRequest) {
+        return chat(request, httpRequest, null);
+    }
+
+    /**
+     * @param onCompleted 模型回答完成后回调（流式时在后台线程里调用），用于调用方另外统计用量，例如分享链接；可以为空。
+     *                    只在拿到回答时调用，调用前被拒绝（权限、护栏）或调用失败时不调用
+     */
+    public Object chat(OpenApiChatRequest request, HttpServletRequest httpRequest,
+                       java.util.function.Consumer<ChatResponse> onCompleted) {
         OpenApiContext ctx = OpenApiContext.get();
         if (ctx == null || ctx.getKey() == null) {
             return error(HttpStatus.UNAUTHORIZED, "key_invalid", "未提供有效的开放凭证");
@@ -141,10 +150,11 @@ public class OpenChatService {
         String publicBaseUrl = publicUrlResolver.baseUrl(httpRequest);
         boolean streaming = "streaming".equalsIgnoreCase(request.getResponseMode());
         if (streaming) {
-            return stream(chatReq, agent, policy, publicBaseUrl);
+            return stream(chatReq, agent, policy, publicBaseUrl, onCompleted);
         }
         try {
             ChatResponse chatResp = aiChatService.chat(chatReq);
+            notifyCompleted(onCompleted, chatResp);
             String rawReply = chatResp.getReply();
             OutputGuardResult outputCheck = contentGuardService.inspectOutput(policy, rawReply);
             if (outputCheck.isBlocked()) {
@@ -192,7 +202,19 @@ public class OpenChatService {
      * 流式输出：模型边生成边推送（经引用角标清理与输出护栏的滑动窗口检查）。
      * 通道不支持流式或走了兜底回复时，拿到完整回复后再一次性输出。
      */
-    private Object stream(ChatRequest chatReq, Agent agent, GuardrailPolicy policy, String publicBaseUrl) {
+    private static void notifyCompleted(java.util.function.Consumer<ChatResponse> onCompleted, ChatResponse response) {
+        if (onCompleted == null || response == null) {
+            return;
+        }
+        try {
+            onCompleted.accept(response);
+        } catch (Exception e) {
+            log.warn("Chat completion callback failed: {}", e.getMessage());
+        }
+    }
+
+    private Object stream(ChatRequest chatReq, Agent agent, GuardrailPolicy policy, String publicBaseUrl,
+                          java.util.function.Consumer<ChatResponse> onCompleted) {
         SseEmitter emitter = new SseEmitter(180_000L);
         // 流式在后台线程执行：带上本次开放调用的上下文，用量、配额与审计才能记到对应的凭证和终端上
         OpenApiContext ctx = OpenApiContext.get();
@@ -226,6 +248,7 @@ public class OpenChatService {
                         return writer.blocked || writer.closed;
                     }
                 });
+                notifyCompleted(onCompleted, chatResp);
                 writer.write(writer.streamed ? stripper.flush() : chatResp.getReply());
                 writer.finish(chatResp);
                 if (!writer.blocked) {

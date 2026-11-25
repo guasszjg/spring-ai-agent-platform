@@ -105,7 +105,7 @@ mvn spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 或者执行编译打包生成的 Jar：
 ```bash
-java -jar target/spring-ai-agent-platform-1.1.0.jar --spring.profiles.active=dev
+java -jar target/spring-ai-agent-platform-1.2.0.jar --spring.profiles.active=dev
 ```
 前端有改动时先在 `spring_ai_ui` 执行 `npm run build`（产物输出到本项目 `static/`），再 `mvn clean package`。详见 [部署与运维](docs/部署与运维.md)。
 

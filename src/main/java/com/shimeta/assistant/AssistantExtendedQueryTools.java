@@ -174,8 +174,69 @@ public class AssistantExtendedQueryTools {
                         "统计平台各工具（内置/自定义 HTTP/MCP）的今日、本月、累计调用次数、失败次数、成功率、平均耗时和预估费用。可按单个智能体筛选。",
                         schema(Map.of(
                                 "agent", prop("string", "可选：智能体 ID、编码或名称，不传则统计当前用户可见的全部智能体"))),
-                        (args, ctx) -> getToolUsage(args, ctx.actor()))
+                        (args, ctx) -> getToolUsage(args, ctx.actor())),
+                AssistantTool.read(LIST_SHARE_LINKS, "查询分享链接",
+                        "查询某个智能体的分享链接（免登录聊天页）：名称、地址、访问方式、当前是否可用及原因、到期时间、对话次数、token 和访客数。"
+                                + "不返回访问码（访问码只在新建时显示一次）。用户问\"分享链接还能用吗\"\"链接什么时候到期\"\"链接被用了多少\"时使用。",
+                        schema(Map.of(
+                                "agent", prop("string", "智能体的 ID、编码或名称")), "agent"),
+                        (args, ctx) -> listShareLinks(args, ctx.actor()))
         );
+    }
+
+    static final String LIST_SHARE_LINKS = "list_share_links";
+    private com.shimeta.service.share.ShareLinkService shareLinkService;
+
+    @Autowired(required = false)
+    public void setShareLinkService(com.shimeta.service.share.ShareLinkService shareLinkService) {
+        this.shareLinkService = shareLinkService;
+    }
+
+    private static final Map<String, String> SHARE_STATE_LABELS = Map.of(
+            "ACTIVE", "可用", "DISABLED", "已停用", "EXPIRED", "已过期", "EXHAUSTED", "用量已用完",
+            "PUBLIC_DISABLED", "公开链接已被平台关闭", "AGENT_NOT_RUNNING", "智能体未运行");
+
+    private Map<String, Object> listShareLinks(JsonNode args, CurrentActor actor) {
+        if (shareLinkService == null) {
+            return Map.of("ok", false, "error", "分享链接模块未启用");
+        }
+        AssistantQueryTools.AgentMatch match = queryTools.resolveAgent(text(args, "agent"), actor);
+        if (match.agent() == null) {
+            return match.response();
+        }
+        List<Map<String, Object>> links;
+        try {
+            links = shareLinkService.list(match.agent().getId(), actor);
+        } catch (IllegalStateException e) {
+            return Map.of("ok", false, "error", "只有能管理该智能体的人可以查看它的分享链接");
+        }
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (Map<String, Object> l : links) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", l.get("id"));
+            item.put("name", l.get("name"));
+            item.put("path", l.get("path"));
+            item.put("accessMode", "PUBLIC".equals(l.get("accessMode")) ? "公开" : "访问码");
+            item.put("state", SHARE_STATE_LABELS.getOrDefault(String.valueOf(l.get("state")), String.valueOf(l.get("state"))));
+            item.put("enabled", "ACTIVE".equals(l.get("status")));
+            item.put("expiresAt", l.get("expiresAt"));
+            item.put("expiringSoon", l.get("expiringSoon"));
+            item.put("messageCount", l.get("messageCount"));
+            item.put("maxMessages", l.get("maxMessages"));
+            item.put("tokenCount", l.get("tokenCount"));
+            item.put("maxTokens", l.get("maxTokens"));
+            item.put("visitorCount", l.get("visitorCount"));
+            item.put("maxVisitors", l.get("maxVisitors"));
+            item.put("lastUsedAt", l.get("lastUsedAt"));
+            items.add(item);
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("agent", Map.of("id", match.agent().getId(), "name", match.agent().getName()));
+        body.put("total", items.size());
+        body.put("links", items);
+        body.put("manageLink", AssistantQueryTools.agentLink(match.agent().getId()) + "?tab=access");
+        body.put("note", "新建链接、修改访问码与有效期请到智能体调试页「访问入口 → Web 应用」操作");
+        return ok(body);
     }
 
     // ==================== list_resources ====================

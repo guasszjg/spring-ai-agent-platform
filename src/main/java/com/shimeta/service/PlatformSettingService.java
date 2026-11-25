@@ -46,6 +46,18 @@ public class PlatformSettingService {
         return rounds;
     }
 
+    /** 是否允许新建「公开」分享链接（不需要访问码）。默认关闭，由超级管理员打开 */
+    public static final String SHARE_PUBLIC_ENABLED = "share.public_enabled";
+
+    public boolean sharePublicEnabled() {
+        return "true".equalsIgnoreCase(get(SHARE_PUBLIC_ENABLED));
+    }
+
+    public boolean setSharePublicEnabled(boolean enabled) {
+        set(SHARE_PUBLIC_ENABLED, String.valueOf(enabled));
+        return enabled;
+    }
+
     private String get(String key) {
         String cached = cache.get(key);
         if (cached != null) {

@@ -83,9 +83,11 @@ public class AssistantToolRouter {
 
     static final List<ToolGroup> GROUPS = List.of(
             new ToolGroup("agents", "智能体与诊断",
-                    Set.of("list_agents", "get_agent_detail", "diagnose_agent", "get_agent_logs", "list_resources", "get_resource"),
+                    Set.of("list_agents", "get_agent_detail", "diagnose_agent", "get_agent_logs", "list_resources", "get_resource",
+                            "list_share_links"),
                     Set.of("create_agent", "set_agent_status", "update_agent_prompt", "bind_knowledge_base",
-                            "update_agent_settings", "rollback_agent_prompt", "save_agent_as_template", "delete_resource"),
+                            "update_agent_settings", "rollback_agent_prompt", "save_agent_as_template", "delete_resource",
+                            "disable_share_link"),
                     true, false,
                     List.of(
                             "目前有哪些智能体和机器人",
@@ -95,9 +97,10 @@ public class AssistantToolRouter {
                             "查一下智能体最近的对话日志和报错记录",
                             "查看或回滚智能体的提示词历史版本",
                             "修改智能体模型温度记忆轮数思考模式知识库模式关联技能工具",
-                            "帮我新建停用启用或删除某个智能体"
+                            "帮我新建停用启用或删除某个智能体",
+                            "查一下智能体的分享链接还能不能用什么时候到期，或者停用某个分享链接"
                     ),
-                    Pattern.compile("(?i)(智能体|agent|助手|机器人|提示词|prompt|回滚|温度|记忆轮数|思考模式|诊断|排查|没回复|没有回复|回答不对|不准确|检索不到|对话日志|历史版本|停用|启用)")),
+                    Pattern.compile("(?i)(智能体|agent|助手|机器人|提示词|prompt|回滚|温度|记忆轮数|思考模式|诊断|排查|没回复|没有回复|回答不对|不准确|检索不到|对话日志|历史版本|停用|启用|分享链接|分享|访问码|免登录)")),
             new ToolGroup("knowledge", "知识库与召回",
                     Set.of("list_knowledge_bases", "list_knowledge_documents", "run_retrieval_test", "list_resources", "get_resource"),
                     Set.of("create_knowledge_base", "add_faq", "bind_knowledge_base",

@@ -57,7 +57,8 @@ class AssistantEvalServiceTest {
         known.addAll(List.of("list_agents", "get_agent_detail", "list_knowledge_bases", "list_knowledge_documents",
                 "list_mcp_servers", "list_skills", "get_gateway_status", "get_usage_summary", "diagnose_agent",
                 "list_templates", "search_platform_docs", "test_gateway_channel",
-                "list_resources", "get_resource", "run_retrieval_test", "get_agent_logs", "get_tool_usage"));
+                "list_resources", "get_resource", "run_retrieval_test", "get_agent_logs", "get_tool_usage",
+                "list_share_links"));
         List<AssistantEvalCase> cases = service.cases();
 
         assertTrue(cases.size() >= 250, "扩充后评测用例数量应不少于 250，实际 " + cases.size());

@@ -70,10 +70,60 @@ public class OpenApiKeyService {
         if (actor == null) {
             return List.of();
         }
-        if (actor.isSuperAdmin()) {
-            return keyRepository.findAllByOrderByCreatedAtDesc();
+        List<OpenApiKey> keys = actor.isSuperAdmin()
+                ? keyRepository.findAllByOrderByCreatedAtDesc()
+                : keyRepository.findByOwnerIdOrderByCreatedAtDesc(actor.getUserId());
+        // 平台自动管理的凭证（分享链接等）不在列表里出现，避免被手动停用、删除或轮换
+        return keys.stream().filter(k -> k.getManagedBy() == null).toList();
+    }
+
+    /** 平台自动管理的凭证来源：分享链接 */
+    public static final String MANAGED_BY_SHARE_LINK = "SHARE_LINK";
+
+    /**
+     * 签发一个由平台管理的对话凭证：只有 chat 权限、只能调用这一个智能体。明文不返回也不保存，
+     * 只在服务端内部使用（调用时直接构造开放调用上下文），所以不能从外部用它调用开放接口
+     */
+    @Transactional
+    public OpenApiKey createManagedChatKey(String ownerId, String createdBy, Integer issuerAuthVersion,
+                                           String agentId, String name, String managedBy) {
+        String plaintext = generatePlaintext();
+        OpenApiKey key = new OpenApiKey();
+        key.setOwnerId(ownerId);
+        key.setCreatedBy(createdBy != null ? createdBy : ownerId);
+        key.setIssuerAuthVersion(issuerAuthVersion != null ? issuerAuthVersion : 1);
+        String safeName = name == null || name.isBlank() ? "平台管理凭证" : name.trim();
+        key.setName(safeName.length() > 100 ? safeName.substring(0, 100) : safeName);
+        key.setKeyPrefix("managed-" + plaintext.substring(8, 16));
+        key.setKeyHash(sha256(plaintext));
+        key.setScopes(new ArrayList<>(List.of(OpenApiScopes.CHAT)));
+        key.setAgentScope(new ArrayList<>(List.of(agentId)));
+        key.setManagedBy(managedBy);
+        return keyRepository.save(key);
+    }
+
+    /** 作废平台管理的凭证（如重置、删除分享链接时） */
+    @Transactional
+    public void revokeManaged(String keyId) {
+        if (keyId == null) {
+            return;
         }
-        return keyRepository.findByOwnerIdOrderByCreatedAtDesc(actor.getUserId());
+        keyRepository.findById(keyId).filter(k -> k.getManagedBy() != null).ifPresent(k -> {
+            k.setStatus("REVOKED");
+            k.setRevokedAt(LocalDateTime.now());
+            keyRepository.save(k);
+        });
+    }
+
+    /** 平台管理的凭证当前是否还能用（未被作废） */
+    @Transactional(readOnly = true)
+    public Optional<OpenApiKey> findUsableManaged(String keyId) {
+        if (keyId == null) {
+            return Optional.empty();
+        }
+        return keyRepository.findById(keyId)
+                .filter(k -> k.getManagedBy() != null)
+                .filter(OpenApiKeyService::isUsable);
     }
 
     @Transactional
@@ -322,6 +372,9 @@ public class OpenApiKeyService {
                 .orElseThrow(() -> new IllegalArgumentException("凭证不存在"));
         if (actor == null) {
             throw new IllegalStateException("未登录");
+        }
+        if (key.getManagedBy() != null) {
+            throw new IllegalStateException("该凭证由平台自动管理（例如分享链接），请到对应功能里操作");
         }
         if (!actor.isSuperAdmin() && !key.getOwnerId().equals(actor.getUserId())) {
             throw new IllegalStateException("无权管理该凭证");

@@ -73,6 +73,10 @@ public class OpenApiKey {
     @Column(name = "rotated_to_key_id", length = 64)
     private String rotatedToKeyId;
 
+    /** 由平台自动管理的凭证（如 SHARE_LINK 分享链接的内部对话凭证）；不在凭证列表里显示，也不能手动修改 */
+    @Column(name = "managed_by", length = 32)
+    private String managedBy;
+
     @Column(name = "last_used_at")
     private LocalDateTime lastUsedAt;
 
@@ -145,6 +149,8 @@ public class OpenApiKey {
     public void setRevokedAt(LocalDateTime revokedAt) { this.revokedAt = revokedAt; }
     public LocalDateTime getGraceExpiresAt() { return graceExpiresAt; }
     public void setGraceExpiresAt(LocalDateTime graceExpiresAt) { this.graceExpiresAt = graceExpiresAt; }
+    public String getManagedBy() { return managedBy; }
+    public void setManagedBy(String managedBy) { this.managedBy = managedBy; }
     public String getRotatedToKeyId() { return rotatedToKeyId; }
     public void setRotatedToKeyId(String rotatedToKeyId) { this.rotatedToKeyId = rotatedToKeyId; }
     public LocalDateTime getLastUsedAt() { return lastUsedAt; }

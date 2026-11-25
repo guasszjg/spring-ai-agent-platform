@@ -110,10 +110,12 @@ public class AssistantExtendedWriteTools {
     static final String MANAGE_GATEWAY_CHANNEL = "manage_gateway_channel";
     static final String UPDATE_GUARDRAIL_POLICY = "update_guardrail_policy";
     static final String REVOKE_API_KEY = "revoke_api_key";
+    // B 级：停用分享链接（可以在调试页重新启用，所以不算高危）
+    static final String DISABLE_SHARE_LINK = "disable_share_link";
 
     private static final Set<String> HANDLED_TOOLS = Set.of(
             CREATE_HTTP_TOOL, CREATE_SKILL, SAVE_AGENT_AS_TEMPLATE, REGISTER_MCP_SERVER,
-            UPDATE_AGENT_SETTINGS, UPDATE_KB_SETTINGS, UPDATE_FAQ, ROLLBACK_AGENT_PROMPT,
+            UPDATE_AGENT_SETTINGS, UPDATE_KB_SETTINGS, UPDATE_FAQ, ROLLBACK_AGENT_PROMPT, DISABLE_SHARE_LINK,
             REBUILD_KB_INDEX, RUN_RAG_EVAL, REFRESH_MCP_SERVER,
             DELETE_RESOURCE, MANAGE_USER, MANAGE_GATEWAY_CHANNEL, UPDATE_GUARDRAIL_POLICY, REVOKE_API_KEY);
 
@@ -178,6 +180,8 @@ public class AssistantExtendedWriteTools {
     @Autowired(required = false) public void setRerankConfigService(RerankConfigService s) { this.rerankConfigService = s; }
     @Autowired(required = false) public void setDifyConfigService(DifyConfigService s) { this.difyConfigService = s; }
     @Autowired(required = false) public void setUrlValidator(OutboundUrlValidator v) { this.urlValidator = v; }
+    private com.shimeta.service.share.ShareLinkService shareLinkService;
+    @Autowired(required = false) public void setShareLinkService(com.shimeta.service.share.ShareLinkService s) { this.shareLinkService = s; }
 
     public boolean supports(String toolName) {
         return toolName != null && HANDLED_TOOLS.contains(toolName);
@@ -268,6 +272,13 @@ public class AssistantExtendedWriteTools {
                                 "category", prop("string", "新分类，可选"),
                                 "enabled", prop("boolean", "是否启用，可选")), "knowledgeBase", "faqId"),
                         this::draftUpdateFaq),
+                AssistantTool.write(DISABLE_SHARE_LINK, "生成停用分享链接操作",
+                        "停用智能体的某个分享链接（免登录聊天页），停用后访客发下一条消息即被拒绝；可在调试页「访问入口」重新启用（B 级待确认卡片）。"
+                                + "先用 list_share_links 查到链接名称或 ID。新建链接、修改访问码或有效期不支持，请让用户到调试页操作。",
+                        schema(Map.of(
+                                "agent", prop("string", "智能体的 ID、编码或名称"),
+                                "link", prop("string", "分享链接的名称或 ID")), "agent", "link"),
+                        this::draftDisableShareLink),
                 AssistantTool.write(ROLLBACK_AGENT_PROMPT, "生成回滚提示词操作",
                         "将智能体的系统提示词回滚到指定历史版本（B 级修改对比卡片，展示当前版本与目标版本差异）。",
                         schema(Map.of(
@@ -1479,6 +1490,7 @@ public class AssistantExtendedWriteTools {
             case MANAGE_GATEWAY_CHANNEL -> executeManageGatewayChannel(p, confirmRequest, actor);
             case UPDATE_GUARDRAIL_POLICY -> executeUpdateGuardrailPolicy(p, actor);
             case REVOKE_API_KEY -> executeRevokeApiKey(p, actor);
+            case DISABLE_SHARE_LINK -> executeDisableShareLink(p, actor);
             default -> throw new IllegalStateException("不支持的扩展写操作：" + toolName);
         };
     }
@@ -1910,6 +1922,64 @@ public class AssistantExtendedWriteTools {
                     : "你没有管理智能体「" + agent.getName() + "」的权限");
         }
         return agent;
+    }
+
+    // ==================== 分享链接 ====================
+
+    Map<String, Object> draftDisableShareLink(JsonNode args, ToolContext ctx) {
+        if (shareLinkService == null) {
+            return Map.of("ok", false, "error", "分享链接模块未启用");
+        }
+        CurrentActor actor = ctx.actor();
+        AssistantQueryTools.AgentMatch match = queryTools.resolveAgent(text(args, "agent"), actor);
+        if (match.agent() == null) {
+            return match.response();
+        }
+        Agent agent = requireManageableAgent(match.agent(), actor);
+        String ref = requiredText(args, "link", 100, "分享链接");
+        List<Map<String, Object>> links = shareLinkService.list(agent.getId(), actor);
+        List<Map<String, Object>> hits = links.stream()
+                .filter(l -> ref.equals(l.get("id")) || ref.equalsIgnoreCase(String.valueOf(l.get("name"))))
+                .toList();
+        if (hits.isEmpty()) {
+            hits = links.stream().filter(l -> String.valueOf(l.get("name")).contains(ref)).toList();
+        }
+        if (hits.isEmpty()) {
+            return Map.of("ok", false, "error", "智能体「" + agent.getName() + "」没有名为「" + ref + "」的分享链接",
+                    "available", links.stream().map(l -> l.get("name")).toList());
+        }
+        if (hits.size() > 1) {
+            return Map.of("ok", false, "ambiguous", true, "error", "匹配到多个分享链接，请让用户确认是哪一个",
+                    "candidates", hits.stream().map(l -> Map.of("id", l.get("id"), "name", l.get("name"))).toList());
+        }
+        Map<String, Object> link = hits.get(0);
+        if (!"ACTIVE".equals(link.get("status"))) {
+            return Map.of("ok", false, "error", "分享链接「" + link.get("name") + "」已经是停用状态，不需要再停用");
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("agentId", agent.getId());
+        payload.put("linkId", link.get("id"));
+        payload.put("linkName", link.get("name"));
+        var preview = previewBuilder()
+                .addField("智能体", agent.getName())
+                .addField("分享链接", String.valueOf(link.get("name")))
+                .addField("当前访客数", String.valueOf(link.get("visitorCount")))
+                .setDiff("状态", "启用", "停用")
+                .addImpact("停用后，正在对话的访客发下一条消息时会被拒绝，页面显示「链接已失效」")
+                .addImpact("链接地址和访问码不变，之后可在调试页「访问入口」重新启用")
+                .build();
+        return support.createPendingCard(ctx, DISABLE_SHARE_LINK, "B",
+                "停用分享链接「" + link.get("name") + "」", payload, preview, "AGENT");
+    }
+
+    private AssistantWriteTools.ExecutionResult executeDisableShareLink(JsonNode p, CurrentActor actor) {
+        requireBean(shareLinkService, "分享链接模块");
+        Agent agent = loadManageableAgent(p.path("agentId").asText(), actor);
+        shareLinkService.setEnabled(agent.getId(), p.path("linkId").asText(), false, actor);
+        String name = p.path("linkName").asText("");
+        return new AssistantWriteTools.ExecutionResult("AGENT", agent.getId(),
+                "已停用「" + agent.getName() + "」的分享链接「" + name + "」", "查看分享链接",
+                AssistantQueryTools.agentLink(agent.getId()) + "?tab=access", null, "分享链接「" + name + "」已停用");
     }
 
     private Agent loadManageableAgent(String agentId, CurrentActor actor) {
