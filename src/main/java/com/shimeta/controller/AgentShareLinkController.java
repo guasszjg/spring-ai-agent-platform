@@ -46,6 +46,12 @@ public class AgentShareLinkController {
         return ResponseEntity.ok(ApiResponse.ok("已保存", shareLinkService.update(agentId, linkId, request, CurrentActor.get())));
     }
 
+    /** 查看访问码明文（每次查看写审计） */
+    @GetMapping("/api/agents/{agentId}/share-links/{linkId}/access-code")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> accessCode(@PathVariable String agentId, @PathVariable String linkId) {
+        return ResponseEntity.ok(ApiResponse.ok(shareLinkService.viewAccessCode(agentId, linkId, CurrentActor.get())));
+    }
+
     @PostMapping("/api/agents/{agentId}/share-links/{linkId}/enable")
     public ResponseEntity<ApiResponse<Map<String, Object>>> enable(@PathVariable String agentId, @PathVariable String linkId) {
         return ResponseEntity.ok(ApiResponse.ok("链接已启用", shareLinkService.setEnabled(agentId, linkId, true, CurrentActor.get())));

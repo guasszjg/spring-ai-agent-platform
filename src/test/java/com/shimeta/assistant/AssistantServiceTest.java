@@ -229,6 +229,9 @@ class AssistantServiceTest {
 
         String done = payloadOf("done");
         assertTrue(done.contains(AssistantService.CHANNEL_FAILED_REPLY));
+        // 直接带上真实失败原因
+        assertTrue(done.contains("失败原因："));
+        assertTrue(done.contains("HTTP 503 upstream unavailable"));
         assertTrue(done.contains("degraded=true"));
     }
 

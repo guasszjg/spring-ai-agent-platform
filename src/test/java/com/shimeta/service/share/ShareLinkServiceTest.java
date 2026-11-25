@@ -1,5 +1,6 @@
 package com.shimeta.service.share;
 
+import com.shimeta.config.SecretCrypto;
 import com.shimeta.model.Agent;
 import com.shimeta.model.AgentShareLink;
 import com.shimeta.model.AgentStatus;
@@ -69,7 +70,7 @@ class ShareLinkServiceTest {
         when(keyService.createManagedChatKey(any(), any(), any(), any(), any(), any())).thenReturn(key);
         service = new ShareLinkService(linkRepository, visitorRepository, agentRepository, userRepository,
                 mock(AgentConversationRepository.class), mock(AgentConversationService.class), auth, keyService, settings,
-                mock(AuditRecorder.class));
+                mock(AuditRecorder.class), new SecretCrypto("test-secret"));
     }
 
     private static ShareLinkService.LinkRequest named(String name) {
@@ -96,6 +97,31 @@ class ShareLinkServiceTest {
         verify(keyService).createManagedChatKey(eq("u1"), eq("u1"), any(), eq("a1"), anyString(), eq(OpenApiKeyService.MANAGED_BY_SHARE_LINK));
         // 列表视图里不再有访问码明文
         assertThat(service.toView(link, agent, false, null)).doesNotContainKey("accessCode");
+    }
+
+    @Test
+    @DisplayName("访问码加密保存，创建人可随时查看；旧链接没有密文时提示重设；改为公开后清掉")
+    void accessCodeCanBeViewedLater() {
+        Map<String, Object> view = service.create("a1", new ShareLinkService.LinkRequest("x", null, "Abc123", null, null,
+                null, null, null, null, null, null, null, null), dev);
+        String linkId = (String) view.get("id");
+        AgentShareLink link = saved.get(linkId);
+        assertThat(link.getAccessCodeCipher()).startsWith("enc:v1:").doesNotContain("Abc123");
+        assertThat(view.get("accessCodeViewable")).isEqualTo(true);
+        assertThat(service.viewAccessCode("a1", linkId, dev).get("accessCode")).isEqualTo("Abc123");
+
+        CurrentActor viewer = new CurrentActor("v1", "viewer", UserRole.VIEWER);
+        assertThatThrownBy(() -> service.viewAccessCode("a1", linkId, viewer)).isInstanceOf(IllegalStateException.class);
+
+        link.setAccessCodeCipher(null);
+        assertThatThrownBy(() -> service.viewAccessCode("a1", linkId, dev)).hasMessageContaining("旧版本");
+
+        when(settings.sharePublicEnabled()).thenReturn(true);
+        service.update("a1", linkId, new ShareLinkService.LinkRequest(null, "PUBLIC", null, null, null,
+                null, null, null, null, null, null, null, null), dev);
+        assertThat(link.getAccessCodeHash()).isNull();
+        assertThat(link.getAccessCodeCipher()).isNull();
+        assertThatThrownBy(() -> service.viewAccessCode("a1", linkId, dev)).hasMessageContaining("没有访问码");
     }
 
     @Test

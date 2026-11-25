@@ -36,6 +36,9 @@ public class AgentShareLink {
     private String accessMode;
     @Column(name = "access_code_hash", length = 100)
     private String accessCodeHash;
+    /** 访问码的 AES-GCM 密文（SecretCrypto），供创建人查看；访客校验只用哈希 */
+    @Column(name = "access_code_cipher", length = 255)
+    private String accessCodeCipher;
     @Column(name = "expires_at")
     private LocalDateTime expiresAt;
     @Column(name = "max_messages")
@@ -112,6 +115,8 @@ public class AgentShareLink {
     public void setAccessMode(String accessMode) { this.accessMode = accessMode; }
     public String getAccessCodeHash() { return accessCodeHash; }
     public void setAccessCodeHash(String accessCodeHash) { this.accessCodeHash = accessCodeHash; }
+    public String getAccessCodeCipher() { return accessCodeCipher; }
+    public void setAccessCodeCipher(String accessCodeCipher) { this.accessCodeCipher = accessCodeCipher; }
     public LocalDateTime getExpiresAt() { return expiresAt; }
     public void setExpiresAt(LocalDateTime expiresAt) { this.expiresAt = expiresAt; }
     public Integer getMaxMessages() { return maxMessages; }

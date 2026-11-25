@@ -238,6 +238,9 @@ public class AgentController {
         try {
             ChatResponse response = aiChatService.chat(request);
             return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(response));
+        } catch (AiChatService.ModelCallException e) {
+            // 模型 / 通道失败属于上游错误，不是权限问题
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(ApiResponse.error(e.getMessage()));
         } catch (IllegalStateException e) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
         } catch (IllegalArgumentException e) {

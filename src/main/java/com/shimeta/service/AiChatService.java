@@ -48,7 +48,6 @@ public class AiChatService {
     }
     private final KnowledgeBaseService knowledgeBaseService;
     private final ResourceAuthorizationService resourceAuthorizationService;
-    private final boolean simulationFallbackEnabled;
 
     public AiChatService(AgentService agentService,
                          AgentConversationService conversationService,
@@ -60,8 +59,7 @@ public class AiChatService {
                          PlatformToolService platformToolService,
                          KnowledgeBaseService knowledgeBaseService,
                          ResourceAuthorizationService resourceAuthorizationService,
-                         @Autowired(required = false) ChatModel chatModel,
-                         @Value("${app.ai.simulation-fallback:false}") boolean simulationFallbackEnabled) {
+                         @Autowired(required = false) ChatModel chatModel) {
         this.agentService = agentService;
         this.conversationService = conversationService;
         this.gatewayService = gatewayService;
@@ -72,7 +70,6 @@ public class AiChatService {
         this.platformToolService = platformToolService;
         this.knowledgeBaseService = knowledgeBaseService;
         this.resourceAuthorizationService = resourceAuthorizationService;
-        this.simulationFallbackEnabled = simulationFallbackEnabled;
         this.chatClient = (chatModel != null) ? ChatClient.builder(chatModel).build() : null;
     }
 
@@ -331,10 +328,10 @@ public class AiChatService {
                         completionTokens = usage.getCompletionTokens() == null ? 0 : usage.getCompletionTokens();
                     }
                 } else {
-                    reply = fallbackReply(agent, userMessage, request.getHistory(), toolCalledHolder, null);
+                    throw new ChannelCallException("模型没有返回内容，请重试或换一种问法；如果持续出现，请到「模型网关」检查该通道");
                 }
             } else {
-                reply = fallbackReply(agent, userMessage, request.getHistory(), toolCalledHolder, null);
+                throw new ChannelCallException(NO_CHANNEL_MESSAGE);
             }
         } catch (StreamInterruptedException ex) {
             // 输出到一半中断：拿不到用量，按文本长度估算后计入，算一次失败调用
@@ -343,12 +340,10 @@ public class AiChatService {
             throw ex;
         } catch (Exception ex) {
             log.warn("模型调用失败: {}", ex.getMessage());
-            if (!simulationFallbackEnabled) {
-                // 下面会直接抛错，走不到末尾的统计，这里先记一次失败调用
-                agentService.recordInvocation(agent.getId(), System.currentTimeMillis() - startTime,
-                        0, 0, false, trace.failoverFrom != null, 0);
-            }
-            reply = fallbackReply(agent, userMessage, request.getHistory(), toolCalledHolder, ex);
+            // 下面直接抛错，走不到末尾的统计，这里先记一次失败调用
+            agentService.recordInvocation(agent.getId(), System.currentTimeMillis() - startTime,
+                    0, 0, false, trace.failoverFrom != null, 0);
+            throw modelFailure(ex);
         } finally {
             toolRegistry.clearCurrentContext();
         }
@@ -391,7 +386,7 @@ public class AiChatService {
         response.setChannel(trace.channel);
         response.setRouteNotice(trace.routeNotice);
         response.setDegraded(!realModelReply);
-        response.setSource(realModelReply ? "MODEL" : "SIMULATION");
+        response.setSource("MODEL");
         AgentConversation conversation = conversationService.appendTurn(
                 agent.getId(),
                 request.getConversationId(),
@@ -862,120 +857,38 @@ public class AiChatService {
                 .trim();
     }
 
-    private String generateSmartSimulationReply(Agent agent, String userMessage, List<ChatMessage> history, String[] toolCalledHolder) {
-        String name = agent.getName();
-        String category = agent.getCategory() != null ? agent.getCategory() : "通用智能";
+    static final String NO_CHANNEL_MESSAGE = "当前没有可用的模型通道，请到「模型网关 → 大语言模型」启用一个通道并测试连通后再试";
 
-        // 优先检查是否有智能时间/工具意图并调用对应真实工具
-        if (userMessage.contains("星期") || userMessage.contains("周几")) {
-            toolCalledHolder[0] = "time.calculate_weekday (星期几计算器)";
-            String dateParam = java.time.LocalDate.now().toString();
-            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\d{4}[-/年]\\d{1,2}[-/月]\\d{1,2}").matcher(userMessage);
-            if (m.find()) {
-                dateParam = m.group().replace('年', '-').replace('月', '-').replace("日", "").trim();
-            }
-            String toolResult = toolRegistry.execute("time_calculate_weekday", "{\"date\":\"" + dateParam + "\"}");
-            return "### 🤖 [" + name + "] 智能工具调度结果\n\n" +
-                    "已识别时间计算意图，调用工具 `time.calculate_weekday` 完成运算：\n\n" +
-                    "> " + toolResult + "\n\n" +
-                    "*(注：当前运行在智能模拟回退模式。在网关配置真实模型后，将由 LLM 自主执行 Function Calling 解析复杂日期语义)*";
-        } else if (userMessage.contains("几号") || userMessage.contains("多少号") || userMessage.contains("日期")
-                || userMessage.contains("今天") || userMessage.contains("时间") || userMessage.contains("几点") || userMessage.contains("时区")) {
-            String tz = "Asia/Shanghai";
-            if (userMessage.contains("纽约")) tz = "America/New_York";
-            else if (userMessage.contains("伦敦")) tz = "Europe/London";
-            else if (userMessage.contains("东京")) tz = "Asia/Tokyo";
-            else if (userMessage.contains("巴黎")) tz = "Europe/Paris";
-
-            toolCalledHolder[0] = "time.get_current_time (timezone=" + tz + ")";
-            String toolResult = toolRegistry.execute("time_get_current_time", "{\"timezone\":\"" + tz + "\"}");
-            return "### 🤖 [" + name + "] 智能工具调度结果\n\n" +
-                    "已识别时间查询意图，调用工具 `time.get_current_time` 获取当前即时时间：\n\n" +
-                    "> " + toolResult + "\n\n" +
-                    "*(注：当前运行在智能模拟回退模式。在网关配置真实模型后，将由 LLM 自主执行 Function Calling 自动识别全球时区)*";
-        } else if (userMessage.contains("搜索") || userMessage.contains("联网") || userMessage.contains("最新")
-                || userMessage.contains("天气") || userMessage.contains("气温") || userMessage.contains("下雨") || userMessage.contains("雨")) {
-            toolCalledHolder[0] = "bocha.web_search (联网检索)";
-            String toolResult = toolRegistry.execute("bocha_web_search", "{\"query\":\"" + userMessage + "\"}");
-            return "### 🌐 [" + name + "] 联网检索响应\n\n" +
-                    toolResult + "\n\n" +
-                    "*(注：已调用 Bocha 联网检索实时信息并整合最新权威来源)*";
+    /**
+     * 模型调用失败时给调用方的异常：消息里带具体原因（通道返回的错误、超时等），调试页和开放接口直接显示。
+     * 不生成任何模拟或兜底回复
+     */
+    static ModelCallException modelFailure(Exception cause) {
+        if (cause instanceof ModelCallException m) {
+            return m;
         }
-
-        // 基于智能体角色产生高质量模拟响应
-        if ("Spring Boot 架构专家".equals(name) || "代码研发".equals(category)) {
-            return "### 🤖 [" + name + "] 架构分析建议\n\n" +
-                    "针对你提出的问题 **「" + userMessage + "」**，在 **Spring Boot 4.x + Spring AI 2.0.1** 体系下，推荐以下最佳实践方案：\n\n" +
-                    "```java\n" +
-                    "@Configuration\n" +
-                    "public class AgentAiConfig {\n\n" +
-                    "    @Bean\n" +
-                    "    public ChatClient customChatClient(ChatModel chatModel) {\n" +
-                    "        return ChatClient.builder(chatModel)\n" +
-                    "                .defaultSystem(\"" + (agent.getSystemPrompt() != null ? agent.getSystemPrompt().replace("\"", "\\\"") : "你是一个智能助理") + "\")\n" +
-                    "                .build();\n" +
-                    "    }\n" +
-                    "}\n" +
-                    "```\n\n" +
-                    "#### 💡 核心设计与考量：\n" +
-                    "1. **解耦与编排**：利用 Spring AI 2.0.1 的 `ChatClient` 链式调用 API，支持动态注入 Prompt 与 Function Calling。\n" +
-                    "2. **高并发与容错**：在微服务环境下建议配置 Resilience4j 断路器与限流策略，防止大模型调用超时导致线程池耗尽。\n" +
-                    "3. **可观测性**：Spring Boot 4.x 原生集成了 Micrometer Tracing，可自动记录 AI 调用的 Token 消耗与 P99 延迟。";
-        } else if ("SQL & DB 调优大师".equals(name) || "数据分析".equals(category)) {
-            return "### ⚡ [" + name + "] 数据库深度调优报告\n\n" +
-                    "针对 **「" + userMessage + "」** 的数据查询与架构场景分析：\n\n" +
-                    "#### 1. 执行计划诊断 (EXPLAIN Analyze)\n" +
-                    "- **潜在瓶颈**：全表扫描 (ALL) 或临时表文件排序 (Using filesort)。\n" +
-                    "- **建议复合索引**：\n" +
-                    "```sql\n" +
-                    "-- 推荐创建联合覆盖索引，遵循最左前缀匹配原则\n" +
-                    "CREATE INDEX idx_agent_status_created ON t_agent_logs (status, created_at DESC, user_id);\n" +
-                    "```\n\n" +
-                    "#### 2. 分页深分页优化策略\n" +
-                    "当偏移量 `OFFSET` 过大时，改用延迟关联（Deferred Join）或子查询游标定位：\n" +
-                    "```sql\n" +
-                    "SELECT a.* FROM t_agent_logs a\n" +
-                    "JOIN (SELECT id FROM t_agent_logs WHERE status = 1 ORDER BY id DESC LIMIT 10000, 20) t ON a.id = t.id;\n" +
-                    "```";
-        } else if ("企业知识库客服助理".equals(name) || "知识库客服".equals(category)) {
-            return "您好！我是 **" + name + "**。关于您咨询的问题：\n\n" +
-                    "「" + userMessage + "」\n\n" +
-                    "为您检索到企业最新知识库解答如下：\n" +
-                    "1. 我们的智能体管理平台已全面支持 **Spring AI 2.0.1**，提供统一的模型调度与 Prompt 模版管理。\n" +
-                    "2. 系统支持多租户隔离、动态参数微调（Temperature, Top-P）以及 7x24 小时流式响应。\n" +
-                    "3. 如果您需要接入企业专属私有知识库 (Vector DB / Milvus / PgVector)，可在智能体配置中开启 RAG 扩展插件。\n\n" +
-                    "如需进一步人工协助，欢迎随时点击右上角人工客服通道！";
-        } else if ("Kubernetes 运维守护者".equals(name) || "运维架构".equals(category)) {
-            return "### 🛡️ [" + name + "] 集群诊断与排查指令\n\n" +
-                    "收到故障排查请求：**「" + userMessage + "」**\n\n" +
-                    "#### 推荐快速排查步骤：\n" +
-                    "```bash\n" +
-                    "# 1. 检查 Pod 状态与重启原因\n" +
-                    "kubectl get pods -n prod -l app=agent-platform -o wide\n\n" +
-                    "# 2. 查看最近的崩溃日志与 OOM 退出码\n" +
-                    "kubectl logs --previous -n prod deployment/agent-platform-deployment\n\n" +
-                    "# 3. 实时跟踪 CPU / 内存压力\n" +
-                    "kubectl top pods -n prod --sort-by=memory\n" +
-                    "```\n\n" +
-                    "**建议**：若发生 `OOMKilled (Exit Code 137)`，请调大 JVM `-XX:MaxRAMPercentage=75.0` 并调整 K8s `resources.limits.memory`。";
-        } else {
-            return "你好！我是 **" + name + "**（" + category + " 智能体）。\n\n" +
-                    "我已收到你的指令：**「" + userMessage + "」**。\n\n" +
-                    "根据当前配置的系统设定（Prompt: *" + (agent.getSystemPrompt() != null ? agent.getSystemPrompt() : "专业助手") + "*）：\n" +
-                    "- 我已结合设定角色完成了思考与拆解。\n" +
-                    "- 当前调度引擎：`" + (agent.getModelName() != null ? agent.getModelName() : "GPT-4o") + "`，采样温度：`" + agent.getTemperature() + "`。\n\n" +
-                    "如果你有更详细的上下文或特定需求，请直接告诉我，我将为你继续深度处理！";
+        if (cause instanceof ChannelCallException) {
+            return new ModelCallException(cause.getMessage(), cause);
         }
+        String reason = cause != null && cause.getMessage() != null && !cause.getMessage().isBlank()
+                ? cause.getMessage() : cause != null ? cause.getClass().getSimpleName() : null;
+        if (reason == null) {
+            return new ModelCallException(NO_CHANNEL_MESSAGE, null);
+        }
+        if (reason.length() > 300) {
+            reason = reason.substring(0, 300) + "…";
+        }
+        return new ModelCallException("模型调用失败：" + reason, cause);
     }
 
-    private String fallbackReply(Agent agent, String userMessage, List<ChatMessage> history,
-                                 String[] toolCalledHolder, Exception cause) {
-        if (!simulationFallbackEnabled) {
-            String message = cause instanceof ChannelCallException ? cause.getMessage() : "当前没有可用的模型通道，请检查模型网关配置";
-            throw new IllegalStateException(message, cause);
+    /**
+     * 模型调用失败（没有可用通道、通道报错、超时、没有返回内容）。继承 IllegalStateException，
+     * 已有按 IllegalStateException 处理的调用方照常显示消息；开放接口据此和权限类拒绝区分开
+     */
+    public static class ModelCallException extends IllegalStateException {
+        public ModelCallException(String message, Throwable cause) {
+            super(message, cause);
         }
-        log.warn("Simulation fallback is enabled; returning a clearly marked non-model response");
-        return generateSmartSimulationReply(agent, userMessage, history, toolCalledHolder);
     }
 
     private String extractBochaApiKey(java.util.Map<String, Object> toolConfigs) {

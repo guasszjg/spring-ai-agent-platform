@@ -1,5 +1,6 @@
 package com.shimeta.service.share;
 
+import com.shimeta.config.SecretCrypto;
 import com.shimeta.model.Agent;
 import com.shimeta.model.AgentConversation;
 import com.shimeta.model.AgentShareLink;
@@ -63,6 +64,7 @@ public class ShareLinkService {
     private final OpenApiKeyService keyService;
     private final PlatformSettingService settingService;
     private final AuditRecorder auditRecorder;
+    private final SecretCrypto secretCrypto;
 
     public ShareLinkService(AgentShareLinkRepository linkRepository,
                             AgentShareVisitorRepository visitorRepository,
@@ -73,7 +75,8 @@ public class ShareLinkService {
                             ResourceAuthorizationService authorizationService,
                             OpenApiKeyService keyService,
                             PlatformSettingService settingService,
-                            AuditRecorder auditRecorder) {
+                            AuditRecorder auditRecorder,
+                            SecretCrypto secretCrypto) {
         this.linkRepository = linkRepository;
         this.visitorRepository = visitorRepository;
         this.agentRepository = agentRepository;
@@ -84,6 +87,7 @@ public class ShareLinkService {
         this.keyService = keyService;
         this.settingService = settingService;
         this.auditRecorder = auditRecorder;
+        this.secretCrypto = secretCrypto;
     }
 
     /** 新建或修改链接的请求。修改时字段为空表示不改；各项上限填 0 表示不限 */
@@ -223,7 +227,7 @@ public class ShareLinkService {
         String plainCode = null;
         if (AgentShareLink.MODE_ACCESS_CODE.equals(mode)) {
             plainCode = validAccessCode(request.accessCode());
-            link.setAccessCodeHash(ENCODER.encode(plainCode));
+            storeAccessCode(link, plainCode);
         }
         link.setExpiresAt(resolveExpiry(request, now, DEFAULT_EXPIRE_DAYS));
         // 不填时默认 200 次；填 0 表示不限（注意不能写成三元表达式，int 和 null 混用会自动拆箱抛空指针）
@@ -279,11 +283,12 @@ public class ShareLinkService {
             boolean needCode = link.getAccessCodeHash() == null;
             if (request.accessCode() != null || needCode) {
                 plainCode = validAccessCode(request.accessCode());
-                link.setAccessCodeHash(ENCODER.encode(plainCode));
+                storeAccessCode(link, plainCode);
                 changes.add("accessCode");
             }
         } else {
             link.setAccessCodeHash(null);
+            link.setAccessCodeCipher(null);
         }
         link.setAccessMode(mode);
         if (request.expiresInDays() != null || request.expiresAt() != null) {
@@ -340,6 +345,33 @@ public class ShareLinkService {
         return toView(link, agent, settingService.sharePublicEnabled(), null);
     }
 
+    /**
+     * 查看访问码明文：能管理该智能体的人可以随时查看，每次查看写审计。
+     * V47 之前创建的链接只有哈希，没有密文，需要修改一次访问码
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> viewAccessCode(String agentId, String linkId, CurrentActor actor) {
+        requireManageable(agentId, actor);
+        AgentShareLink link = requireLink(agentId, linkId);
+        if (!AgentShareLink.MODE_ACCESS_CODE.equals(link.getAccessMode()) || link.getAccessCodeHash() == null) {
+            throw new IllegalArgumentException("该链接是公开链接，没有访问码");
+        }
+        if (link.getAccessCodeCipher() == null) {
+            throw new IllegalArgumentException("该链接的访问码创建于旧版本，无法查看。请在编辑中设置一个新访问码，之后即可随时查看");
+        }
+        String code;
+        try {
+            code = secretCrypto.decrypt(link.getAccessCodeCipher());
+        } catch (IllegalStateException e) {
+            // 平台加密密钥（app.crypto.secret）变了会解不开；不能抛 IllegalStateException，否则会被当成权限不足
+            throw new IllegalArgumentException("访问码解密失败（平台加密密钥可能已更换），请在编辑中重新设置访问码");
+        }
+        auditRecorder.record("share_link.view_access_code", "SHARE_LINK", link.getId(), "SUCCESS", null, "MEDIUM", null);
+        Map<String, Object> v = new LinkedHashMap<>();
+        v.put("accessCode", code);
+        return v;
+    }
+
     /** 删除链接、它的内部凭证和访客记录；访客的对话记录保留在智能体日志里 */
     @Transactional
     public void delete(String agentId, String linkId, CurrentActor actor) {
@@ -383,6 +415,7 @@ public class ShareLinkService {
         v.put("name", link.getName());
         v.put("accessMode", link.getAccessMode());
         v.put("hasAccessCode", link.getAccessCodeHash() != null);
+        v.put("accessCodeViewable", link.getAccessCodeHash() != null && link.getAccessCodeCipher() != null);
         if (plainAccessCode != null) {
             v.put("accessCode", plainAccessCode);
         }
@@ -487,6 +520,12 @@ public class ShareLinkService {
             throw new IllegalArgumentException("访问码需为 4～32 位字母或数字");
         }
         return code;
+    }
+
+    /** 哈希用于访客校验，密文用于创建人查看 */
+    private void storeAccessCode(AgentShareLink link, String plainCode) {
+        link.setAccessCodeHash(ENCODER.encode(plainCode));
+        link.setAccessCodeCipher(secretCrypto.encrypt(plainCode));
     }
 
     static boolean matchesAccessCode(String raw, String hash) {

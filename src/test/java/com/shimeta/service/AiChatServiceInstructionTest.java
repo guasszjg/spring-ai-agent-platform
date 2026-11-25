@@ -52,9 +52,7 @@ class AiChatServiceInstructionTest {
                 null,
                 knowledgeBaseService,
                 resourceAuthorizationService,
-                null,
-                false
-        );
+                null);
 
         Agent agent = new Agent();
         agent.setId("agent-007");
@@ -94,9 +92,7 @@ class AiChatServiceInstructionTest {
                 null,
                 knowledgeBaseService,
                 resourceAuthorizationService,
-                null,
-                false
-        );
+                null);
 
         Agent agent = new Agent();
         agent.setId("agent-007");
@@ -114,7 +110,7 @@ class AiChatServiceInstructionTest {
 
     private AiChatService service() {
         return new AiChatService(agentService, conversationService, gatewayService, openAiClient, customHttpClient,
-                toolRegistry, toolSecretService, null, knowledgeBaseService, resourceAuthorizationService, null, false);
+                toolRegistry, toolSecretService, null, knowledgeBaseService, resourceAuthorizationService, null);
     }
 
     private Agent agentWithPrompt(String prompt) {

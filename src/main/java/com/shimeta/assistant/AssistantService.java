@@ -445,6 +445,7 @@ public class AssistantService {
                     return;
                 } catch (RuntimeException e) {
                     log.warn("Assistant channel [{}] attempt {} failed: {}", channel.provider().getName(), attempt + 1, e.getMessage());
+                    turn.failureReason = failureReason(channel, e);
                     // 已输出内容或已生成操作卡片后不再重试，避免同一回复拼接两次结果或重复生成卡片
                     if (turn.hasShownContent() || !toolContext.createdActions().isEmpty() || sink.isCancelled()) {
                         turn.interrupted = true;
@@ -455,7 +456,21 @@ public class AssistantService {
             }
         }
         turn.degraded = true;
-        turn.emit(CHANNEL_FAILED_REPLY);
+        turn.emit(CHANNEL_FAILED_REPLY + reasonSuffix(turn.failureReason));
+    }
+
+    /** 失败原因：通道名 + 异常信息，截断到 300 字，便于用户直接判断是哪个通道、什么错误 */
+    static String failureReason(Channel channel, RuntimeException e) {
+        String message = e.getMessage() == null || e.getMessage().isBlank() ? e.getClass().getSimpleName() : e.getMessage().trim();
+        if (message.length() > 300) {
+            message = message.substring(0, 300) + "…";
+        }
+        String name = channel.provider() == null ? null : channel.provider().getName();
+        return name == null || name.isBlank() ? message : "「" + name + "」" + message;
+    }
+
+    static String reasonSuffix(String reason) {
+        return reason == null || reason.isBlank() ? "" : "\n\n失败原因：" + reason;
     }
 
     private void runRounds(Channel channel, int timeoutMs, List<Map<String, Object>> baseMessages,
@@ -918,6 +933,8 @@ public class AssistantService {
         boolean degraded;
         boolean blocked;
         boolean interrupted;
+        /** 最近一次通道失败的原因，展示给用户 */
+        String failureReason;
         boolean toolsUnsupported;
         volatile boolean repetitionLoopDetected;
         String notice;
@@ -972,7 +989,8 @@ public class AssistantService {
                 }
             }
             if (interrupted) {
-                push(List.of("\n\n（回复中断：模型通道异常，请重试）"));
+                push(List.of("\n\n（回复中断：模型通道异常，请重试）"
+                        + (failureReason == null || failureReason.isBlank() ? "" : "\n失败原因：" + failureReason)));
                 degraded = true;
             }
         }

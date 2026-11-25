@@ -92,7 +92,7 @@ class AiChatServiceUsageStatsTest {
         when(conversationService.appendTurn(any(), any(), any(), any(), any(), any(), anyLong(), anyInt(), any())).thenReturn(conversation);
         service = new AiChatService(agentService, conversationService, gatewayService, openAiClient,
                 mock(CustomHttpLlmClient.class), mock(com.shimeta.tool.AgentToolRegistry.class), mock(AgentToolSecretService.class),
-                null, knowledgeBaseService, mock(ResourceAuthorizationService.class), null, false);
+                null, knowledgeBaseService, mock(ResourceAuthorizationService.class), null);
     }
 
     @Test
@@ -197,7 +197,7 @@ class AiChatServiceUsageStatsTest {
                                                    OpenAiCompatibleClient client) {
         return new AiChatService(agentService, conversationService, gatewayService, client,
                 mock(CustomHttpLlmClient.class), mock(com.shimeta.tool.AgentToolRegistry.class), mock(AgentToolSecretService.class),
-                null, knowledgeBaseService, mock(ResourceAuthorizationService.class), chatModel, false);
+                null, knowledgeBaseService, mock(ResourceAuthorizationService.class), chatModel);
     }
 
     @Test

@@ -73,7 +73,7 @@ class AiChatServiceChannelCapabilityTest {
                 .thenReturn(new OpenAiCompatibleClient.ChatResult("好的", 10, 2, 12));
         service = new AiChatService(agentService, conversationService, gatewayService, openAiClient,
                 mock(CustomHttpLlmClient.class), toolRegistry, mock(AgentToolSecretService.class),
-                null, knowledgeBaseService, mock(ResourceAuthorizationService.class), null, false);
+                null, knowledgeBaseService, mock(ResourceAuthorizationService.class), null);
     }
 
     private ChatRequest request(List<ChatMessage> history) {

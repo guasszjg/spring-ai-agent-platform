@@ -131,9 +131,7 @@ class MultiTenantSecurityRegressionTest {
                 null,
                 knowledgeBaseService,
                 resourceAuthService,
-                null,
-                false
-        );
+                null);
     }
 
     @Test

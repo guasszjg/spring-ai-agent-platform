@@ -208,6 +208,10 @@ public class ShareChatService {
         if (code == null || LINK_LEVEL_ERRORS.contains(code)) {
             throw ShareAccessException.linkInvalid();
         }
+        if ("upstream_error".equals(code)) {
+            // 模型失败的具体原因含通道等内部信息，只给平台用户看，访客只看到通用提示
+            throw new ShareAccessException(code, HttpStatus.BAD_GATEWAY, "当前无法回答，请稍后再试");
+        }
         throw new ShareAccessException(code, HttpStatus.valueOf(entity.getStatusCode().value()), message);
     }
 

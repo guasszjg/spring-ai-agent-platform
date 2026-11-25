@@ -185,6 +185,9 @@ public class OpenChatService {
                     tokens(chatResp.getPromptTokens()), tokens(chatResp.getCompletionTokens()),
                     chatResp.getModel() != null ? chatResp.getModel() : agent.getModelName());
             return ResponseEntity.ok(ApiResponse.ok("success", data));
+        } catch (AiChatService.ModelCallException e) {
+            // 模型调用失败：带上具体原因，和权限、依赖类的拒绝区分开
+            return error(HttpStatus.BAD_GATEWAY, "upstream_error", e.getMessage());
         } catch (IllegalStateException e) {
             return error(HttpStatus.FORBIDDEN, "dependency_invalid", e.getMessage());
         } catch (Exception e) {
