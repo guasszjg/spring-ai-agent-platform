@@ -8,6 +8,7 @@ public class CreateFaqRequest {
     private String category = "通用问答";
     private String contentType = "TEXT";
     private List<String> imageUrls;
+    private List<String> videoUrls;
 
     public String getQuestion() {
         return question;
@@ -47,5 +48,13 @@ public class CreateFaqRequest {
 
     public void setImageUrls(List<String> imageUrls) {
         this.imageUrls = imageUrls;
+    }
+
+    public List<String> getVideoUrls() {
+        return videoUrls;
+    }
+
+    public void setVideoUrls(List<String> videoUrls) {
+        this.videoUrls = videoUrls;
     }
 }

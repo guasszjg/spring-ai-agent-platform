@@ -85,6 +85,7 @@ public class AgentChatStreamService {
                 end.put("skillsLoaded", response.getSkillsLoaded());
                 end.put("knowledgeSearches", response.getKnowledgeSearches());
                 end.put("images", response.getImages());
+                end.put("videos", response.getVideos());
                 end.put("failoverFrom", response.getFailoverFrom());
             end.put("channel", response.getChannel());
             end.put("routeNotice", response.getRouteNotice());

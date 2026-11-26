@@ -164,12 +164,14 @@ public class AiChatService {
         return (int) (cjk + (others + 3) / 4);
     }
 
-    /** 本次对话检索命中的 FAQ 附图：在拼装知识库上下文时记下，chat() 结束前取出并清空 */
+    /** 本次对话检索命中的 FAQ 附图与视频：在拼装知识库上下文时记下，chat() 结束前取出并清空 */
     private static final ThreadLocal<List<String>> RETRIEVED_FAQ_IMAGES = new ThreadLocal<>();
+    private static final ThreadLocal<List<String>> RETRIEVED_FAQ_VIDEOS = new ThreadLocal<>();
 
     public ChatResponse chat(ChatRequest request, StreamSink sink) {
         long startTime = System.currentTimeMillis();
         RETRIEVED_FAQ_IMAGES.remove();
+        RETRIEVED_FAQ_VIDEOS.remove();
 
         Agent agent = agentService.getById(request.getAgentId())
                 .orElseThrow(() -> new IllegalArgumentException("智能体不存在: " + request.getAgentId()));
@@ -351,10 +353,13 @@ public class AiChatService {
         List<String> skillsLoaded = skillSession != null ? skillSession.loadedNames() : List.of();
         List<String> knowledgeSearches = knowledgeSession != null ? knowledgeSession.queries() : List.of();
         List<String> faqImages = RETRIEVED_FAQ_IMAGES.get();
-        if ((faqImages == null || faqImages.isEmpty()) && knowledgeSession != null) {
+        List<String> faqVideos = RETRIEVED_FAQ_VIDEOS.get();
+        if ((faqImages == null || faqImages.isEmpty()) && (faqVideos == null || faqVideos.isEmpty()) && knowledgeSession != null) {
             faqImages = knowledgeSession.faqImages();
+            faqVideos = knowledgeSession.faqVideos();
         }
         RETRIEVED_FAQ_IMAGES.remove();
+        RETRIEVED_FAQ_VIDEOS.remove();
 
         reply = cleanAnswer(reply);
 
@@ -378,6 +383,7 @@ public class AiChatService {
         );
         response.setToolCalled(toolCalledHolder[0]);
         response.setImages(faqImages);
+        response.setVideos(faqVideos);
         response.setSkillsLoaded(skillsLoaded);
         response.setKnowledgeSearches(knowledgeSearches);
         response.setPromptTokens(promptTokens);
@@ -748,6 +754,9 @@ public class AiChatService {
         }
         if (retrieval.faqImages() != null && !retrieval.faqImages().isEmpty()) {
             RETRIEVED_FAQ_IMAGES.set(retrieval.faqImages());
+        }
+        if (retrieval.faqVideos() != null && !retrieval.faqVideos().isEmpty()) {
+            RETRIEVED_FAQ_VIDEOS.set(retrieval.faqVideos());
         }
         return retrieval.text();
     }

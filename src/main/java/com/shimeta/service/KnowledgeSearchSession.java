@@ -33,6 +33,7 @@ public class KnowledgeSearchSession {
     private int remainingTokens = DEFAULT_TOTAL_TOKENS;
     private final List<String> queries = new ArrayList<>();
     private List<String> faqImages = List.of();
+    private List<String> faqVideos = List.of();
 
     /** @param knowledgeBases 知识库 ID → 名称，按智能体关联的顺序 */
     public KnowledgeSearchSession(Map<String, String> knowledgeBases, Searcher searcher) {
@@ -59,9 +60,14 @@ public class KnowledgeSearchSession {
         return List.copyOf(queries);
     }
 
-    /** 检索命中的 FAQ 附图（第一次带附图的检索结果），随回答单独返回 */
+    /** 检索命中的 FAQ 附图（第一次带附件的检索结果），随回答单独返回 */
     public List<String> faqImages() {
         return faqImages;
+    }
+
+    /** 检索命中的 FAQ 视频（第一次带附件的检索结果），随回答单独返回 */
+    public List<String> faqVideos() {
+        return faqVideos;
     }
 
     /** 放在系统提示末尾的说明：有哪些知识库、什么时候检索、怎么检索 */
@@ -129,8 +135,11 @@ public class KnowledgeSearchSession {
             return "知识库里没有检索到与「" + q + "」相关的资料。可以换个说法再查一次；仍然没有就按智能体本身的规则回答，不要编造。";
         }
         remainingTokens -= AiChatService.estimateTokens(result.text());
-        if (faqImages.isEmpty() && result.faqImages() != null && !result.faqImages().isEmpty()) {
-            faqImages = List.copyOf(result.faqImages());
+        boolean hasNewImages = result.faqImages() != null && !result.faqImages().isEmpty();
+        boolean hasNewVideos = result.faqVideos() != null && !result.faqVideos().isEmpty();
+        if (faqImages.isEmpty() && faqVideos.isEmpty() && (hasNewImages || hasNewVideos)) {
+            faqImages = hasNewImages ? List.copyOf(result.faqImages()) : List.of();
+            faqVideos = hasNewVideos ? List.copyOf(result.faqVideos()) : List.of();
         }
         return result.text();
     }

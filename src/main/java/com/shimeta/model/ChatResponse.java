@@ -16,6 +16,8 @@ public class ChatResponse {
     private LocalDateTime timestamp;
     /** 命中的 FAQ 回答附图（相对地址，如 /uploads/knowledge/xxx.png），没有时为空列表 */
     private java.util.List<String> images = java.util.List.of();
+    /** 命中的 FAQ 回答视频（相对地址或外部视频链接），没有时为空列表 */
+    private java.util.List<String> videos = java.util.List.of();
     private Integer promptTokens;
     /** 输入 Token 中命中提示词缓存的部分；通道不返回时为 0 */
     private Integer cachedPromptTokens;
@@ -204,5 +206,13 @@ public class ChatResponse {
 
     public void setImages(java.util.List<String> images) {
         this.images = images == null ? java.util.List.of() : images;
+    }
+
+    public java.util.List<String> getVideos() {
+        return videos;
+    }
+
+    public void setVideos(java.util.List<String> videos) {
+        this.videos = videos == null ? java.util.List.of() : videos;
     }
 }

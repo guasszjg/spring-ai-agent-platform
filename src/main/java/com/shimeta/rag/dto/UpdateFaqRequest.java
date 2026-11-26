@@ -8,6 +8,7 @@ public class UpdateFaqRequest {
     private String category;
     private String contentType;
     private List<String> imageUrls;
+    private List<String> videoUrls;
     private Boolean enabled;
 
     public String getQuestion() {
@@ -48,6 +49,14 @@ public class UpdateFaqRequest {
 
     public void setImageUrls(List<String> imageUrls) {
         this.imageUrls = imageUrls;
+    }
+
+    public List<String> getVideoUrls() {
+        return videoUrls;
+    }
+
+    public void setVideoUrls(List<String> videoUrls) {
+        this.videoUrls = videoUrls;
     }
 
     public Boolean getEnabled() {

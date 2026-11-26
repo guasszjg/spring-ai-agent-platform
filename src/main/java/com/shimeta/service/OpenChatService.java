@@ -170,6 +170,8 @@ public class OpenChatService {
             data.put("reply", chatResp.getReply());
             data.put("images", outputCheck.isBlocked() ? List.of()
                     : PublicUrlResolver.absolute(chatResp.getImages(), publicBaseUrl));
+            data.put("videos", outputCheck.isBlocked() ? List.of()
+                    : PublicUrlResolver.absolute(chatResp.getVideos(), publicBaseUrl));
             data.put("model", chatResp.getModel() != null ? chatResp.getModel() : agent.getModelName());
             data.put("tool_called", chatResp.getToolCalled());
             data.put("tokens_used", chatResp.getTokensUsed());
@@ -329,6 +331,7 @@ public class OpenChatService {
             endPayload.put("conversation_id", chatResp.getConversationId() != null ? chatResp.getConversationId() : convId);
             endPayload.put("message_id", msgId);
             endPayload.put("images", blocked ? List.of() : PublicUrlResolver.absolute(chatResp.getImages(), publicBaseUrl));
+            endPayload.put("videos", blocked ? List.of() : PublicUrlResolver.absolute(chatResp.getVideos(), publicBaseUrl));
             Map<String, Object> metadata = new LinkedHashMap<>();
             metadata.put("model", chatResp.getModel() != null ? chatResp.getModel() : agent.getModelName());
             metadata.put("tokens_used", chatResp.getTokensUsed() != null ? chatResp.getTokensUsed() : 0);

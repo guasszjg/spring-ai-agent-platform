@@ -54,6 +54,12 @@ public class KnowledgeFaq {
     @Column(columnDefinition = "TEXT")
     private String imageUrls;
 
+    /**
+     * 视频附件列表 (JSON Array 格式存储 URL，支持本地上传或外部视频链接)
+     */
+    @Column(columnDefinition = "TEXT")
+    private String videoUrls;
+
     private Boolean enabled = true;
 
     private Long hitCount = 0L;
@@ -162,6 +168,14 @@ public class KnowledgeFaq {
 
     public void setImageUrls(String imageUrls) {
         this.imageUrls = imageUrls;
+    }
+
+    public String getVideoUrls() {
+        return videoUrls;
+    }
+
+    public void setVideoUrls(String videoUrls) {
+        this.videoUrls = videoUrls;
     }
 
     public Boolean getEnabled() {

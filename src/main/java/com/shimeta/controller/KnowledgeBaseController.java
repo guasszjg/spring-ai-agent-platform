@@ -278,13 +278,25 @@ public class KnowledgeBaseController {
         }
     }
 
-    // ==================== 图片上传辅助 ====================
+    // ==================== 图片与视频上传辅助 ====================
 
     @PostMapping("/upload-image")
     public ResponseEntity<ApiResponse<Map<String, String>>> uploadImage(@RequestParam("file") MultipartFile file) {
         try {
             String url = knowledgeBaseService.saveFaqImage(file);
             return ResponseEntity.ok(ApiResponse.ok("图片上传成功", Map.of("url", url)));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/upload-video")
+    public ResponseEntity<ApiResponse<Map<String, String>>> uploadVideo(@RequestParam("file") MultipartFile file) {
+        try {
+            String url = knowledgeBaseService.saveFaqVideo(file);
+            return ResponseEntity.ok(ApiResponse.ok("视频上传成功", Map.of("url", url)));
         } catch (IllegalStateException e) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
         } catch (IllegalArgumentException e) {
