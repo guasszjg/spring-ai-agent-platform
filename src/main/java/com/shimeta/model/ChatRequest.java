@@ -14,6 +14,8 @@ public class ChatRequest {
     private String account;
     private List<String> enabledTools;
     private java.util.Map<String, Object> toolConfigs;
+    /** 是否采集调用链路详情：调试页默认开启（可由前端关闭），开放接口按平台开关决定（默认关闭） */
+    private Boolean traceEnabled;
 
     public ChatRequest() {
     }
@@ -119,5 +121,13 @@ public class ChatRequest {
 
     public void setToolConfigs(java.util.Map<String, Object> toolConfigs) {
         this.toolConfigs = toolConfigs;
+    }
+
+    public Boolean getTraceEnabled() {
+        return traceEnabled;
+    }
+
+    public void setTraceEnabled(Boolean traceEnabled) {
+        this.traceEnabled = traceEnabled;
     }
 }

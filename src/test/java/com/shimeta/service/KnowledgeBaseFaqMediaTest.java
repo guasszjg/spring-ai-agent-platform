@@ -83,12 +83,12 @@ class KnowledgeBaseFaqMediaTest {
         when(authService.canManageKnowledgeBase(any(), eq(kb))).thenReturn(true);
         when(faqRepo.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        // 超过 9 张图片被拒绝
+        // 超过 9 张图片（含本地 + 联网图片合计 10 张）被拒绝
         CreateFaqRequest tooManyImages = new CreateFaqRequest();
         tooManyImages.setQuestion("Q1");
         tooManyImages.setAnswer("A1");
         tooManyImages.setImageUrls(IntStream.range(0, 10)
-                .mapToObj(i -> "/uploads/knowledge/img_" + i + ".png")
+                .mapToObj(i -> i < 5 ? "/uploads/knowledge/img_" + i + ".png" : "https://cdn.example.com/img_" + i + ".png")
                 .toList());
         assertThrows(IllegalArgumentException.class, () -> service.createFaq("kb-1", tooManyImages, null));
 
@@ -111,12 +111,12 @@ class KnowledgeBaseFaqMediaTest {
         badUrl.setVideoUrls(List.of("javascript:alert(1)"));
         assertThrows(IllegalArgumentException.class, () -> service.createFaq("kb-1", badUrl, null));
 
-        // 合法 9 图 + 3 视频（含站内与外部 CDN）允许保存并自动标记 MIXED
+        // 合法 9 图（本地 + http/https 联网图片混排合计 9 张）+ 3 视频允许保存并自动标记 MIXED
         CreateFaqRequest valid = new CreateFaqRequest();
         valid.setQuestion("如何重启设备？");
         valid.setAnswer("按电源键 5 秒。");
         valid.setImageUrls(IntStream.range(0, 9)
-                .mapToObj(i -> "/uploads/knowledge/img_" + i + ".png")
+                .mapToObj(i -> i < 5 ? "/uploads/knowledge/img_" + i + ".png" : "https://oss.example.com/img_" + i + ".jpg")
                 .toList());
         valid.setVideoUrls(List.of(
                 "/uploads/knowledge/vid_1.mp4",
@@ -125,6 +125,7 @@ class KnowledgeBaseFaqMediaTest {
         ));
         KnowledgeFaq saved = service.createFaq("kb-1", valid, null);
         assertEquals("MIXED", saved.getContentType());
+        assertTrue(saved.getImageUrls().contains("https://oss.example.com/img_8.jpg"));
         assertTrue(saved.getVideoUrls().contains("https://oss.example.com/guide/demo.mp4"));
     }
 

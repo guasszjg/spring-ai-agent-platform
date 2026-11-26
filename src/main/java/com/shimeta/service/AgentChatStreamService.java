@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shimeta.model.ChatRequest;
 import com.shimeta.model.ChatResponse;
 import com.shimeta.security.CurrentActor;
+import com.shimeta.trace.ChatTraceContext;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,11 +61,23 @@ public class AgentChatStreamService {
             CurrentActor.set(actor);
             StreamingCitationStripper stripper = new StreamingCitationStripper();
             AtomicBoolean streamed = new AtomicBoolean(false);
+            boolean enableTrace = !Boolean.FALSE.equals(request.getTraceEnabled());
+            ChatTraceContext traceCtx = enableTrace
+                    ? ChatTraceContext.begin(request.getAgentId(), null, step -> {
+                        Map<String, Object> payload = new LinkedHashMap<>();
+                        payload.put("traceId", ChatTraceContext.current() != null ? ChatTraceContext.current().getTraceId() : null);
+                        payload.put("step", step);
+                        send(emitter, closed, "trace_step", payload);
+                    })
+                    : null;
             try {
                 ChatResponse response = aiChatService.chat(request, new AiChatService.StreamSink() {
                     @Override
                     public void onDelta(String text) {
                         streamed.set(true);
+                        if (traceCtx != null) {
+                            traceCtx.recordFirstToken();
+                        }
                         sendAnswer(emitter, closed, stripper.push(text));
                     }
 
@@ -87,20 +100,38 @@ public class AgentChatStreamService {
                 end.put("images", response.getImages());
                 end.put("videos", response.getVideos());
                 end.put("failoverFrom", response.getFailoverFrom());
-            end.put("channel", response.getChannel());
-            end.put("routeNotice", response.getRouteNotice());
+                end.put("channel", response.getChannel());
+                end.put("routeNotice", response.getRouteNotice());
                 end.put("conversationId", response.getConversationId());
                 end.put("degraded", Boolean.TRUE.equals(response.getDegraded()));
+                if (response.getTrace() != null) {
+                    end.put("trace", response.getTrace());
+                }
                 send(emitter, closed, "message_end", end);
                 complete(emitter);
             } catch (IllegalStateException | IllegalArgumentException e) {
-                send(emitter, closed, "error", Map.of("message", e.getMessage() == null ? "对话失败" : e.getMessage()));
+                String msg = e.getMessage() == null ? "对话失败" : e.getMessage();
+                Map<String, Object> errPayload = new LinkedHashMap<>();
+                errPayload.put("message", msg);
+                if (traceCtx != null) {
+                    errPayload.put("trace", traceCtx.snapshotError(msg));
+                }
+                send(emitter, closed, "error", errPayload);
                 complete(emitter);
             } catch (Exception e) {
                 log.error("调试页流式对话失败: {}", e.getMessage(), e);
-                send(emitter, closed, "error", Map.of("message", "当前无法完成模型调用，请检查模型网关配置或稍后重试"));
+                String msg = "当前无法完成模型调用，请检查模型网关配置或稍后重试";
+                Map<String, Object> errPayload = new LinkedHashMap<>();
+                errPayload.put("message", msg);
+                if (traceCtx != null) {
+                    errPayload.put("trace", traceCtx.snapshotError(e.getMessage() != null ? e.getMessage() : msg));
+                }
+                send(emitter, closed, "error", errPayload);
                 complete(emitter);
             } finally {
+                if (traceCtx != null) {
+                    ChatTraceContext.clear();
+                }
                 CurrentActor.clear();
             }
         });

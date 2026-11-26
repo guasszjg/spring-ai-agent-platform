@@ -48,6 +48,9 @@ public class PlatformSettingService {
 
     /** 是否允许新建「公开」分享链接（不需要访问码）。默认关闭，由超级管理员打开 */
     public static final String SHARE_PUBLIC_ENABLED = "share.public_enabled";
+    /** 是否记录开放接口（客户端 API / 免登录分享）的调用链路并落库。默认关闭，排查线上慢请求时临时打开 */
+    public static final String OPEN_API_TRACE_ENABLED = "chat.open_api_trace_enabled";
+    private static final String MISSING_SENTINEL = "__MISSING__";
 
     public boolean sharePublicEnabled() {
         return "true".equalsIgnoreCase(get(SHARE_PUBLIC_ENABLED));
@@ -58,18 +61,25 @@ public class PlatformSettingService {
         return enabled;
     }
 
+    public boolean openApiTraceEnabled() {
+        return "true".equalsIgnoreCase(get(OPEN_API_TRACE_ENABLED));
+    }
+
+    public boolean setOpenApiTraceEnabled(boolean enabled) {
+        set(OPEN_API_TRACE_ENABLED, String.valueOf(enabled));
+        return enabled;
+    }
+
     private String get(String key) {
         String cached = cache.get(key);
         if (cached != null) {
-            return cached;
+            return MISSING_SENTINEL.equals(cached) ? null : cached;
         }
         try {
             List<String> rows = jdbcTemplate.queryForList(
                     "SELECT setting_value FROM platform_settings WHERE setting_key = ?", String.class, key);
             String value = rows.isEmpty() ? null : rows.get(0);
-            if (value != null) {
-                cache.put(key, value);
-            }
+            cache.put(key, value != null ? value : MISSING_SENTINEL);
             return value;
         } catch (Exception e) {
             log.warn("读取平台设置失败 [{}]: {}", key, e.getMessage());

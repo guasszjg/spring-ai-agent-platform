@@ -6,6 +6,8 @@ import com.shimeta.model.ChatGeneration;
 import com.shimeta.model.ChatMessage;
 import com.shimeta.model.ChatRequest;
 import com.shimeta.model.ChatResponse;
+import com.shimeta.trace.ChatTrace;
+import com.shimeta.trace.ChatTraceContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -167,24 +169,55 @@ public class AiChatService {
     /** 本次对话检索命中的 FAQ 附图与视频：在拼装知识库上下文时记下，chat() 结束前取出并清空 */
     private static final ThreadLocal<List<String>> RETRIEVED_FAQ_IMAGES = new ThreadLocal<>();
     private static final ThreadLocal<List<String>> RETRIEVED_FAQ_VIDEOS = new ThreadLocal<>();
+    private static final com.fasterxml.jackson.databind.ObjectMapper TRACE_MAPPER = new com.fasterxml.jackson.databind.ObjectMapper();
 
     public ChatResponse chat(ChatRequest request, StreamSink sink) {
         long startTime = System.currentTimeMillis();
         RETRIEVED_FAQ_IMAGES.remove();
         RETRIEVED_FAQ_VIDEOS.remove();
 
-        Agent agent = agentService.getById(request.getAgentId())
-                .orElseThrow(() -> new IllegalArgumentException("智能体不存在: " + request.getAgentId()));
+        boolean enableTrace = !Boolean.FALSE.equals(request.getTraceEnabled());
+        ChatTraceContext existingTrace = ChatTraceContext.current();
+        boolean ownTrace = enableTrace && existingTrace == null;
+        ChatTraceContext traceCtx = enableTrace
+                ? (ownTrace ? ChatTraceContext.begin(request.getAgentId(), null, null) : existingTrace)
+                : null;
 
-        com.shimeta.security.CurrentActor actor = com.shimeta.security.CurrentActor.get();
-        if (actor != null && !resourceAuthorizationService.canRunAgent(actor, agent)) {
-            throw new IllegalStateException("权限不足：无权运行或调用该智能体");
+        String prepareStepId = traceCtx != null ? traceCtx.startStep("PREPARE", "权限与上下文准备", null, null) : null;
+        try {
+            return executeChat(request, sink, startTime, traceCtx, prepareStepId);
+        } finally {
+            if (ownTrace) {
+                ChatTraceContext.clear();
+            }
         }
+    }
 
-        // 强校验智能体绑定的知识库依赖权限：
-        // 智能体拥有者对所绑定的每一个知识库必须拥有有效的 USE 权限；
-        // 若依赖失效或授权已撤销，在此立即阻断，严禁调用 LLM 或 Dify，且不产生任何数据库会话写入与外部调用！
-        resourceAuthorizationService.checkAgentKnowledgeBaseDependencies(agent);
+    private ChatResponse executeChat(ChatRequest request, StreamSink sink, long startTime,
+                                     ChatTraceContext traceCtx, String prepareStepId) {
+        Agent agent;
+        try {
+            agent = agentService.getById(request.getAgentId())
+                    .orElseThrow(() -> new IllegalArgumentException("智能体不存在: " + request.getAgentId()));
+            if (traceCtx != null) {
+                traceCtx.setAgentMeta(agent.getId(), agent.getName());
+            }
+
+            com.shimeta.security.CurrentActor actor = com.shimeta.security.CurrentActor.get();
+            if (actor != null && !resourceAuthorizationService.canRunAgent(actor, agent)) {
+                throw new IllegalStateException("权限不足：无权运行或调用该智能体");
+            }
+
+            // 强校验智能体绑定的知识库依赖权限：
+            // 智能体拥有者对所绑定的每一个知识库必须拥有有效的 USE 权限；
+            // 若依赖失效或授权已撤销，在此立即阻断，严禁调用 LLM 或 Dify，且不产生任何数据库会话写入与外部调用！
+            resourceAuthorizationService.checkAgentKnowledgeBaseDependencies(agent);
+        } catch (RuntimeException e) {
+            if (traceCtx != null && prepareStepId != null) {
+                traceCtx.failStep(prepareStepId, e.getMessage(), null);
+            }
+            throw e;
+        }
 
         // 上下文记忆：只带最近 N 轮问答（0 = 不带历史），无论调用方传了多少条
         request.setHistory(recentTurns(request.getHistory(), agent.resolveMemoryTurns(), request.getMessage()));
@@ -275,6 +308,24 @@ public class AiChatService {
         boolean draftRoute = request.getRouteDraft() != null;
         com.shimeta.model.AgentRouteChoice routeChoice = draftRoute
                 ? request.getRouteDraft() : com.shimeta.model.AgentRouteChoice.of(agent);
+
+        if (traceCtx != null && prepareStepId != null) {
+            int kbCount = agent.getKnowledgeBaseIds() != null ? agent.getKnowledgeBaseIds().size() : 0;
+            int skillCount = agent.getSkillIds() != null ? agent.getSkillIds().size() : 0;
+            int toolCount = tools != null ? tools.size() : 0;
+            int historyCount = request.getHistory() != null ? request.getHistory().size() : 0;
+            java.util.Map<String, Object> prepDetail = new java.util.LinkedHashMap<>();
+            prepDetail.put("memoryTurnsConfig", agent.resolveMemoryTurns());
+            prepDetail.put("historyMessages", historyCount);
+            prepDetail.put("knowledgeBaseCount", kbCount);
+            prepDetail.put("knowledgeMode", agent.isAgenticKnowledge() ? "模型自主检索" : "先检索后回答");
+            prepDetail.put("toolCount", toolCount);
+            prepDetail.put("skillCount", skillCount);
+            prepDetail.put("draftRoute", draftRoute);
+            traceCtx.finishStep(prepareStepId,
+                    String.format("历史 %d 条 · 知识库 %d 个 · 工具 %d 个 · 技能 %d 个", historyCount, kbCount, toolCount, skillCount),
+                    prepDetail);
+        }
 
         try {
             OpenAiCompatibleClient.ChatResult routed = invokeViaGateway(agent, routeChoice, userMessage, request.getHistory(),
@@ -394,6 +445,19 @@ public class AiChatService {
         response.setRouteNotice(trace.routeNotice);
         response.setDegraded(!realModelReply);
         response.setSource("MODEL");
+        if (traceCtx != null) {
+            ChatTrace chatTrace = traceCtx.snapshotOk(
+                    executionModel,
+                    trace.channel,
+                    realModelReply ? trace.failoverFrom : null,
+                    trace.routeNotice,
+                    promptTokens,
+                    cachedPromptTokens,
+                    completionTokens
+            );
+            response.setTrace(chatTrace);
+            traceCtx.setSerializedTrace(serializeTrace(chatTrace));
+        }
         AgentConversation conversation = conversationService.appendTurn(
                 agent.getId(),
                 request.getConversationId(),
@@ -407,6 +471,17 @@ public class AiChatService {
         );
         response.setConversationId(conversation.getId());
         return response;
+    }
+
+    private static String serializeTrace(ChatTrace trace) {
+        if (trace == null) {
+            return null;
+        }
+        try {
+            return TRACE_MAPPER.writeValueAsString(trace);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**
@@ -500,6 +575,10 @@ public class AiChatService {
             trace.routed = true;
             trace.channel = route.primary().getName();
             trace.routeNotice = agentRoute.notice();
+            ChatTraceContext traceCtx = ChatTraceContext.current();
+            if (traceCtx != null) {
+                traceCtx.setRouteMeta(trace.channel, requestedModel, null, trace.routeNotice);
+            }
             com.shimeta.model.LlmProvider fallback = route.fallback() != null && gatewayService.hasKey(route.fallback())
                     ? route.fallback() : null;
             // 通道不支持工具调用时不发工具定义，也不在提示词里写工具指引；主备通道分别判断
@@ -586,6 +665,15 @@ public class AiChatService {
                 log.warn("Primary LLM channel [{}] failed, switching to fallback [{}]",
                         route.primary().getName(), fallback.getName());
                 trace.failoverFrom = route.primary().getName();
+                trace.channel = fallback.getName();
+                if (traceCtx != null) {
+                    traceCtx.setRouteMeta(fallback.getName(), null, trace.failoverFrom, trace.routeNotice);
+                    traceCtx.recordInstantStep("ROUTE", "主备通道自动切换", "ok",
+                            route.primary().getName() + " → " + fallback.getName(),
+                            java.util.Map.of("fromChannel", route.primary().getName(),
+                                    "toChannel", fallback.getName(),
+                                    "reason", trace.lastError != null ? trace.lastError : "主通道调用失败"));
+                }
                 // 自己选的备用通道用它的默认模型（选的模型属于主通道）；跟随平台时和以前一样按模型名匹配
                 boolean chosenFallback = routeChoice != null && fallback.getId().equals(routeChoice.getFallbackProviderId());
                 return callProvider(fallback, route.fallbackKey(),

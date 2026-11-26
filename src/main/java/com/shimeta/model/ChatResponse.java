@@ -28,6 +28,8 @@ public class ChatResponse {
     private java.util.List<String> skillsLoaded = java.util.List.of();
     /** 模型自主检索时，本次回答检索知识库用的查询词 */
     private java.util.List<String> knowledgeSearches = java.util.List.of();
+    /** 本次问答的调用链路详情（仅调试接口返回，不暴露给外部开放接口） */
+    private com.shimeta.trace.ChatTrace trace;
 
     public java.util.List<String> getKnowledgeSearches() {
         return knowledgeSearches;
@@ -214,5 +216,13 @@ public class ChatResponse {
 
     public void setVideos(java.util.List<String> videos) {
         this.videos = videos == null ? java.util.List.of() : videos;
+    }
+
+    public com.shimeta.trace.ChatTrace getTrace() {
+        return trace;
+    }
+
+    public void setTrace(com.shimeta.trace.ChatTrace trace) {
+        this.trace = trace;
     }
 }

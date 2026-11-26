@@ -50,6 +50,12 @@ public class OpenChatService {
     private final ContentGuardService contentGuardService;
     private final AgentConversationService conversationService;
     private final PublicUrlResolver publicUrlResolver;
+    private PlatformSettingService platformSettingService;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setPlatformSettingService(PlatformSettingService platformSettingService) {
+        this.platformSettingService = platformSettingService;
+    }
 
     public OpenChatService(AgentRepository agentRepository,
                            AiChatService aiChatService,
@@ -145,6 +151,7 @@ public class OpenChatService {
         chatReq.setHistory(conversationService.recentHistory(agent.getId(), request.getConversationId(), endUser, memoryTurns));
         chatReq.setPrompt(agent.getSystemPrompt());
         chatReq.setEnabledTools(extractEnabledTools(agent.getToolsConfig()));
+        chatReq.setTraceEnabled(platformSettingService != null && platformSettingService.openApiTraceEnabled());
 
         // FAQ 附图返回完整网址，广告机等终端拿到后可以直接显示
         String publicBaseUrl = publicUrlResolver.baseUrl(httpRequest);

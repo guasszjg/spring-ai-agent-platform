@@ -86,6 +86,15 @@ public class AgentConversationService {
     public AgentConversation appendTurn(String agentId, String conversationId, String account,
                                         String userMessage, String assistantReply, String model,
                                         long latencyMs, int tokensUsed, String newConversationId) {
+        com.shimeta.trace.ChatTraceContext traceCtx = com.shimeta.trace.ChatTraceContext.current();
+        String traceJson = traceCtx != null ? traceCtx.getSerializedTrace() : null;
+        return appendTurn(agentId, conversationId, account, userMessage, assistantReply, model,
+                latencyMs, tokensUsed, newConversationId, traceJson);
+    }
+
+    public AgentConversation appendTurn(String agentId, String conversationId, String account,
+                                        String userMessage, String assistantReply, String model,
+                                        long latencyMs, int tokensUsed, String newConversationId, String traceJson) {
         AgentConversation conversation = resolveConversation(agentId, conversationId, account, userMessage, newConversationId);
         LocalDateTime now = LocalDateTime.now();
 
@@ -103,6 +112,7 @@ public class AgentConversationService {
         assistant.setModel(model);
         assistant.setLatencyMs(latencyMs);
         assistant.setTokensUsed(tokensUsed);
+        assistant.setTraceJson(traceJson);
         assistant.setCreatedAt(now.plusNanos(1_000_000));
         messageRepository.save(assistant);
 

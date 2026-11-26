@@ -2,6 +2,7 @@ package com.shimeta.service;
 
 import com.shimeta.model.ChatGeneration;
 import com.shimeta.config.OutboundUrlValidator;
+import com.shimeta.trace.ChatTraceContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -234,6 +235,7 @@ public class OpenAiCompatibleClient {
             int totalTokens = 0;
             String toolCalled = null;
 
+            ChatTraceContext traceCtx = ChatTraceContext.current();
             for (int turn = 0; turn <= maxRounds; turn++) {
                 boolean finalTurn = turn == maxRounds;
                 Map<String, Object> payload = new LinkedHashMap<>();
@@ -262,21 +264,49 @@ public class OpenAiCompatibleClient {
                 HttpRequest request = builder
                         .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                         .build();
-                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-                if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                    throw new IllegalStateException("HTTP " + response.statusCode() + " " + truncate(response.body()));
+                String llmStepId = traceCtx != null
+                        ? traceCtx.startStep("LLM", llmRoundTitle(turn, tools), model + "（非流式）",
+                                Map.of("model", String.valueOf(model), "round", turn + 1, "streaming", false,
+                                        "messageCount", currentMessages.size(), "toolCount", tools != null && !finalTurn ? tools.size() : 0))
+                        : null;
+                HttpResponse<String> response;
+                try {
+                    response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                        throw new IllegalStateException("HTTP " + response.statusCode() + " " + truncate(response.body()));
+                    }
+                } catch (Exception ex) {
+                    if (llmStepId != null) {
+                        traceCtx.failStep(llmStepId, ex.getMessage(), null);
+                    }
+                    throw ex;
                 }
                 JsonNode root = objectMapper.readTree(response.body());
                 JsonNode choice = root.path("choices").path(0);
                 JsonNode messageNode = choice.path("message");
 
-                promptTokens += root.path("usage").path("prompt_tokens").asInt(0);
-                cachedTokens += cachedPromptTokens(root.path("usage"));
-                completionTokens += root.path("usage").path("completion_tokens").asInt(0);
+                int roundPrompt = root.path("usage").path("prompt_tokens").asInt(0);
+                int roundCached = cachedPromptTokens(root.path("usage"));
+                int roundCompletion = root.path("usage").path("completion_tokens").asInt(0);
+                promptTokens += roundPrompt;
+                cachedTokens += roundCached;
+                completionTokens += roundCompletion;
                 totalTokens = promptTokens + completionTokens;
 
                 JsonNode toolCalls = messageNode.path("tool_calls");
-                if (toolCalls.isArray() && !toolCalls.isEmpty() && toolRegistry != null && !finalTurn) {
+                boolean hasTools = toolCalls.isArray() && !toolCalls.isEmpty() && toolRegistry != null && !finalTurn;
+                if (llmStepId != null) {
+                    Map<String, Object> llmDetail = new LinkedHashMap<>();
+                    llmDetail.put("promptTokens", roundPrompt);
+                    llmDetail.put("cachedPromptTokens", roundCached);
+                    llmDetail.put("completionTokens", roundCompletion);
+                    llmDetail.put("toolCallCount", hasTools ? toolCalls.size() : 0);
+                    String llmSummary = hasTools
+                            ? String.format("%s · 请求调用 %d 个工具", model, toolCalls.size())
+                            : String.format("%s · 输入 %d / 输出 %d tok", model, roundPrompt, roundCompletion);
+                    traceCtx.finishStep(llmStepId, llmSummary, llmDetail);
+                }
+                if (hasTools) {
                     Map<String, Object> assistantMsg = new LinkedHashMap<>();
                     assistantMsg.put("role", "assistant");
                     if (messageNode.has("content") && !messageNode.get("content").isNull()) {
@@ -292,7 +322,7 @@ public class OpenAiCompatibleClient {
                         String fnArgs = callNode.path("function").path("arguments").asText("{}");
 
                         log.info("LLM autonomously selected tool [{}], args: {}", fnName, fnArgs);
-                        String toolResult = toolRegistry.execute(fnName, fnArgs);
+                        String toolResult = executeToolWithTrace(traceCtx, toolRegistry, fnName, fnArgs);
                         summaries.add(toolRegistry.formatToolCallSummary(fnName, fnArgs));
 
                         Map<String, Object> toolMsg = new LinkedHashMap<>();
@@ -356,19 +386,66 @@ public class OpenAiCompatibleClient {
         int promptTokens = 0;
         int completionTokens = 0;
         String toolCalled = null;
+        ChatTraceContext traceCtx = ChatTraceContext.current();
         for (int turn = 0; turn <= maxRounds; turn++) {
             boolean finalTurn = turn == maxRounds;
             // 最后一轮先缓冲：模型可能把工具调用写成文本标记，确认是正常回答后再推送
             StringBuilder finalBuffer = new StringBuilder();
-            StreamResult result = streamRoundWithRetry(baseUrl, apiKey, model, customHeaders, defaultWebSearch,
-                    finalTurn ? withFinalNudge(currentMessages) : currentMessages,
-                    finalTurn ? null : tools, generation, timeoutMs,
-                    finalTurn ? finalBuffer::append : onContent, cancelled, turn > 0);
+            String llmStepId = traceCtx != null
+                    ? traceCtx.startStep("LLM", llmRoundTitle(turn, tools), model + "（流式等待首字…）",
+                            Map.of("model", String.valueOf(model), "round", turn + 1, "streaming", true,
+                                    "messageCount", currentMessages.size(), "toolCount", tools != null && !finalTurn ? tools.size() : 0))
+                    : null;
+            long roundStart = System.currentTimeMillis();
+            long[] roundTtft = { -1L };
+            java.util.function.Consumer<String> roundConsumer = text -> {
+                if (roundTtft[0] < 0 && text != null && !text.isEmpty()) {
+                    roundTtft[0] = System.currentTimeMillis() - roundStart;
+                    if (traceCtx != null) {
+                        traceCtx.recordFirstToken();
+                    }
+                }
+                if (finalTurn) {
+                    finalBuffer.append(text);
+                } else if (onContent != null) {
+                    onContent.accept(text);
+                }
+            };
+            StreamResult result;
+            try {
+                result = streamRoundWithRetry(baseUrl, apiKey, model, customHeaders, defaultWebSearch,
+                        finalTurn ? withFinalNudge(currentMessages) : currentMessages,
+                        finalTurn ? null : tools, generation, timeoutMs,
+                        roundConsumer, cancelled, turn > 0);
+            } catch (RuntimeException e) {
+                if (llmStepId != null) {
+                    traceCtx.failStep(llmStepId, e.getMessage(), null);
+                }
+                throw e;
+            }
             promptTokens += result.promptTokens();
             cachedTokens += result.cachedPromptTokens();
             completionTokens += result.completionTokens();
             boolean stop = cancelled != null && cancelled.getAsBoolean();
-            if (!result.hasToolCalls() || toolRegistry == null || stop || finalTurn) {
+            boolean willCallTools = result.hasToolCalls() && toolRegistry != null && !stop && !finalTurn;
+            if (llmStepId != null) {
+                Map<String, Object> llmDetail = new LinkedHashMap<>();
+                if (roundTtft[0] >= 0) {
+                    llmDetail.put("ttftMs", roundTtft[0]);
+                }
+                llmDetail.put("promptTokens", result.promptTokens());
+                llmDetail.put("cachedPromptTokens", result.cachedPromptTokens());
+                llmDetail.put("completionTokens", result.completionTokens());
+                llmDetail.put("toolCallCount", willCallTools ? result.toolCalls().size() : 0);
+                String llmSummary = willCallTools
+                        ? String.format("%s · 请求调用 %d 个工具", model, result.toolCalls().size())
+                        : String.format("%s%s · 输入 %d / 输出 %d tok",
+                                model,
+                                roundTtft[0] >= 0 ? " · 首字 " + roundTtft[0] + "ms" : "",
+                                result.promptTokens(), result.completionTokens());
+                traceCtx.finishStep(llmStepId, llmSummary, llmDetail);
+            }
+            if (!willCallTools) {
                 String content = cleanAnswer(result.content());
                 if (finalTurn && !stop) {
                     if (content == null || content.isBlank() || looksLikeToolMarkup(content)) {
@@ -399,7 +476,7 @@ public class OpenAiCompatibleClient {
             List<String> summaries = new ArrayList<>();
             for (ToolCall call : result.toolCalls()) {
                 log.info("LLM autonomously selected tool [{}] (streaming), args: {}", call.name(), call.arguments());
-                String toolResult = toolRegistry.execute(call.name(), call.arguments());
+                String toolResult = executeToolWithTrace(traceCtx, toolRegistry, call.name(), call.arguments());
                 summaries.add(toolRegistry.formatToolCallSummary(call.name(), call.arguments()));
                 Map<String, Object> toolMsg = new LinkedHashMap<>();
                 toolMsg.put("role", "tool");
@@ -410,6 +487,44 @@ public class OpenAiCompatibleClient {
             toolCalled = appendToolSummary(toolCalled, summaries);
         }
         return new ChatResult(TOOL_LIMIT_FALLBACK, promptTokens, completionTokens, promptTokens + completionTokens, toolCalled, cachedTokens);
+    }
+
+    private static String llmRoundTitle(int turn, List<Map<String, Object>> tools) {
+        if (turn == 0 && (tools == null || tools.isEmpty())) {
+            return "大模型推理";
+        }
+        return "大模型推理 · 第 " + (turn + 1) + " 轮";
+    }
+
+    private static String executeToolWithTrace(ChatTraceContext traceCtx,
+                                               com.shimeta.tool.AgentToolRegistry toolRegistry,
+                                               String fnName, String fnArgs) {
+        if (traceCtx == null) {
+            return toolRegistry.execute(fnName, fnArgs);
+        }
+        String displayName = switch (fnName == null ? "" : fnName) {
+            case "search_knowledge" -> "模型自主检索知识库";
+            case "load_skill" -> "加载智能体技能";
+            default -> "工具调用 · " + fnName;
+        };
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("toolName", fnName);
+        detail.put("arguments", ChatTraceContext.truncate(fnArgs, 300));
+        String stepId = traceCtx.startStep("TOOL", displayName, ChatTraceContext.truncate(fnArgs, 60), detail);
+        traceCtx.pushParent(stepId);
+        try {
+            String result = toolRegistry.execute(fnName, fnArgs);
+            Map<String, Object> endDetail = new LinkedHashMap<>();
+            endDetail.put("resultLength", result != null ? result.length() : 0);
+            endDetail.put("resultPreview", ChatTraceContext.truncate(result, 300));
+            traceCtx.finishStep(stepId, "返回 " + (result != null ? result.length() : 0) + " 字符", endDetail);
+            return result;
+        } catch (RuntimeException e) {
+            traceCtx.failStep(stepId, e.getMessage(), null);
+            throw e;
+        } finally {
+            traceCtx.popParent(stepId);
+        }
     }
 
     /**

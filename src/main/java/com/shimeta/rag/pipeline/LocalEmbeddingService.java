@@ -41,14 +41,29 @@ public class LocalEmbeddingService {
         this.embeddingConfigService = embeddingConfigService;
     }
 
-    public int resolveDimension() {
+    /** 一次读取当前激活 Embedding 模型配置，避免同一次检索里重复查库 */
+    public record EmbeddingProfile(String modelName, int dimension, EmbeddingConfig config) {}
+
+    public EmbeddingProfile resolveProfile() {
         if (embeddingConfigService != null) {
             var active = embeddingConfigService.getActiveConfig();
-            if (active.isPresent() && active.get().getDimension() != null && active.get().getDimension() > 0) {
-                return active.get().getDimension();
+            if (active.isPresent()) {
+                EmbeddingConfig cfg = active.get();
+                int dim = (cfg.getDimension() != null && cfg.getDimension() > 0) ? cfg.getDimension() : DEFAULT_DIMENSION;
+                String name = (cfg.getModelName() != null && !cfg.getModelName().isBlank()) ? cfg.getModelName() : "Embedding";
+                return new EmbeddingProfile(name, dim, cfg);
             }
         }
-        return DEFAULT_DIMENSION;
+        String fallbackName = embeddingModel != null ? embeddingModel.getClass().getSimpleName() : "本地语义投影";
+        return new EmbeddingProfile(fallbackName, DEFAULT_DIMENSION, null);
+    }
+
+    public int resolveDimension() {
+        return resolveProfile().dimension();
+    }
+
+    public String resolveModelName() {
+        return resolveProfile().modelName();
     }
 
     /**

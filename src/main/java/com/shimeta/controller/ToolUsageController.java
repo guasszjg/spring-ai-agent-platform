@@ -119,9 +119,18 @@ public class ToolUsageController {
         if (publicShare != null && !(publicShare instanceof Boolean)) {
             return ResponseEntity.badRequest().body(ApiResponse.error("sharePublicEnabled 需为 true 或 false"));
         }
+        Object openApiTrace = body == null ? null : body.get("openApiTraceEnabled");
+        if (openApiTrace != null && !(openApiTrace instanceof Boolean)) {
+            return ResponseEntity.badRequest().body(ApiResponse.error("openApiTraceEnabled 需为 true 或 false"));
+        }
         Object raw = body == null ? null : body.get("maxToolRounds");
-        if (raw == null && publicShare != null) {
-            settingService.setSharePublicEnabled((Boolean) publicShare);
+        if (raw == null && (publicShare != null || openApiTrace != null)) {
+            if (publicShare != null) {
+                settingService.setSharePublicEnabled((Boolean) publicShare);
+            }
+            if (openApiTrace != null) {
+                settingService.setOpenApiTraceEnabled((Boolean) openApiTrace);
+            }
             return ResponseEntity.ok(ApiResponse.ok("已保存", settingsView()));
         }
         if (!(raw instanceof Number number) || number.doubleValue() != Math.floor(number.doubleValue())) {
@@ -130,6 +139,9 @@ public class ToolUsageController {
         try {
             if (publicShare != null) {
                 settingService.setSharePublicEnabled((Boolean) publicShare);
+            }
+            if (openApiTrace != null) {
+                settingService.setOpenApiTraceEnabled((Boolean) openApiTrace);
             }
             settingService.setMaxToolRounds(number.intValue());
             return ResponseEntity.ok(ApiResponse.ok("已保存，对新的提问立即生效", settingsView()));
@@ -145,6 +157,7 @@ public class ToolUsageController {
         view.put("max", PlatformSettingService.MAX_TOOL_ROUNDS_LIMIT);
         view.put("default", PlatformSettingService.DEFAULT_MAX_TOOL_ROUNDS);
         view.put("sharePublicEnabled", settingService.sharePublicEnabled());
+        view.put("openApiTraceEnabled", settingService.openApiTraceEnabled());
         return view;
     }
 

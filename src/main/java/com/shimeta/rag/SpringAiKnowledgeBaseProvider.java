@@ -20,6 +20,7 @@ import com.shimeta.rag.pipeline.LocalEmbeddingService;
 import com.shimeta.rag.pipeline.PgChunkSearch;
 import com.shimeta.rag.pipeline.QueryTransformer;
 import com.shimeta.rag.pipeline.RrfFusion;
+import com.shimeta.trace.ChatTraceContext;
 import com.shimeta.rag.parser.DocumentParsingService;
 import com.shimeta.repository.KnowledgeBaseRepository;
 import com.shimeta.repository.KnowledgeDocumentChunkRepository;
@@ -521,6 +522,7 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
         }
 
         long retrievalStart = System.currentTimeMillis();
+        ChatTraceContext traceCtx = ChatTraceContext.current();
 
         // 1. P4 语义缓存检查 (Semantic Cache Check): 相似度 >= 0.95 判定为同一语义，直接瞬时返回
         boolean cacheEnabled = request.cacheEnabled() == null || Boolean.TRUE.equals(request.cacheEnabled());
@@ -530,6 +532,11 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 if (cacheHit.isPresent()) {
                     log.info("Spring AI 检索瞬时命中语义缓存 (< 5ms): kbId={}, query='{}', hitCount={}, similarity={}",
                             kbId, request.query(), cacheHit.get().hitCount(), cacheHit.get().similarity());
+                    if (traceCtx != null) {
+                        traceCtx.recordInstantStep("KB_CACHE", "语义缓存命中", "ok",
+                                String.format("相似度 %.2f · 命中 %d 条片段（跳过向量与重排）", cacheHit.get().similarity(), cacheHit.get().chunks().size()),
+                                Map.of("knowledgeBaseId", kbId, "similarity", cacheHit.get().similarity(), "hitCount", cacheHit.get().chunks().size()));
+                    }
                     return cacheHit.get().chunks();
                 }
             } catch (RuntimeException e) {
@@ -539,8 +546,17 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
 
         // 2. Query 智能理解与改写 (P2 阶段)
         boolean rewriteEnabled = Boolean.TRUE.equals(request.rewriteEnabled());
+        String rewriteStepId = (rewriteEnabled && traceCtx != null)
+                ? traceCtx.startStep("KB_REWRITE", "查询改写", null, Map.of("originalQuery", ChatTraceContext.truncate(request.query(), 160)))
+                : null;
         QueryTransformer.TransformResult transformResult = queryTransformer.transform(request.query(), rewriteEnabled, false);
         String effectiveQuery = transformResult.rewrittenQuery();
+        if (rewriteStepId != null) {
+            traceCtx.finishStep(rewriteStepId,
+                    transformResult.isRewritten() ? "改写为：" + ChatTraceContext.truncate(effectiveQuery, 40) : "无需改写",
+                    Map.of("rewritten", transformResult.isRewritten(),
+                            "effectiveQuery", ChatTraceContext.truncate(effectiveQuery, 160)));
+        }
 
         int topK = request.topK() != null && request.topK() > 0 ? request.topK() : 3;
         double threshold = request.scoreThreshold() != null ? request.scoreThreshold() : 0.3;
@@ -556,13 +572,39 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                 ? fusionWeights(request.vectorWeight(), request.keywordWeight())
                 : new double[]{1.0, 1.0};
 
-        // P4: 多模态查询支持 (以文搜图、以图搜图)
+        // P4: 多模态查询支持 (以文搜图、以图搜图)；一次获取生效模型配置，避免重复查库
         boolean isImageQuery = "IMAGE".equalsIgnoreCase(request.queryType())
                 || (request.queryImageUrl() != null && !request.queryImageUrl().isBlank());
-        int embedDim = embeddingService.resolveDimension();
-        float[] queryVec = isImageQuery
-                ? embeddingService.embedImage(request.queryImageUrl(), effectiveQuery, embedDim)
-                : embeddingService.embed(effectiveQuery, embedDim);
+        LocalEmbeddingService.EmbeddingProfile embedProfile = embeddingService.resolveProfile();
+        int embedDim = embedProfile.dimension();
+        String embedModelName = embedProfile.modelName();
+        String embedStepId = traceCtx != null
+                ? traceCtx.startStep("EMBEDDING", "向量模型编码", embedModelName + " · " + embedDim + "维",
+                        Map.of("model", embedModelName, "dimension", embedDim, "query", ChatTraceContext.truncate(effectiveQuery, 160)))
+                : null;
+        float[] queryVec;
+        try {
+            if (isImageQuery) {
+                queryVec = embeddingService.embedImage(request.queryImageUrl(), effectiveQuery, embedDim);
+            } else if (embedProfile.config() != null) {
+                queryVec = embeddingService.embed(effectiveQuery, embedProfile.config());
+            } else {
+                queryVec = embeddingService.embed(effectiveQuery, embedDim);
+            }
+            if (embedStepId != null) {
+                traceCtx.finishStep(embedStepId, embedModelName + " · " + (queryVec != null ? queryVec.length : embedDim) + "维", null);
+            }
+        } catch (RuntimeException e) {
+            if (embedStepId != null) {
+                traceCtx.failStep(embedStepId, e.getMessage(), null);
+            }
+            throw e;
+        }
+
+        String searchStepId = traceCtx != null
+                ? traceCtx.startStep("KB_SEARCH", "向量与全文召回", searchMethod,
+                        Map.of("searchMethod", searchMethod, "topK", topK, "threshold", threshold))
+                : null;
 
         int recallK = Math.max(50, topK * 8);
         List<String> vectorIds = new ArrayList<>();
@@ -648,6 +690,9 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
             }
         }
         if (rankedChunks.isEmpty()) {
+            if (searchStepId != null) {
+                traceCtx.finishStep(searchStepId, "无匹配切片", Map.of("engine", usedPg ? "PostgreSQL+BM25" : "内存扫描", "candidates", 0));
+            }
             return Collections.emptyList();
         }
 
@@ -683,16 +728,39 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
                     vectorScore, keywordScore, null, matchedBy));
         }
 
+        if (searchStepId != null) {
+            traceCtx.finishStep(searchStepId,
+                    String.format("向量 %d 条 / 关键词 %d 条 → 候选 %d 条", vectorIds.size(), keywordIds.size(), candidates.size()),
+                    Map.of("engine", usedPg ? "PostgreSQL+BM25" : "内存扫描",
+                            "vectorHits", vectorIds.size(),
+                            "keywordHits", keywordIds.size(),
+                            "candidates", candidates.size()));
+        }
+
         // 排序调用 Rerank 模型；失败时保留融合排序，这次结果也不写缓存，避免降级的排序被复用
         long rerankedTokens = -1;
         boolean rerankFailed = false;
         if (rerankRequested && !isImageQuery && rerankConfigService != null) {
-            Reranked reranked = rerankCandidates(effectiveQuery, candidates, topK);
+            Optional<RerankConfig> activeRerank = rerankConfigService.getActiveConfig();
+            String rerankModelName = activeRerank.map(RerankConfig::getModelName).orElse("未配置");
+            String rerankStepId = traceCtx != null
+                    ? traceCtx.startStep("RERANK", "Rerank 模型重排", rerankModelName + " · 候选 " + candidates.size() + " 条",
+                            Map.of("model", rerankModelName, "inputCandidates", candidates.size()))
+                    : null;
+            Reranked reranked = rerankCandidates(activeRerank, effectiveQuery, candidates, topK);
             if (reranked != null) {
                 candidates = reranked.chunks();
                 rerankedTokens = reranked.tokens();
+                if (rerankStepId != null) {
+                    traceCtx.finishStep(rerankStepId,
+                            String.format("%s · 输出 %d 条", rerankModelName, candidates.size()),
+                            Map.of("outputCandidates", candidates.size(), "tokens", rerankedTokens));
+                }
             } else {
                 rerankFailed = true;
+                if (rerankStepId != null) {
+                    traceCtx.failStep(rerankStepId, "Rerank 调用失败或未配置，已降级为融合排序", null);
+                }
             }
         }
 
@@ -873,9 +941,8 @@ public class SpringAiKnowledgeBaseProvider implements KnowledgeBaseProvider {
     }
 
     /** 调用当前生效的 Rerank 模型重排候选切片；没有生效配置或调用失败时返回 null */
-    private Reranked rerankCandidates(String query, List<ScoredChunk> candidates, int topK) {
-        Optional<RerankConfig> config = rerankConfigService.getActiveConfig();
-        if (config.isEmpty()) {
+    private Reranked rerankCandidates(Optional<RerankConfig> config, String query, List<ScoredChunk> candidates, int topK) {
+        if (config == null || config.isEmpty()) {
             log.warn("知识库选择了 Rerank 模型模式，但模型网关没有生效的 Rerank 配置，退回融合排序");
             return null;
         }

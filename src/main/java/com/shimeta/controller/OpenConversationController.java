@@ -2,6 +2,7 @@ package com.shimeta.controller;
 
 import com.shimeta.model.Agent;
 import com.shimeta.model.AgentConversation;
+import com.shimeta.model.AgentConversationMessage;
 import com.shimeta.model.ApiResponse;
 import com.shimeta.repository.AgentConversationRepository;
 import com.shimeta.repository.AgentRepository;
@@ -84,7 +85,22 @@ public class OpenConversationController {
             return error(HttpStatus.FORBIDDEN, "agent_out_of_scope", "无权查看该会话消息");
         }
         usageRecorder.record("conversations.messages", conv.getAgentId(), id, 200, null, 10, 0, 0, null);
-        return ResponseEntity.ok(ApiResponse.ok(messageRepository.findByConversationIdOrderByCreatedAtAsc(id)));
+        // 开放接口不返回内部调用链路详情 traceJson（避免泄露内部知识库切片/通道路由）
+        List<AgentConversationMessage> sanitized = messageRepository.findByConversationIdOrderByCreatedAtAsc(id).stream()
+                .map(m -> {
+                    AgentConversationMessage copy = new AgentConversationMessage();
+                    copy.setId(m.getId());
+                    copy.setConversationId(m.getConversationId());
+                    copy.setRole(m.getRole());
+                    copy.setContent(m.getContent());
+                    copy.setModel(m.getModel());
+                    copy.setLatencyMs(m.getLatencyMs());
+                    copy.setTokensUsed(m.getTokensUsed());
+                    copy.setCreatedAt(m.getCreatedAt());
+                    return copy;
+                })
+                .toList();
+        return ResponseEntity.ok(ApiResponse.ok(sanitized));
     }
 
     @DeleteMapping("/{id}")

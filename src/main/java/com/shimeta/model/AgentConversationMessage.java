@@ -31,6 +31,8 @@ public class AgentConversationMessage {
 
     private Long latencyMs;
     private Integer tokensUsed;
+    @Column(name = "trace_json", columnDefinition = "TEXT")
+    private String traceJson;
     private LocalDateTime createdAt;
 
     public AgentConversationMessage() {
@@ -90,6 +92,14 @@ public class AgentConversationMessage {
 
     public void setTokensUsed(Integer tokensUsed) {
         this.tokensUsed = tokensUsed;
+    }
+
+    public String getTraceJson() {
+        return traceJson;
+    }
+
+    public void setTraceJson(String traceJson) {
+        this.traceJson = traceJson;
     }
 
     public LocalDateTime getCreatedAt() {
