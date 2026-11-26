@@ -30,9 +30,11 @@
 - `conversation_id`：续接多轮对话时传上一轮返回的会话 ID
 - `user` / `end_user`：终端用户标识，同一会话必须保持一致
 
-阻塞模式返回 `conversation_id`、`message_id`、`reply`、`images`、`model`、`tool_called`、`tokens_used`、`latency_ms`、`request_id`；流式模式事件为 `message`、`message_end`（含 `images` 与 `metadata`）、`guardrail`、`error`。自定义 HTTP 协议通道不支持流式，会一次性推送。中途停止直接断开连接即可（`POST /open/v1/chat-messages/{taskId}/stop` 返回 `not_supported`）。
+阻塞模式返回 `conversation_id`、`message_id`、`reply`、`images`、`videos`、`model`、`tool_called`、`tokens_used`、`latency_ms`、`request_id`；流式模式事件为 `message`、`message_end`（含 `images`、`videos` 与 `metadata`）、`guardrail`、`error`。自定义 HTTP 协议通道不支持流式，会一次性推送。中途停止直接断开连接即可（`POST /open/v1/chat-messages/{taskId}/stop` 返回 `not_supported`）。
 
-**FAQ 回答附图（`images`）**：命中带图 FAQ 且相似度达到阈值时，返回最高分 FAQ 的完整图片 URL 数组；域名经反向代理对外时需配置 `app.public-base-url`（环境变量 `APP_PUBLIC_BASE_URL`）。
+**FAQ 回答附图（`images`）与视频（`videos`）**：命中带图片或视频的 FAQ 且相似度达到阈值时，`images`（最多 9 张）和 `videos`（最多 3 个）分别返回最高分 FAQ 的完整媒体 URL 数组（站内文件自动补全根地址，外部 `http(s)://` 链接原样保留）；域名经反向代理对外时需配置 `app.public-base-url`（环境变量 `APP_PUBLIC_BASE_URL`）。
+
+**后台调用链路排查**：平台管理员在「构建 → 工具」临时开启「记录开放接口调用链路」后，服务端会静默记录客户端调用的各阶段耗时到智能体「日志」中，**不改动客户端请求参数与返回体结构**（也不会向客户端或 `/open/v1/conversations/{id}/messages` 暴露内部链路细节），默认关闭以保持零额外开销。
 
 ## 4. 接入终端（`X-Client-Id`）
 

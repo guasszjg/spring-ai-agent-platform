@@ -785,23 +785,56 @@ public class AssistantExtendedQueryTools {
                 .orElseThrow(() -> new IllegalArgumentException("未找到 FAQ「" + ref + "」"));
         Map<String, Object> detail = faqSummary(faq);
         detail.put("answer", truncate(faq.getAnswer(), 1000));
+        detail.put("imageUrls", parseStringArray(faq.getImageUrls()));
+        detail.put("videoUrls", parseStringArray(faq.getVideoUrls()));
         return ok(Map.of("type", "faq",
                 "knowledgeBase", Map.of("id", kb.getId(), "name", kb.getName(), "link", AssistantQueryTools.knowledgeBaseLink(kb.getId())),
                 "item", detail));
     }
 
     private Map<String, Object> faqSummary(KnowledgeFaq f) {
+        List<String> images = parseStringArray(f.getImageUrls());
+        List<String> videos = parseStringArray(f.getVideoUrls());
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", f.getId());
         m.put("question", truncate(f.getQuestion(), 140));
         m.put("answer", truncate(f.getAnswer(), 240));
         m.put("category", f.getCategory());
         m.put("contentType", f.getContentType());
-        m.put("hasImages", f.getImageUrls() != null && !f.getImageUrls().isBlank() && !"[]".equals(f.getImageUrls().trim()));
+        m.put("hasImages", !images.isEmpty());
+        m.put("imageCount", images.size());
+        m.put("hasVideos", !videos.isEmpty());
+        m.put("videoCount", videos.size());
         m.put("enabled", !Boolean.FALSE.equals(f.getEnabled()));
         m.put("hitCount", f.getHitCount() == null ? 0L : f.getHitCount());
         m.put("updatedAt", format(f.getUpdatedAt()));
         return m;
+    }
+
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON_MAPPER = new com.fasterxml.jackson.databind.ObjectMapper();
+
+    private List<String> parseStringArray(String rawJson) {
+        if (rawJson == null || rawJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            JsonNode node = JSON_MAPPER.readTree(rawJson);
+            if (!node.isArray()) {
+                return List.of();
+            }
+            List<String> list = new ArrayList<>();
+            for (JsonNode item : node) {
+                if (item != null && !item.isNull()) {
+                    String s = item.asText("").trim();
+                    if (!s.isEmpty()) {
+                        list.add(s);
+                    }
+                }
+            }
+            return list;
+        } catch (Exception e) {
+            return List.of();
+        }
     }
 
     // ---------- 11. user (SUPER_ADMIN ONLY) ----------
@@ -980,6 +1013,10 @@ public class AssistantExtendedQueryTools {
                     if (lastAssistant != null) {
                         item.put("lastAssistantPreview", truncate(lastAssistant.getContent(), 160));
                         item.put("lastLatencyMs", lastAssistant.getLatencyMs());
+                        Map<String, Object> traceSummary = summarizeTrace(lastAssistant.getTraceJson());
+                        if (traceSummary != null) {
+                            item.put("lastTraceSummary", traceSummary);
+                        }
                         boolean suspected = isSuspectedFailureReply(lastAssistant.getContent());
                         if (suspected) {
                             suspectedFailures++;
@@ -1103,6 +1140,7 @@ public class AssistantExtendedQueryTools {
                 int failedCount = 0;
                 int slowCount = 0;
                 String sampleError = null;
+                Map<String, Object> latestTraceSummary = null;
                 for (int i = 0; i < Math.min(records.size(), 5); i++) {
                     Optional<ConversationDetail> detailOpt = safeGetDetail(agent, actor, records.get(i).getId());
                     if (detailOpt.isEmpty()) {
@@ -1111,6 +1149,9 @@ public class AssistantExtendedQueryTools {
                     AgentConversationMessage lastAssistant = lastMessageByRole(detailOpt.get().getMessages(), "assistant");
                     if (lastAssistant == null) {
                         continue;
+                    }
+                    if (latestTraceSummary == null && lastAssistant.getTraceJson() != null) {
+                        latestTraceSummary = summarizeTrace(lastAssistant.getTraceJson());
                     }
                     if (isSuspectedFailureReply(lastAssistant.getContent())) {
                         failedCount++;
@@ -1129,7 +1170,32 @@ public class AssistantExtendedQueryTools {
                 } else if (slowCount > 0) {
                     extra.add(check("近期对话日志", "WARN",
                             "最近抽查的对话中有 " + slowCount + " 条响应耗时超过 15 秒",
-                            "检查是否开启了深度思考、工具轮数过多，或模型通道响应偏慢"));
+                            "可在调试页打开「链路开」或由超管在「构建 → 工具」临时开启「记录开放接口调用链路」，精确定位慢在哪个阶段"));
+                }
+                if (latestTraceSummary != null) {
+                    String traceStatus = String.valueOf(latestTraceSummary.getOrDefault("status", "ok"));
+                    Object totalMs = latestTraceSummary.get("totalDurationMs");
+                    Object ttftMs = latestTraceSummary.get("firstTokenMs");
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> slowest = (Map<String, Object>) latestTraceSummary.get("slowestStep");
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> errStep = (Map<String, Object>) latestTraceSummary.get("errorStep");
+                    StringBuilder desc = new StringBuilder("最近一次调用链路总耗时 ")
+                            .append(totalMs != null ? totalMs + "ms" : "-");
+                    if (ttftMs != null) {
+                        desc.append("，首字延迟 ").append(ttftMs).append("ms");
+                    }
+                    if (errStep != null) {
+                        desc.append("；异常节点「").append(errStep.get("name")).append("」：").append(errStep.get("error"));
+                        extra.add(check("调用链路耗时分析", "WARN", desc.toString(),
+                                "到智能体「日志」展开该会话的「调用链路」查看节点详情与入参报错"));
+                    } else if (slowest != null) {
+                        desc.append("；主要耗时节点「").append(slowest.get("name")).append("」（")
+                                .append(slowest.get("durationMs")).append("ms，占 ").append(slowest.get("sharePercent")).append("%）");
+                        boolean isSlow = totalMs instanceof Number n && n.longValue() > 8_000L;
+                        extra.add(check("调用链路耗时分析", isSlow ? "WARN" : "PASS", desc.toString(),
+                                isSlow ? "针对最慢节点检查向量模型/Rerank/外部工具耗时或切换更快的模型通道" : null));
+                    }
                 }
             } catch (RuntimeException ignored) {
                 // 日志模块异常时不阻断主诊断流程
@@ -1169,6 +1235,80 @@ public class AssistantExtendedQueryTools {
             return conversationService.getDetail(agent, actor, conversationId);
         } catch (RuntimeException e) {
             return Optional.empty();
+        }
+    }
+
+    /** 将持久化的调用链路 JSON 压缩为高价值诊断摘要（总耗时、TTFT、最慢叶子节点、异常节点与步骤清单） */
+    Map<String, Object> summarizeTrace(String traceJson) {
+        if (traceJson == null || traceJson.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode root = JSON_MAPPER.readTree(traceJson);
+            if (!root.isObject()) {
+                return null;
+            }
+            long totalMs = root.path("totalDurationMs").asLong(0L);
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("status", root.path("status").asText("ok"));
+            out.put("totalDurationMs", totalMs);
+            if (root.hasNonNull("firstTokenMs")) {
+                out.put("firstTokenMs", root.get("firstTokenMs").asLong());
+            }
+            if (root.hasNonNull("channel")) {
+                out.put("channel", root.get("channel").asText());
+            }
+            if (root.hasNonNull("model")) {
+                out.put("model", root.get("model").asText());
+            }
+            if (root.hasNonNull("failoverFrom")) {
+                out.put("failoverFrom", root.get("failoverFrom").asText());
+            }
+            JsonNode stepsNode = root.path("steps");
+            if (stepsNode.isArray() && !stepsNode.isEmpty()) {
+                Set<String> parentIds = new java.util.HashSet<>();
+                for (JsonNode s : stepsNode) {
+                    if (s.hasNonNull("parentId")) {
+                        parentIds.add(s.get("parentId").asText());
+                    }
+                }
+                List<String> stepBriefs = new ArrayList<>();
+                JsonNode slowest = null;
+                long slowestDur = -1;
+                JsonNode errNode = null;
+                for (JsonNode s : stepsNode) {
+                    String id = s.path("id").asText();
+                    String name = s.path("name").asText();
+                    long dur = s.path("durationMs").asLong(0L);
+                    String status = s.path("status").asText("ok");
+                    stepBriefs.add(name + " (" + dur + "ms" + ("error".equals(status) ? ", 失败" : "") + ")");
+                    if ("error".equals(status)) {
+                        errNode = s;
+                    }
+                    if (!parentIds.contains(id) && dur > slowestDur) {
+                        slowestDur = dur;
+                        slowest = s;
+                    }
+                }
+                out.put("stepCount", stepsNode.size());
+                out.put("steps", stepBriefs);
+                if (slowest != null) {
+                    Map<String, Object> sm = new LinkedHashMap<>();
+                    sm.put("name", slowest.path("name").asText());
+                    sm.put("stage", slowest.path("stage").asText());
+                    sm.put("durationMs", slowestDur);
+                    sm.put("sharePercent", totalMs > 0 ? Math.min(100, Math.round(slowestDur * 100.0 / totalMs)) : 0);
+                    out.put("slowestStep", sm);
+                }
+                if (errNode != null) {
+                    out.put("errorStep", Map.of(
+                            "name", errNode.path("name").asText(),
+                            "error", truncate(errNode.path("error").asText("执行异常"), 160)));
+                }
+            }
+            return out;
+        } catch (Exception e) {
+            return null;
         }
     }
 

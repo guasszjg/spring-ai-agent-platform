@@ -116,12 +116,17 @@ public class AssistantWriteTools {
                                 "description", prop("string", "知识库用途描述，可选")), "name"),
                         this::draftCreateKnowledgeBase),
                 AssistantTool.write(ADD_FAQ, "生成添加 FAQ 操作",
-                        "向知识库添加一条问答对（生成待确认操作卡片）。一次调用只添加一条。",
+                        "向知识库添加一条问答对（生成待确认操作卡片）。一次调用只添加一条；支持可选附带联网图片链接（最多 9 张）和外部视频链接（最多 3 个）。",
                         schema(Map.of(
                                 "knowledgeBase", prop("string", "知识库名称或 ID；知识库还在待确认的创建卡片中时，传该卡片的 pendingActionId（act- 开头）"),
                                 "question", prop("string", "问题"),
                                 "answer", prop("string", "答案"),
-                                "category", prop("string", "FAQ 分类，可选")), "knowledgeBase", "question", "answer"),
+                                "category", prop("string", "FAQ 分类，可选"),
+                                "imageUrls", Map.of("type", "array", "items", Map.of("type", "string"),
+                                        "description", "回答附图 URL 列表（支持 http(s):// 联网图片或 /uploads/ 站内地址，最多 9 张），可选"),
+                                "videoUrls", Map.of("type", "array", "items", Map.of("type", "string"),
+                                        "description", "回答视频 URL 列表（支持 http(s):// 外部直链或 /uploads/ 站内地址，最多 3 个），可选")),
+                                "knowledgeBase", "question", "answer"),
                         this::draftAddFaq),
                 AssistantTool.write(BIND_KNOWLEDGE_BASE, "生成绑定知识库操作",
                         "给智能体绑定或解绑一个知识库（生成待确认操作卡片，卡片展示修改前后）。",
@@ -283,11 +288,19 @@ public class AssistantWriteTools {
         String question = required(args, "question", QUESTION_MAX, "问题");
         String answer = required(args, "answer", ANSWER_MAX, "答案");
         String category = text(args, "category");
+        List<String> imageUrls = parseMediaUrls(args, "imageUrls", KnowledgeBaseService.MAX_FAQ_IMAGES, "图片");
+        List<String> videoUrls = parseMediaUrls(args, "videoUrls", KnowledgeBaseService.MAX_FAQ_VIDEOS, "视频");
         Map<String, Object> payload = new LinkedHashMap<>();
         kb.putInto(payload, "knowledgeBaseId", "knowledgeBaseFrom");
         payload.put("question", question);
         payload.put("answer", answer);
         payload.put("category", category);
+        if (!imageUrls.isEmpty()) {
+            payload.put("imageUrls", imageUrls);
+        }
+        if (!videoUrls.isEmpty()) {
+            payload.put("videoUrls", videoUrls);
+        }
         List<Map<String, Object>> fields = new ArrayList<>();
         fields.add(field("知识库", kb.display()));
         fields.add(field("问题", question));
@@ -295,7 +308,40 @@ public class AssistantWriteTools {
         if (category != null) {
             fields.add(field("分类", category));
         }
+        if (!imageUrls.isEmpty()) {
+            fields.add(field("附图链接", imageUrls.size() + " 张：" + String.join("、", imageUrls)));
+        }
+        if (!videoUrls.isEmpty()) {
+            fields.add(field("视频链接", videoUrls.size() + " 个：" + String.join("、", videoUrls)));
+        }
         return pending(ctx, ADD_FAQ, "W1", "添加 FAQ 到「" + kb.name() + "」", payload, preview(fields, null, null), "KNOWLEDGE_BASE");
+    }
+
+    static List<String> parseMediaUrls(JsonNode args, String field, int maxCount, String label) {
+        if (args == null || !args.has(field) || args.get(field).isNull()) {
+            return List.of();
+        }
+        JsonNode arr = args.get(field);
+        if (!arr.isArray()) {
+            throw new IllegalArgumentException(field + " 必须为字符串数组");
+        }
+        List<String> result = new ArrayList<>();
+        for (JsonNode item : arr) {
+            if (item == null || item.isNull()) continue;
+            String url = item.asText("").trim();
+            if (url.isEmpty()) continue;
+            String lower = url.toLowerCase(java.util.Locale.ROOT);
+            if (!url.startsWith("/uploads/") && !lower.startsWith("http://") && !lower.startsWith("https://")) {
+                throw new IllegalArgumentException(label + "链接仅支持 http://、https:// 或站内 /uploads/ 地址：" + url);
+            }
+            if (!result.contains(url)) {
+                result.add(url);
+            }
+        }
+        if (result.size() > maxCount) {
+            throw new IllegalArgumentException("单条 FAQ 最多关联 " + maxCount + " 个" + label + "附件");
+        }
+        return result;
     }
 
     Map<String, Object> draftBindKnowledgeBase(JsonNode args, ToolContext ctx) {
@@ -524,6 +570,12 @@ public class AssistantWriteTools {
         req.setAnswer(p.path("answer").asText());
         if (p.hasNonNull("category")) {
             req.setCategory(p.get("category").asText());
+        }
+        if (p.has("imageUrls") && p.get("imageUrls").isArray()) {
+            req.setImageUrls(parseMediaUrls(p, "imageUrls", KnowledgeBaseService.MAX_FAQ_IMAGES, "图片"));
+        }
+        if (p.has("videoUrls") && p.get("videoUrls").isArray()) {
+            req.setVideoUrls(parseMediaUrls(p, "videoUrls", KnowledgeBaseService.MAX_FAQ_VIDEOS, "视频"));
         }
         String kbId = resolveId(p, "knowledgeBaseId", "knowledgeBaseFrom", actor);
         KnowledgeFaq faq = knowledgeBaseService.createFaq(kbId, req, actor);

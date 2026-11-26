@@ -1,5 +1,5 @@
 {
-  "version": "1.1.0",
+  "version": "1.3.0",
   "menus": [
     {
       "id": "metrics",
@@ -25,7 +25,7 @@
           "summary": "编排提示词/版本/变量/主备通道路由/记忆/思考/知识库/技能/工具，卡片与列表视图",
           "superAdminOnly": false,
           "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"],
-          "subpages": ["编排", "编排与调试", "调试", "调试预览", "版本", "模型设置", "访问 API", "日志", "监控"]
+          "subpages": ["编排", "编排与调试", "调试", "调试预览", "对话预览", "调用链路", "版本", "模型设置", "访问入口", "访问 API", "日志", "监控"]
         },
         {
           "id": "templates",
@@ -138,7 +138,13 @@
     "执行模式",
     "问答模式",
     "发布上线",
-    "模型与通道路由"
+    "模型与通道路由",
+    "调用链路",
+    "链路追踪",
+    "链路开",
+    "链路关",
+    "记录开放接口调用链路",
+    "贴边隐藏"
   ],
   "capabilities": [
     { "id": "overview.usage.summary", "menu": "监控 › 概览", "tabId": "overview", "action": "查询 Token 总量、输入输出与预估成本", "handling": "READ", "tool": "get_usage_summary", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "概览" },
@@ -172,7 +178,8 @@
     { "id": "agent.prompt.versions.list", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "查看智能体提示词历史版本与差异对比", "handling": "READ", "tool": "list_resources", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/编排与调试" },
     { "id": "agent.prompt.versions.rollback", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "回滚智能体提示词到历史版本", "handling": "WRITE", "risk": "B", "tool": "rollback_agent_prompt", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/编排与调试" },
     { "id": "agent.publish", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "将调试页提示词草稿发布上线", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/编排与调试" },
-    { "id": "agent.logs.view", "menu": "构建 › 智能体 › 日志", "tabId": "agents", "action": "查看智能体历史对话与失败调用日志", "handling": "READ", "tool": "get_agent_logs", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/日志与监控" },
+    { "id": "agent.logs.view", "menu": "构建 › 智能体 › 日志", "tabId": "agents", "action": "查看智能体历史对话、失败调用日志与调用链路耗时摘要", "handling": "READ", "tool": "get_agent_logs", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/日志与监控" },
+    { "id": "agent.trace.view", "menu": "构建 › 智能体 › 调用链路", "tabId": "agents", "action": "使用调试页调用链路瀑布图与实时节点排查卡点与高延迟", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/编排与调试" },
     { "id": "agent.monitor.view", "menu": "构建 › 智能体 › 监控", "tabId": "agents", "action": "查看单个智能体调用量、成功率与耗时趋势", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/日志与监控" },
     { "id": "agent.slow_reply.troubleshoot", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "排查智能体回复慢的原因与优化方法", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "常见问题/回复很慢" },
     { "id": "agent.cost.reference", "menu": "构建 › 智能体", "tabId": "agents", "action": "了解对话 Token 消耗、成本与延迟参考", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "4. 成本与延迟参考" },
@@ -195,6 +202,7 @@
     { "id": "mcp.review", "menu": "构建 › 工具 › MCP 服务", "tabId": "tools", "action": "审核启用或停用 MCP 工具", "handling": "GUIDE", "roles": ["SUPER_ADMIN"], "docAnchor": "工具" },
     { "id": "mcp.delete", "menu": "构建 › 工具 › MCP 服务", "tabId": "tools", "action": "删除 MCP 服务", "handling": "WRITE", "risk": "D", "tool": "delete_resource", "roles": ["SUPER_ADMIN"], "docAnchor": "工具" },
     { "id": "tools.share_public.toggle", "menu": "构建 › 工具", "tabId": "tools", "action": "允许或关闭「公开」分享链接", "handling": "DOC", "roles": ["SUPER_ADMIN"], "docAnchor": "工具" },
+    { "id": "tools.open_api_trace.toggle", "menu": "构建 › 工具", "tabId": "tools", "action": "开启或关闭「记录开放接口调用链路」（后台排查客户端慢请求）", "handling": "DOC", "roles": ["SUPER_ADMIN"], "docAnchor": "工具" },
 
     { "id": "skill.list", "menu": "构建 › 技能库", "tabId": "skills", "action": "查询可用技能（Skill）列表与使用统计", "handling": "READ", "tool": "list_skills", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "技能库" },
     { "id": "skill.explain", "menu": "构建 › 技能库", "tabId": "skills", "action": "了解技能按需加载原理、版本管理与导入导出", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "技能库" },
@@ -205,9 +213,10 @@
     { "id": "kb.list", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "查询当前用户可见的知识库列表", "handling": "READ", "tool": "list_knowledge_bases", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "知识库/两种引擎" },
     { "id": "kb.create", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "创建平台内置引擎自建知识库", "handling": "WRITE", "risk": "A", "tool": "create_knowledge_base", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "知识库/两种引擎" },
     { "id": "kb.documents.list", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "查询知识库内文档列表、索引状态与失败原因", "handling": "READ", "tool": "list_knowledge_documents", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "知识库/文档与 FAQ" },
-    { "id": "kb.faq.add", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "向知识库添加一条 FAQ 问答对", "handling": "WRITE", "risk": "A", "tool": "add_faq", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "知识库/文档与 FAQ" },
-    { "id": "kb.faq.list", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "查看知识库 FAQ 列表与附图说明", "handling": "READ", "tool": "list_resources", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "知识库/文档与 FAQ" },
-    { "id": "kb.faq.update", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "修改知识库 FAQ 内容", "handling": "WRITE", "risk": "B", "tool": "update_faq", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "知识库/文档与 FAQ" },
+    { "id": "kb.faq.add", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "向知识库添加一条 FAQ 问答对（支持联网图片与视频链接）", "handling": "WRITE", "risk": "A", "tool": "add_faq", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "知识库/文档与 FAQ" },
+    { "id": "kb.faq.list", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "查看知识库 FAQ 列表与附图/视频说明", "handling": "READ", "tool": "list_resources", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "知识库/文档与 FAQ" },
+    { "id": "kb.faq.update", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "修改知识库 FAQ 内容、图片或视频链接", "handling": "WRITE", "risk": "B", "tool": "update_faq", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "知识库/文档与 FAQ" },
+    { "id": "kb.faq.media", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "了解 FAQ 图片（最多 9 张，本地+联网）与视频（最多 3 个，≤500MB 本地+外链）及自动轮播连播说明", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "知识库/文档与 FAQ" },
     { "id": "kb.faq.delete", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "删除知识库 FAQ", "handling": "WRITE", "risk": "D", "tool": "delete_resource", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "知识库/文档与 FAQ" },
     { "id": "kb.documents.upload", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "上传文档文件到知识库（不支持在助手面板上传）", "handling": "GUIDE", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "知识库/文档与 FAQ" },
     { "id": "kb.documents.formats", "menu": "数据 › 自建知识库", "tabId": "knowledge", "action": "了解支持上传的文件格式、15MB 与单批 5 个限制", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "2. 知识库/2.2 支持的文件格式（自建知识库）" },

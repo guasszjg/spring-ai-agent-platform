@@ -22,7 +22,7 @@
 - 默认端口 `8080`，控制台地址 `http://<host>:8080`。
 
 常用配置项（`application.properties`）：
-- `spring.servlet.multipart.max-file-size`：HTTP 层单文件上限（默认 20MB；知识库业务上限 15MB）
+- `spring.servlet.multipart.max-file-size` / `max-request-size`：HTTP 层上传上限（默认 `520MB` / `600MB`，用于放行最大 500MB 的 FAQ 本地视频；业务层仍限制知识库文档 15MB、FAQ 图片 10MB）。若前端经 Nginx 反向代理，请同步配置 `client_max_body_size 520M;`。
 - `server.servlet.session.timeout`：控制台会话超时（默认 30m）
 - `app.assistant.rate-limit-per-minute` / `max-concurrent` / `retention-days`：AI 助手限流（20次/分）、最大并发（16）、历史保留天数（90天）
 - `app.storage.local.root-dir`：知识库上传文件本地归档目录（默认 `./data/kb-files`）

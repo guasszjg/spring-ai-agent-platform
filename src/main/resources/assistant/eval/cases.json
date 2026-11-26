@@ -6964,5 +6964,143 @@
       ]
     },
     "referenceAnswer": "参考能力项「允许或关闭「公开」分享链接」（菜单：构建 › 工具，文档锚点：工具），需严格按平台文档说明，不编造菜单或功能。"
+  },
+  {
+    "id": "trace-s-01",
+    "category": "使用问答",
+    "capabilityId": "agent.trace.view",
+    "variant": "standard",
+    "role": "DEVELOPER",
+    "question": "智能体调试页怎么查看调用链路，排查卡在向量模型还是大模型？",
+    "expect": {
+      "toolsAny": [
+        "search_platform_docs"
+      ],
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0,
+      "answerContainsAny": [
+        "调用链路",
+        "链路开",
+        "瀑布图"
+      ]
+    },
+    "referenceAnswer": "参考能力项「使用调试页调用链路瀑布图与实时节点排查卡点与高延迟」（菜单：构建 › 智能体 › 调用链路，文档锚点：智能体/编排与调试），说明默认关闭、点「链路开」开启并切到「调用链路」子标签页或日志抽屉查看。"
+  },
+  {
+    "id": "trace-p-02",
+    "category": "使用问答",
+    "capabilityId": "agent.trace.view",
+    "variant": "paraphrase",
+    "role": "DEVELOPER",
+    "question": "问答很慢不知道哪一步耗时高，调试台有详情可以看各阶段耗时吗？",
+    "expect": {
+      "toolsAny": [
+        "search_platform_docs"
+      ],
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0,
+      "answerContainsAny": [
+        "调用链路",
+        "耗时",
+        "向量"
+      ]
+    },
+    "referenceAnswer": "参考能力项「使用调试页调用链路瀑布图与实时节点排查卡点与高延迟」（菜单：构建 › 智能体 › 调用链路，文档锚点：智能体/编排与调试）。"
+  },
+  {
+    "id": "trace-s-03",
+    "category": "使用问答",
+    "capabilityId": "tools.open_api_trace.toggle",
+    "variant": "standard",
+    "role": "SUPER_ADMIN",
+    "question": "客户端调用开放 API 很慢，怎么开启后台的开放接口调用链路记录？",
+    "expect": {
+      "toolsAny": [
+        "search_platform_docs"
+      ],
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0,
+      "answerContainsAny": [
+        "记录开放接口调用链路",
+        "工具",
+        "日志"
+      ]
+    },
+    "referenceAnswer": "参考能力项「开启或关闭「记录开放接口调用链路」」（菜单：构建 › 工具，文档锚点：工具），说明默认关闭、不改变客户端入参和响应结构，开启后在智能体日志抽屉查看。"
+  },
+  {
+    "id": "trace-p-04",
+    "category": "使用问答",
+    "capabilityId": "tools.open_api_trace.toggle",
+    "variant": "paraphrase",
+    "role": "SUPER_ADMIN",
+    "question": "开启开放接口调用链路会影响客户端 API 返回格式吗？开关在哪里？",
+    "expect": {
+      "toolsAny": [
+        "search_platform_docs"
+      ],
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0,
+      "answerContainsAny": [
+        "工具",
+        "不",
+        "默认关闭"
+      ]
+    },
+    "referenceAnswer": "参考能力项「开启或关闭「记录开放接口调用链路」」（菜单：构建 › 工具，文档锚点：工具），不改变客户端请求和返回结构。"
+  },
+  {
+    "id": "faq-media-s-01",
+    "category": "使用问答",
+    "capabilityId": "kb.faq.media",
+    "variant": "standard",
+    "role": "DEVELOPER",
+    "question": "知识库 FAQ 支持上传视频和联网图片吗？数量和大小有什么限制？",
+    "expect": {
+      "toolsAny": [
+        "search_platform_docs"
+      ],
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0,
+      "answerContainsAny": [
+        "9",
+        "3",
+        "500MB"
+      ]
+    },
+    "referenceAnswer": "参考能力项「了解 FAQ 图片与视频附件说明」（菜单：数据 › 自建知识库，文档锚点：知识库/文档与 FAQ），最多 9 张图片（本地+联网合计）和 3 个视频（单个本地 ≤500MB 或外链）。"
+  },
+  {
+    "id": "faq-media-p-02",
+    "category": "使用问答",
+    "capabilityId": "kb.faq.media",
+    "variant": "paraphrase",
+    "role": "DEVELOPER",
+    "question": "FAQ 关联多张图片和多个视频时，调试页和免登录分享页是怎么播放展示的？",
+    "expect": {
+      "toolsAny": [
+        "search_platform_docs"
+      ],
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0,
+      "answerContainsAny": [
+        "轮播",
+        "自动",
+        "连播"
+      ]
+    },
+    "referenceAnswer": "参考能力项「了解 FAQ 图片与视频附件说明」（菜单：数据 › 自建知识库，文档锚点：知识库/文档与 FAQ），多图 3 秒自动轮播切换、视频自动播放且播完自动连播切换下一个。"
   }
 ]

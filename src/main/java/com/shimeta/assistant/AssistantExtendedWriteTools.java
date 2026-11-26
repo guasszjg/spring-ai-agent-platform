@@ -263,13 +263,17 @@ public class AssistantExtendedWriteTools {
                                         "weighted_score", "reranking_model")), "knowledgeBase"),
                         this::draftUpdateKbSettings),
                 AssistantTool.write(UPDATE_FAQ, "生成修改 FAQ 操作",
-                        "修改知识库中已有 FAQ 的问题、答案、分类或启用状态（B 级修改对比卡片）。",
+                        "修改知识库中已有 FAQ 的问题、答案、分类、图片/视频链接或启用状态（B 级修改对比卡片）。",
                         schema(Map.of(
                                 "knowledgeBase", prop("string", "知识库名称或 ID"),
                                 "faqId", prop("string", "FAQ ID 或原问题文本"),
                                 "question", prop("string", "新问题，可选"),
                                 "answer", prop("string", "新答案，可选"),
                                 "category", prop("string", "新分类，可选"),
+                                "imageUrls", Map.of("type", "array", "items", Map.of("type", "string"),
+                                        "description", "新的附图 URL 列表（最多 9 张，传空数组 [] 清空），可选"),
+                                "videoUrls", Map.of("type", "array", "items", Map.of("type", "string"),
+                                        "description", "新的视频 URL 列表（最多 3 个，传空数组 [] 清空），可选"),
                                 "enabled", prop("boolean", "是否启用，可选")), "knowledgeBase", "faqId"),
                         this::draftUpdateFaq),
                 AssistantTool.write(DISABLE_SHARE_LINK, "生成停用分享链接操作",
@@ -828,12 +832,56 @@ public class AssistantExtendedWriteTools {
             pb.addDiff("状态", !Boolean.FALSE.equals(faq.getEnabled()) ? "启用" : "停用", enabled ? "启用" : "停用");
             changes++;
         }
+        if (args != null && args.has("imageUrls") && !args.get("imageUrls").isNull()) {
+            List<String> newImages = AssistantWriteTools.parseMediaUrls(args, "imageUrls", KnowledgeBaseService.MAX_FAQ_IMAGES, "图片");
+            List<String> oldImages = parseJsonStringList(faq.getImageUrls());
+            if (!newImages.equals(oldImages)) {
+                payload.put("imageUrls", newImages);
+                pb.addDiff("附图", oldImages.isEmpty() ? "无" : oldImages.size() + " 张", newImages.isEmpty() ? "无" : newImages.size() + " 张");
+                changes++;
+            }
+        }
+        if (args != null && args.has("videoUrls") && !args.get("videoUrls").isNull()) {
+            List<String> newVideos = AssistantWriteTools.parseMediaUrls(args, "videoUrls", KnowledgeBaseService.MAX_FAQ_VIDEOS, "视频");
+            List<String> oldVideos = parseJsonStringList(faq.getVideoUrls());
+            if (!newVideos.equals(oldVideos)) {
+                payload.put("videoUrls", newVideos);
+                pb.addDiff("视频", oldVideos.isEmpty() ? "无" : oldVideos.size() + " 个", newVideos.isEmpty() ? "无" : newVideos.size() + " 个");
+                changes++;
+            }
+        }
         if (changes == 0) {
             throw new IllegalArgumentException("FAQ 内容无变化，无需修改");
         }
-        payload.put("baselineSha256", sha256(faq.getQuestion() + "|" + faq.getAnswer() + "|" + faq.getCategory() + "|" + faq.getEnabled()));
+        payload.put("baselineSha256", faqFingerprint(faq));
         return support.createPendingCard(ctx, UPDATE_FAQ, "B",
                 "修改 FAQ：「" + kb.getName() + "」", payload, pb.build(), "KNOWLEDGE_BASE");
+    }
+
+    private String faqFingerprint(KnowledgeFaq faq) {
+        return sha256(faq.getQuestion() + "|" + faq.getAnswer() + "|" + faq.getCategory() + "|" + faq.getEnabled()
+                + "|" + blankOr(faq.getImageUrls(), "") + "|" + blankOr(faq.getVideoUrls(), ""));
+    }
+
+    private List<String> parseJsonStringList(String rawJson) {
+        if (rawJson == null || rawJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            JsonNode node = objectMapper.readTree(rawJson);
+            if (!node.isArray()) {
+                return List.of();
+            }
+            List<String> list = new ArrayList<>();
+            for (JsonNode n : node) {
+                if (n != null && !n.isNull() && !n.asText("").isBlank()) {
+                    list.add(n.asText("").trim());
+                }
+            }
+            return list;
+        } catch (Exception e) {
+            return List.of();
+        }
     }
 
     Map<String, Object> draftRollbackAgentPrompt(JsonNode args, ToolContext ctx) {
@@ -1629,7 +1677,7 @@ public class AssistantExtendedWriteTools {
         String faqId = p.path("faqId").asText();
         KnowledgeFaq current = resolveFaq(kbId, faqId, actor);
         String baseline = p.path("baselineSha256").asText("");
-        String nowFp = sha256(current.getQuestion() + "|" + current.getAnswer() + "|" + current.getCategory() + "|" + current.getEnabled());
+        String nowFp = faqFingerprint(current);
         if (!baseline.isBlank() && !baseline.equalsIgnoreCase(nowFp)) {
             throw new IllegalStateException("生成卡片后该 FAQ 已被修改，请让助手重新生成修改卡片");
         }
@@ -1638,8 +1686,17 @@ public class AssistantExtendedWriteTools {
         if (p.hasNonNull("answer")) req.setAnswer(p.get("answer").asText());
         if (p.hasNonNull("category")) req.setCategory(p.get("category").asText());
         if (p.hasNonNull("enabled")) req.setEnabled(p.get("enabled").asBoolean());
+        if (p.has("imageUrls") && p.get("imageUrls").isArray()) {
+            req.setImageUrls(AssistantWriteTools.parseMediaUrls(p, "imageUrls", KnowledgeBaseService.MAX_FAQ_IMAGES, "图片"));
+        }
+        if (p.has("videoUrls") && p.get("videoUrls").isArray()) {
+            req.setVideoUrls(AssistantWriteTools.parseMediaUrls(p, "videoUrls", KnowledgeBaseService.MAX_FAQ_VIDEOS, "视频"));
+        }
         KnowledgeFaq updated = knowledgeBaseService.updateFaq(kbId, faqId, req, actor);
+        int imgCount = parseJsonStringList(updated.getImageUrls()).size();
+        int vidCount = parseJsonStringList(updated.getVideoUrls()).size();
         String readback = "FAQ ID=" + updated.getId() + "，分类=" + updated.getCategory()
+                + "，附图=" + imgCount + "张，视频=" + vidCount + "个"
                 + "，状态=" + (!Boolean.FALSE.equals(updated.getEnabled()) ? "启用" : "停用");
         return new AssistantWriteTools.ExecutionResult("KNOWLEDGE_BASE", kbId,
                 "已更新 FAQ（" + updated.getId() + "）", "查看知识库",
