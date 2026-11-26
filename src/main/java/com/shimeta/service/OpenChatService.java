@@ -151,7 +151,13 @@ public class OpenChatService {
         chatReq.setHistory(conversationService.recentHistory(agent.getId(), request.getConversationId(), endUser, memoryTurns));
         chatReq.setPrompt(agent.getSystemPrompt());
         chatReq.setEnabledTools(extractEnabledTools(agent.getToolsConfig()));
+        chatReq.setInputs(request.getInputs());
         chatReq.setTraceEnabled(platformSettingService != null && platformSettingService.openApiTraceEnabled());
+        try {
+            com.shimeta.model.PromptVariable.resolveInputs(agent.getPromptVariables(), request.getInputs(), true);
+        } catch (IllegalArgumentException e) {
+            return error(HttpStatus.BAD_REQUEST, "invalid_inputs", e.getMessage());
+        }
 
         // FAQ 附图返回完整网址，广告机等终端拿到后可以直接显示
         String publicBaseUrl = publicUrlResolver.baseUrl(httpRequest);

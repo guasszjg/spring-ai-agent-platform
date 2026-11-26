@@ -29,6 +29,7 @@
 - `response_mode`：`blocking`（完整 JSON）或 `streaming`（SSE，默认）
 - `conversation_id`：续接多轮对话时传上一轮返回的会话 ID
 - `user` / `end_user`：终端用户标识，同一会话必须保持一致
+- `inputs`（可选，兼容 `variables`）：自定义提示词变量键值对（如 `{"store_name":"深圳南山店"}`），自动替换系统提示词中的 `{{store_name}}`；不传时自动回退默认值，兼容已有调用方
 
 阻塞模式返回 `conversation_id`、`message_id`、`reply`、`images`、`videos`、`model`、`tool_called`、`tokens_used`、`latency_ms`、`request_id`；流式模式事件为 `message`、`message_end`（含 `images`、`videos` 与 `metadata`）、`guardrail`、`error`。自定义 HTTP 协议通道不支持流式，会一次性推送。中途停止直接断开连接即可（`POST /open/v1/chat-messages/{taskId}/stop` 返回 `not_supported`）。
 

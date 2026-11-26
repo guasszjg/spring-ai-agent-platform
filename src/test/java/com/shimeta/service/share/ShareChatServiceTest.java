@@ -98,7 +98,7 @@ class ShareChatServiceTest {
         Map<String, Object> config = service.config("code-1", "tok");
 
         assertThat(entry).containsOnlyKeys("accessMode", "title");
-        assertThat(config).containsOnlyKeys("title", "welcomeMessage", "exampleQuestions", "showRecordNotice",
+        assertThat(config).containsOnlyKeys("title", "welcomeMessage", "exampleQuestions", "variables", "showRecordNotice",
                 "visitorId", "tokenExpiresAt");
         assertThat(entry.toString() + config).doesNotContain("机密提示词", "deepseek-flash", "内部客服", "k1");
     }

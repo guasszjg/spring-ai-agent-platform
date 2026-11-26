@@ -45,7 +45,7 @@ public class ShareVisitorController {
     public record SessionRequest(String visitorId, String accessCode) {
     }
 
-    public record MessageRequest(String message, String conversationId) {
+    public record MessageRequest(String message, String conversationId, Map<String, Object> inputs) {
     }
 
     /** 打开链接：访问方式和标题 */
@@ -94,7 +94,8 @@ public class ShareVisitorController {
                        @RequestBody(required = false) MessageRequest body,
                        HttpServletRequest request) {
         return chatService.send(code, token, body != null ? body.message() : null,
-                body != null ? body.conversationId() : null, request);
+                body != null ? body.conversationId() : null,
+                body != null ? body.inputs() : null, request);
     }
 
     @ExceptionHandler(ShareAccessException.class)

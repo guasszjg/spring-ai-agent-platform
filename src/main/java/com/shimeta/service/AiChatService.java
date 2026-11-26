@@ -309,6 +309,10 @@ public class AiChatService {
         com.shimeta.model.AgentRouteChoice routeChoice = draftRoute
                 ? request.getRouteDraft() : com.shimeta.model.AgentRouteChoice.of(agent);
 
+        // 解析并校验自定义提示词变量（必填且无默认值时直接返回明确提示，不浪费模型调用）
+        java.util.Map<String, String> resolvedInputs = com.shimeta.model.PromptVariable.resolveInputs(
+                agent.getPromptVariables(), request.getInputs(), true);
+
         if (traceCtx != null && prepareStepId != null) {
             int kbCount = agent.getKnowledgeBaseIds() != null ? agent.getKnowledgeBaseIds().size() : 0;
             int skillCount = agent.getSkillIds() != null ? agent.getSkillIds().size() : 0;
@@ -322,14 +326,19 @@ public class AiChatService {
             prepDetail.put("toolCount", toolCount);
             prepDetail.put("skillCount", skillCount);
             prepDetail.put("draftRoute", draftRoute);
+            if (!resolvedInputs.isEmpty()) {
+                prepDetail.put("promptVariables", resolvedInputs);
+            }
             traceCtx.finishStep(prepareStepId,
-                    String.format("历史 %d 条 · 知识库 %d 个 · 工具 %d 个 · 技能 %d 个", historyCount, kbCount, toolCount, skillCount),
+                    String.format("历史 %d 条 · 知识库 %d 个 · 工具 %d 个 · 技能 %d 个%s",
+                            historyCount, kbCount, toolCount, skillCount,
+                            resolvedInputs.isEmpty() ? "" : " · 变量 " + resolvedInputs.size() + " 个"),
                     prepDetail);
         }
 
         try {
             OpenAiCompatibleClient.ChatResult routed = invokeViaGateway(agent, routeChoice, userMessage, request.getHistory(),
-                    request.getGeneration(), request.getPrompt(), tools, request.getEnabledTools(), routedModel, trackedSink, trace);
+                    request.getGeneration(), request.getPrompt(), request.getInputs(), tools, request.getEnabledTools(), routedModel, trackedSink, trace);
             if (routed != null && routed.content() != null && !routed.content().isBlank()) {
                 reply = routed.content();
                 executionModel = routedModel[0];
@@ -357,7 +366,8 @@ public class AiChatService {
             } else if (chatClient != null) {
                 log.info("Invoking Spring AI ChatClient for Agent: [{}] with model: [{}]", agent.getName(), executionModel);
                 
-                PromptLayout layout = buildPromptLayout(request.getPrompt(), agent, userMessage, request.getEnabledTools());
+                PromptLayout layout = buildPromptLayout(request.getPrompt(), agent, userMessage, request.getEnabledTools(),
+                        null, null, true, request.getInputs());
                 var clientRequest = chatClient.prompt()
                         .system(layout.system());
 
@@ -565,7 +575,8 @@ public class AiChatService {
     private OpenAiCompatibleClient.ChatResult invokeViaGateway(Agent agent, com.shimeta.model.AgentRouteChoice routeChoice,
                                                                String userMessage,
                                                                List<ChatMessage> history, ChatGeneration generation,
-                                                               String livePrompt, List<java.util.Map<String, Object>> tools,
+                                                               String livePrompt, java.util.Map<String, Object> inputs,
+                                                               List<java.util.Map<String, Object>> tools,
                                                                List<String> enabledTools,
                                                                String[] routedModel, StreamSink sink, RouteTrace trace) {
         ChatGeneration effective = generation != null ? generation : fromAgent(agent);
@@ -615,7 +626,7 @@ public class AiChatService {
             List<ChatMessage> fittedHistory = history;
             PromptLayout layout;
             if (plan == null) {
-                layout = buildPromptLayout(livePrompt, agent, userMessage, layoutTools, null, systemAppendix, retrieveFirst);
+                layout = buildPromptLayout(livePrompt, agent, userMessage, layoutTools, null, systemAppendix, retrieveFirst, inputs);
             } else {
                 int toolTokens = Math.max(estimateTokens(toolsJson(primaryToolDefs)), estimateTokens(toolsJson(fallbackToolDefs)));
                 // 知识库检索先给技能正文让出一部分（最多输入预算的四分之一，不超过最长那个技能）
@@ -625,7 +636,7 @@ public class AiChatService {
                         bare -> plan.inputBudget() - toolTokens - skillReserve
                                 - ContextWindowPlanner.messageTokens(bare.system())
                                 - ContextWindowPlanner.messageTokens(bare.user())
-                                - KNOWLEDGE_FRAME_TOKENS, systemAppendix, retrieveFirst);
+                                - KNOWLEDGE_FRAME_TOKENS, systemAppendix, retrieveFirst, inputs);
                 int used = toolTokens + ContextWindowPlanner.messageTokens(layout.system())
                         + ContextWindowPlanner.messageTokens(layout.user());
                 if (skills != null) {
@@ -741,25 +752,38 @@ public class AiChatService {
     PromptLayout buildPromptLayout(String rawPrompt, Agent agent, String userMessage, List<String> enabledTools,
                                    java.util.function.ToIntFunction<PromptLayout> knowledgeBudget, String systemAppendix,
                                    boolean retrieveFirst) {
+        return buildPromptLayout(rawPrompt, agent, userMessage, enabledTools, knowledgeBudget, systemAppendix, retrieveFirst, null);
+    }
+
+    /**
+     * @param systemAppendix 放在系统提示最后的内容（知识库检索说明、技能目录）；为空时不放
+     * @param retrieveFirst  是否在提问前检索知识库；模型自主检索时为 false
+     * @param inputs         本轮对话传入的自定义提示词变量值；为空时按变量默认值回退
+     */
+    PromptLayout buildPromptLayout(String rawPrompt, Agent agent, String userMessage, List<String> enabledTools,
+                                   java.util.function.ToIntFunction<PromptLayout> knowledgeBudget, String systemAppendix,
+                                   boolean retrieveFirst, java.util.Map<String, Object> inputs) {
         String skillCatalog = systemAppendix;
         String base = firstNonBlank(rawPrompt, agent.getSystemPrompt(), "你是一个通用智能助手。");
 
-        // 1. 获取当前系统真实时间与星期 (标准北京时间 Asia/Shanghai)
+        // 1. 获取当前系统真实时间与星期 (标准北京时间 Asia/Shanghai，直接读取服务端时钟，不依赖是否开启时间工具)
         ZoneId zoneId = ZoneId.of("Asia/Shanghai");
         ZonedDateTime now = ZonedDateTime.now(zoneId);
         String dateStr = now.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日"));
         String timeStr = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
         String weekday = now.getDayOfWeek().getDisplayName(TextStyle.FULL, Locale.CHINESE);
 
-        // 2. 替换提示词中可能包含的变量占位符 (支持 Dify 及通用模版变量规范)
-        String processed = base
-                .replace("{{system_time}}", timeStr + " (" + weekday + ")")
-                .replace("{{sys.time}}", timeStr)
-                .replace("{{time}}", timeStr)
-                .replace("{{sys.date}}", dateStr)
-                .replace("{{date}}", dateStr)
-                .replace("{{today}}", dateStr + " " + weekday)
-                .replace("{{input}}", userMessage != null ? userMessage : "");
+        // 2. 单遍替换内置系统变量 + 自定义变量占位符 (支持 Dify 及通用模版变量规范，避免二次替换)
+        java.util.Map<String, String> templateVars = new java.util.LinkedHashMap<>(
+                com.shimeta.model.PromptVariable.resolveInputs(agent.getPromptVariables(), inputs, false));
+        templateVars.put("system_time", timeStr + " (" + weekday + ")");
+        templateVars.put("sys.time", timeStr);
+        templateVars.put("time", timeStr);
+        templateVars.put("sys.date", dateStr);
+        templateVars.put("date", dateStr);
+        templateVars.put("today", dateStr + " " + weekday);
+        templateVars.put("input", userMessage != null ? userMessage : "");
+        String processed = com.shimeta.model.PromptVariable.renderTemplate(base, templateVars);
 
         // 3. 构建高优先级系统基准时间环境约束（Grounding Time Context），这里不放具体时间，保持 system 固定
         StringBuilder timeContext = new StringBuilder(

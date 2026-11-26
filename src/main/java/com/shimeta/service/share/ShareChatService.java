@@ -85,6 +85,7 @@ public class ShareChatService {
         v.put("title", displayTitle(link));
         v.put("welcomeMessage", link.getWelcomeMessage());
         v.put("exampleQuestions", link.getExampleQuestions() == null ? List.of() : link.getExampleQuestions());
+        v.put("variables", s.agent().getPromptVariables() == null ? List.of() : s.agent().getPromptVariables());
         v.put("showRecordNotice", !Boolean.FALSE.equals(link.getShowRecordNotice()));
         v.put("visitorId", s.visitor().getId());
         v.put("tokenExpiresAt", s.visitor().getTokenExpiresAt());
@@ -128,6 +129,11 @@ public class ShareChatService {
      * 停止生成：访客断开连接即可，开放接口检测到断开后会让模型停止生成
      */
     public Object send(String code, String token, String message, String conversationId, HttpServletRequest httpRequest) {
+        return send(code, token, message, conversationId, null, httpRequest);
+    }
+
+    public Object send(String code, String token, String message, String conversationId,
+                       Map<String, Object> inputs, HttpServletRequest httpRequest) {
         String text = message == null ? "" : message.trim();
         if (text.isEmpty()) {
             throw new ShareAccessException(ShareAccessException.BAD_REQUEST, HttpStatus.BAD_REQUEST, "请输入内容");
@@ -164,6 +170,7 @@ public class ShareChatService {
         request.setMessage(text);
         request.setConversationId(convId);
         request.setEndUser(account);
+        request.setInputs(inputs);
         request.setResponseMode("streaming");
 
         OpenApiKey key = keyService.findUsableManaged(link.getApiKeyId()).orElseThrow(ShareAccessException::linkInvalid);

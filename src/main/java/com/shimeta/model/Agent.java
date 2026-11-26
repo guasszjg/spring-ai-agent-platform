@@ -1,5 +1,6 @@
 package com.shimeta.model;
 
+import com.shimeta.config.PromptVariableListJsonConverter;
 import com.shimeta.config.StringListJsonConverter;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -67,6 +68,13 @@ public class Agent {
     private LocalDateTime updatedAt;
     @Column(columnDefinition = "TEXT")
     private String toolsConfig;
+    /**
+     * 自定义提示词变量列表，支持在系统提示词或开场白中通过 {{key}} 引用。
+     * 默认为 null：更新请求未带该字段时不改动已保存的变量定义
+     */
+    @Convert(converter = PromptVariableListJsonConverter.class)
+    @Column(name = "prompt_variables", columnDefinition = "TEXT")
+    private List<PromptVariable> promptVariables;
     @Convert(converter = StringListJsonConverter.class)
     @Column(name = "knowledge_base_ids", columnDefinition = "TEXT")
     private List<String> knowledgeBaseIds = new ArrayList<>();
@@ -456,6 +464,14 @@ public class Agent {
 
     public void setIsSystem(Boolean isSystem) {
         this.isSystem = isSystem;
+    }
+
+    public List<PromptVariable> getPromptVariables() {
+        return promptVariables;
+    }
+
+    public void setPromptVariables(List<PromptVariable> promptVariables) {
+        this.promptVariables = promptVariables;
     }
 
     @PreUpdate

@@ -27,6 +27,10 @@ public class OpenApiChatRequest {
 
     private String user;
 
+    @JsonProperty("inputs")
+    @JsonAlias({"variables"})
+    private java.util.Map<String, Object> inputs;
+
     public String getMessage() {
         return message;
     }
@@ -82,5 +86,13 @@ public class OpenApiChatRequest {
 
     public void setEndUser(String endUser) {
         this.endUser = endUser;
+    }
+
+    public java.util.Map<String, Object> getInputs() {
+        return inputs;
+    }
+
+    public void setInputs(java.util.Map<String, Object> inputs) {
+        this.inputs = inputs;
     }
 }

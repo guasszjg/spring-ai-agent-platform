@@ -210,6 +210,7 @@ public class AgentService {
             agent.setIsSystem(false);
         }
         agent.setToolsConfig(toolConfigSanitizer.sanitize(agent.getToolsConfig()));
+        agent.setPromptVariables(com.shimeta.model.PromptVariable.normalizeList(agent.getPromptVariables()));
         agent.setMemoryTurns(agent.resolveMemoryTurns());
         agent.setThinkingMode(Agent.normalizeThinkingMode(agent.getThinkingMode()));
         agent.setKnowledgeMode(Agent.normalizeKnowledgeMode(agent.getKnowledgeMode()));
@@ -289,6 +290,9 @@ public class AgentService {
         if (agentUpdate.getStatus() != null) existing.setStatus(agentUpdate.getStatus());
         if (agentUpdate.getToolsConfig() != null) {
             existing.setToolsConfig(toolConfigSanitizer.sanitize(agentUpdate.getToolsConfig()));
+        }
+        if (agentUpdate.getPromptVariables() != null) {
+            existing.setPromptVariables(com.shimeta.model.PromptVariable.normalizeList(agentUpdate.getPromptVariables()));
         }
         if (agentUpdate.getKnowledgeBaseIds() != null) {
             existing.setKnowledgeBaseIds(new ArrayList<>(agentUpdate.getKnowledgeBaseIds()));
@@ -390,6 +394,13 @@ public class AgentService {
         }
         // 关键安全修复：脱敏清洗配置，绝不复制明文 API 密钥
         clone.setToolsConfig(toolConfigSanitizer.sanitize(source.getToolsConfig()));
+        if (source.getPromptVariables() != null) {
+            List<com.shimeta.model.PromptVariable> copiedVars = new ArrayList<>();
+            for (com.shimeta.model.PromptVariable pv : source.getPromptVariables()) {
+                if (pv != null) copiedVars.add(pv.copy());
+            }
+            clone.setPromptVariables(copiedVars);
+        }
 
         // 关键安全修复：复制智能体时，仅保留新拥有者有权使用的知识库
         if (source.getKnowledgeBaseIds() != null) {
