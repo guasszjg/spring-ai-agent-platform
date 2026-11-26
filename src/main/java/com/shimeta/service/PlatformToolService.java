@@ -183,6 +183,17 @@ public class PlatformToolService {
         return configs;
     }
 
+    /** 在「工具管理」中被停用的平台工具编码集合（小写），对话运行时强制过滤，已配置过的智能体也不会再调用。 */
+    public java.util.Set<String> disabledToolCodes() {
+        java.util.Set<String> disabled = new java.util.HashSet<>();
+        for (PlatformTool entity : repository.findAll()) {
+            if (entity.getCode() != null && !entity.getCode().isBlank() && !Boolean.TRUE.equals(entity.getEnabled())) {
+                disabled.add(entity.getCode().trim().toLowerCase(Locale.ROOT));
+            }
+        }
+        return disabled;
+    }
+
     private void seedMissingBuiltins() {
         for (PlatformTool builtin : PlatformToolCatalog.builtins()) {
             if (!repository.existsById(builtin.getId()) && repository.findByCode(builtin.getCode()).isEmpty()) {

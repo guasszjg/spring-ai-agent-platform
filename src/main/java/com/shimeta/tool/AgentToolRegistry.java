@@ -58,6 +58,7 @@ public class AgentToolRegistry {
     /** DeepSeek 搜索接口地址；包内可见便于测试替换 */
     String deepSeekSearchUrl = "https://api.deepseek.com/v1/tools/search";
     private final ThreadLocal<Map<String, Map<String, Object>>> currentPlatformConfigs = new ThreadLocal<>();
+    private final ThreadLocal<java.util.Set<String>> currentDisabledPlatformTools = new ThreadLocal<>();
     private final ThreadLocal<List<HttpToolSpec>> currentHttpTools = new ThreadLocal<>();
     private final ThreadLocal<List<com.shimeta.mcp.McpToolSpec>> currentMcpTools = new ThreadLocal<>();
     private com.shimeta.mcp.McpToolInvoker mcpInvoker;
@@ -107,6 +108,34 @@ public class AgentToolRegistry {
         } else {
             currentPlatformConfigs.set(configs);
         }
+    }
+
+    /** 在平台「工具管理」中停用的工具编码集合：不向模型下发定义且拒绝执行。 */
+    public void setDisabledPlatformTools(java.util.Set<String> disabledCodes) {
+        if (disabledCodes == null || disabledCodes.isEmpty()) {
+            currentDisabledPlatformTools.remove();
+        } else {
+            java.util.Set<String> normalized = new java.util.HashSet<>();
+            for (String code : disabledCodes) {
+                if (code != null && !code.isBlank()) {
+                    normalized.add(code.trim().toLowerCase(java.util.Locale.ROOT));
+                }
+            }
+            if (normalized.isEmpty()) {
+                currentDisabledPlatformTools.remove();
+            } else {
+                currentDisabledPlatformTools.set(normalized);
+            }
+        }
+    }
+
+    private boolean isPlatformToolDisabled(String toolName) {
+        java.util.Set<String> disabled = currentDisabledPlatformTools.get();
+        if (disabled == null || disabled.isEmpty() || toolName == null || toolName.isBlank()) {
+            return false;
+        }
+        String canonical = TOOL_ALIASES.getOrDefault(toolName, toolName).toLowerCase(java.util.Locale.ROOT);
+        return disabled.contains(canonical) || disabled.contains(toolName.toLowerCase(java.util.Locale.ROOT));
     }
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -165,6 +194,7 @@ public class AgentToolRegistry {
         currentContextDeepSeekKey.remove();
         currentContextAgentId.remove();
         currentPlatformConfigs.remove();
+        currentDisabledPlatformTools.remove();
         currentHttpTools.remove();
         currentMcpTools.remove();
         currentSkills.remove();
@@ -329,6 +359,9 @@ public class AgentToolRegistry {
 
     private void addIfEnabled(List<Map<String, Object>> list, List<String> enabledToolNames,
                               String uiName, String functionName, String description, Map<String, Object> parameters) {
+        if (isPlatformToolDisabled(functionName)) {
+            return;
+        }
         if (enabledToolNames != null && !enabledToolNames.isEmpty()) {
             boolean matched = enabledToolNames.stream().anyMatch(name ->
                     name.equalsIgnoreCase(uiName)
@@ -389,6 +422,9 @@ public class AgentToolRegistry {
             if (mcpTool != null) {
                 return mcpInvoker != null ? mcpInvoker.call(mcpTool, argumentsJson)
                         : com.shimeta.mcp.McpToolInvoker.FAILURE_PREFIX + "MCP 功能不可用";
+            }
+            if (isPlatformToolDisabled(toolName)) {
+                return "工具执行失败: 工具 [" + toolName + "] 已在平台工具管理中停用";
             }
             return switch (toolName) {
                 case "time_get_current_time", "get_current_time" -> handleGetCurrentTime(root);

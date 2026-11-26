@@ -200,6 +200,7 @@ public class AiChatService {
         String[] toolCalledHolder = { null };
         if (platformToolService != null) {
             toolRegistry.setPlatformConfigs(platformToolService.runtimeConfigs());
+            toolRegistry.setDisabledPlatformTools(platformToolService.disabledToolCodes());
             toolRegistry.setHttpTools(platformToolService.httpRuntimeSpecs());
         }
         // 智能体勾选了 MCP 工具（函数名以 mcp_ 开头）才去查，其它对话不多这一次查询

@@ -116,4 +116,19 @@ class DeepSeekWebSearchToolTest {
         assertThat(registry.testDeepSeekSearch("sk-ok").get("success")).isEqualTo(true);
         assertThat(registry.testDeepSeekSearch(null).get("success")).isEqualTo(false);
     }
+
+    @Test
+    @DisplayName("平台工具管理中停用后：不下发工具定义且拒绝执行")
+    void disabledPlatformToolIsOmittedFromDefinitionsAndBlockedAtExecution() {
+        registry.setCurrentContextDeepSeekKey("sk-ds-test");
+        registry.setDisabledPlatformTools(java.util.Set.of("deepseek_web_search"));
+
+        var defs = registry.getToolDefinitions(java.util.List.of("deepseek_web_search", "time_get_current_time"));
+        assertThat(defs.toString()).doesNotContain("deepseek_web_search");
+        assertThat(defs.toString()).contains("time_get_current_time");
+
+        String out = registry.execute("deepseek_web_search", "{\"query\":\"深圳天气\"}");
+        assertThat(out).contains("已").contains("停用");
+        assertThat(lastBody.get()).isNull();
+    }
 }
