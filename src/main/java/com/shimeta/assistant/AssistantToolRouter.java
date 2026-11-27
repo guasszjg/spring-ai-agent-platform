@@ -43,11 +43,17 @@ public class AssistantToolRouter {
     private static final long EMBEDDING_COOLDOWN_MS = 60_000L;
 
     private static final Pattern FOLLOWUP_CUE = Pattern.compile(
-            "(这个|那个|它|刚才|上面|前面|继续|再看|详细|具体|顺便|还有|改成|调成|帮我改|帮我查|那它|它的|里面的)");
-    private static final Pattern PURE_CHITCHAT = Pattern.compile(
+            "(这个|那个|它|刚才|上面|前面|继续|再看|详细|具体|顺便|还有|改成|调成|帮我改|帮我查|那它|它的|里面的|可以|好的|行|需要|查一下|看看|进入|打开|跳转|优化|改写|润色)");
+    /** 明确无业务意图的打招呼/道谢/道别：无论是否有历史都不强制调工具 */
+    private static final Pattern GREETING_CHITCHAT = Pattern.compile(
             "^(你好|您好|嗨|hi|hello|hey|在吗|在不在|在么|有人吗|在呢|测试|测试一下|test|ping|早|早安|早上好|中午好|下午好|晚上好|晚安|"
-                    + "谢谢|多谢|感谢|再见|拜拜|好的|好|ok|okay|嗯|嗯嗯|收到|明白|明白了|哈哈|哈哈哈|辛苦了|没事|不用了|"
+                    + "谢谢|多谢|感谢|再见|拜拜|哈哈|哈哈哈|辛苦了|没事|不用了|"
                     + "你是谁|你能做什么|介绍一下你自己|你有什么功能)[！!。.?？~～\\s]*$",
+            Pattern.CASE_INSENSITIVE);
+    /** 简短肯定/承接答复：首轮无上下文时属寒暄，多轮承接助手上一轮提议时属于有效追问 */
+    private static final Pattern AFFIRMATIVE_FOLLOWUP = Pattern.compile(
+            "^(可以|可以的|好的|好|好呀|好啊|行|行啊|ok|okay|yes|嗯|嗯嗯|是的|是|对|对的|需要|要|要的|收到|明白|明白了|"
+                    + "查吧|查一下|帮我查|帮我查一下|看看|看下|看一看|来吧|继续|那就查一下|那就帮我查|那就创建|那就改吧|生成吧|帮我生成)[！!。.?？~～\\s]*$",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern HOWTO_CUE = Pattern.compile(
             "(怎么|如何|在哪里|在哪|什么意思|啥意思|区别|对比|原理|步骤|教程|怎么配|如何配置|如何接入|文档)");
@@ -56,7 +62,22 @@ public class AssistantToolRouter {
                     + "我的|当前|现在|目前|最近|今日|今天|近7天|近30天|日志|报错|失败|索引失败|没回复|没有回复|回答不对|通不通|能不能用|召回|配置|详情|状态|账单)");
 
     static boolean isPureChitchat(String message) {
-        return message != null && PURE_CHITCHAT.matcher(message.trim()).matches();
+        return isPureChitchat(message, false);
+    }
+
+    static boolean isPureChitchat(String message, boolean hasConversationHistory) {
+        if (message == null) {
+            return false;
+        }
+        String trimmed = message.trim();
+        if (GREETING_CHITCHAT.matcher(trimmed).matches()) {
+            return true;
+        }
+        return !hasConversationHistory && AFFIRMATIVE_FOLLOWUP.matcher(trimmed).matches();
+    }
+
+    static boolean isAffirmativeFollowUp(String message) {
+        return message != null && AFFIRMATIVE_FOLLOWUP.matcher(message.trim()).matches();
     }
 
     public record ToolGroup(
@@ -84,9 +105,9 @@ public class AssistantToolRouter {
     static final List<ToolGroup> GROUPS = List.of(
             new ToolGroup("agents", "智能体与诊断",
                     Set.of("list_agents", "get_agent_detail", "diagnose_agent", "get_agent_logs", "list_resources", "get_resource",
-                            "list_share_links"),
+                            "list_share_links", "navigate_to_page"),
                     Set.of("create_agent", "set_agent_status", "update_agent_prompt", "bind_knowledge_base",
-                            "update_agent_settings", "rollback_agent_prompt", "save_agent_as_template", "delete_resource",
+                            "update_agent_settings", "manage_agent_variable", "rollback_agent_prompt", "save_agent_as_template", "delete_resource",
                             "disable_share_link"),
                     true, false,
                     List.of(
@@ -97,12 +118,13 @@ public class AssistantToolRouter {
                             "查一下智能体最近的对话日志和报错记录",
                             "查看或回滚智能体的提示词历史版本",
                             "修改智能体模型温度记忆轮数思考模式知识库模式关联技能工具",
+                            "给智能体新增修改或删除自定义提示词变量",
                             "帮我新建停用启用或删除某个智能体",
                             "查一下智能体的分享链接还能不能用什么时候到期，或者停用某个分享链接"
                     ),
-                    Pattern.compile("(?i)(智能体|agent|助手|机器人|提示词|prompt|回滚|温度|记忆轮数|思考模式|诊断|排查|没回复|没有回复|回答不对|不准确|检索不到|对话日志|历史版本|停用|启用|分享链接|分享|访问码|免登录)")),
+                    Pattern.compile("(?i)(智能体|agent|助手|机器人|提示词|prompt|变量|回滚|温度|记忆轮数|思考模式|诊断|排查|没回复|没有回复|回答不对|不准确|检索不到|对话日志|历史版本|停用|启用|分享链接|分享|访问码|免登录)")),
             new ToolGroup("knowledge", "知识库与召回",
-                    Set.of("list_knowledge_bases", "list_knowledge_documents", "run_retrieval_test", "list_resources", "get_resource"),
+                    Set.of("list_knowledge_bases", "list_knowledge_documents", "run_retrieval_test", "list_resources", "get_resource", "navigate_to_page"),
                     Set.of("create_knowledge_base", "add_faq", "bind_knowledge_base",
                             "update_kb_settings", "update_faq", "rebuild_kb_index", "run_rag_eval", "delete_resource"),
                     true, false,
@@ -201,7 +223,19 @@ public class AssistantToolRouter {
                             "温度 Top P 混合权重 Rerank 参数如何调整",
                             "如何部署启动和配置开放接口调用"
                     ),
-                    Pattern.compile("(?i)(怎么|如何|在哪里|在哪|什么意思|区别|配置项|参数|报错|错误码|401|403|422|429|部署|运维|开放接口|使用文档|平台文档)"))
+                    Pattern.compile("(?i)(怎么|如何|在哪里|在哪|什么意思|区别|配置项|参数|报错|错误码|401|403|422|429|部署|运维|开放接口|使用文档|平台文档)")),
+            new ToolGroup("navigation", "页面跳转导航",
+                    Set.of("navigate_to_page", "list_agents", "list_knowledge_bases"),
+                    Set.of(),
+                    true, false,
+                    List.of(
+                            "进入这个智能体的调试界面",
+                            "帮我打开某某智能体的编排与调试页",
+                            "带我去知识库列表或某个知识库详情页",
+                            "切换到模型网关工具管理或场景模板页面",
+                            "返回智能体列表或概览页面"
+                    ),
+                    Pattern.compile("(?i)(进入|打开|跳转|前往|切到|切换到|回到|返回|带我去|调试界面|调试页|编排页|详情页)"))
     );
 
     private static final Map<String, ToolGroup> GROUP_BY_ID;
@@ -246,20 +280,41 @@ public class AssistantToolRouter {
                                Set<String> previousGroups,
                                CurrentActor actor,
                                boolean includeWrite) {
+        return route(message, pageContext, previousGroups, actor, includeWrite, null);
+    }
+
+    public ToolSelection route(String message,
+                               Map<String, String> pageContext,
+                               Set<String> previousGroups,
+                               CurrentActor actor,
+                               boolean includeWrite,
+                               String lastAssistantReply) {
         if (message == null || message.isBlank()) {
             return ToolSelection.ALL;
         }
         String trimmed = message.trim();
-        if (PURE_CHITCHAT.matcher(trimmed).matches()) {
+        boolean hasHistory = (previousGroups != null && !previousGroups.isEmpty())
+                || (lastAssistantReply != null && !lastAssistantReply.isBlank());
+        if (isPureChitchat(trimmed, hasHistory)) {
             return new ToolSelection(Set.of(), Set.of("search_platform_docs"), null, false, "chitchat");
         }
+        boolean affirmativeFollowUp = hasHistory && isAffirmativeFollowUp(trimmed);
 
         boolean isSuperAdmin = actor != null && actor.isSuperAdmin();
         Set<String> selectedGroups = new LinkedHashSet<>();
         String strategy = "keyword";
 
+        // 0. 多轮肯定追问（如用户回复“可以 / 好的 / 查一下”承接助手上一轮提议）：先按助手上一轮结尾提议做路由
+        if (affirmativeFollowUp && lastAssistantReply != null && !lastAssistantReply.isBlank()) {
+            String offerTail = lastAssistantReply.length() > 260
+                    ? lastAssistantReply.substring(lastAssistantReply.length() - 260)
+                    : lastAssistantReply;
+            selectedGroups.addAll(routeByKeywords(offerTail, isSuperAdmin));
+            strategy = "followup";
+        }
+
         // 1. 优先尝试向量相似度选组（有激活 Embedding 配置且未处于失败冷却期）
-        Optional<Set<String>> vectorMatched = routeByVector(trimmed, pageContext, isSuperAdmin);
+        Optional<Set<String>> vectorMatched = affirmativeFollowUp ? Optional.empty() : routeByVector(trimmed, pageContext, isSuperAdmin);
         if (vectorMatched.isPresent()) {
             selectedGroups.addAll(vectorMatched.get());
             strategy = "vector";
@@ -279,22 +334,22 @@ public class AssistantToolRouter {
             strategy = "hybrid";
         }
 
-        // 3. 页面上下文联动（仅由页面上下文兜底补入时，不视为明确查询平台数据，避免寒暄/闲聊误触发 tool_choice=required）
+        // 3. 多轮追问组继承（优先于泛化页面上下文，确保跨页或承接上轮提议时工具组不断链）
         boolean matchedByMessage = !selectedGroups.isEmpty();
-        String contextGroup = groupFromPageContext(pageContext, isSuperAdmin);
-        if (contextGroup != null && (selectedGroups.isEmpty() || looksLikeFollowUp(trimmed))) {
-            selectedGroups.add(contextGroup);
-        }
-
-        // 4. 多轮追问组继承
         if (previousGroups != null && !previousGroups.isEmpty()
-                && (selectedGroups.isEmpty() || looksLikeFollowUp(trimmed))) {
+                && (selectedGroups.isEmpty() || looksLikeFollowUp(trimmed) || affirmativeFollowUp)) {
             for (String prev : previousGroups) {
                 ToolGroup g = GROUP_BY_ID.get(prev);
                 if (g != null && (!g.superAdminOnly() || isSuperAdmin)) {
                     selectedGroups.add(prev);
                 }
             }
+        }
+
+        // 4. 页面上下文联动（仅由页面上下文兜底补入时，不视为明确查询平台数据，避免寒暄/闲聊误触发 tool_choice=required）
+        String contextGroup = groupFromPageContext(pageContext, isSuperAdmin);
+        if (contextGroup != null && (selectedGroups.isEmpty() || looksLikeFollowUp(trimmed))) {
+            selectedGroups.add(contextGroup);
         }
 
         // 限制最终组数量（保留前 MAX_SELECTED_GROUPS 个，若已有诊断意图则确保 agents 在内）
@@ -345,15 +400,59 @@ public class AssistantToolRouter {
         if (pureHowTo) {
             readTools.add("search_platform_docs");
         }
-        // 仅当用户消息本身命中业务域且带有明确数据查询/排查意图时，才启用 tool_choice=required 兜底；
+        // 仅当用户消息本身命中业务域且带有明确数据查询/排查意图，或明确肯定承接了上一轮助手的数据查询提议时，才启用 tool_choice=required 兜底；
         // 仅靠页面上下文补入或泛聊/寒暄绝不强制调工具
         boolean hitsReadData = anyReadDataGroup && !pureHowTo
-                && (hasInstanceCue || (matchedByMessage && (!keywordMatched.isEmpty() || trimmed.length() >= 8)));
+                && (hasInstanceCue || affirmativeFollowUp || (matchedByMessage && (!keywordMatched.isEmpty() || trimmed.length() >= 8)));
 
         Set<String> effectiveRead = readTools.isEmpty() || readTools.size() > MAX_FOCUSED_READ_TOOLS ? null : readTools;
         Set<String> effectiveWrite = includeWrite && !writeTools.isEmpty() ? writeTools : null;
 
         return new ToolSelection(Set.copyOf(selectedGroups), effectiveRead, effectiveWrite, hitsReadData, strategy);
+    }
+
+    /** 服务重启或重新打开历史会话时，从持久化的历史消息中恢复最近一轮涉及的工具组 */
+    public Set<String> inferGroupsFromHistory(List<com.shimeta.model.AssistantMessage> history, CurrentActor actor) {
+        if (history == null || history.isEmpty()) {
+            return Set.of();
+        }
+        boolean isSuperAdmin = actor != null && actor.isSuperAdmin();
+        Set<String> inferred = new LinkedHashSet<>();
+        int checked = 0;
+        for (int i = history.size() - 1; i >= 0 && checked < 4; i--) {
+            com.shimeta.model.AssistantMessage m = history.get(i);
+            if (m == null || Boolean.TRUE.equals(m.getDegraded())) {
+                continue;
+            }
+            checked++;
+            if (m.getToolCalls() != null && !m.getToolCalls().isBlank()) {
+                for (ToolGroup g : GROUPS) {
+                    if (g.superAdminOnly() && !isSuperAdmin) continue;
+                    for (String t : g.readTools()) {
+                        if (m.getToolCalls().contains("\"" + t + "\"")) {
+                            inferred.add(g.id());
+                            break;
+                        }
+                    }
+                    for (String t : g.writeTools()) {
+                        if (m.getToolCalls().contains("\"" + t + "\"")) {
+                            inferred.add(g.id());
+                            break;
+                        }
+                    }
+                }
+            }
+            if (m.getContent() != null && !m.getContent().isBlank()) {
+                String snippet = m.getContent().length() > 300
+                        ? m.getContent().substring(m.getContent().length() - 300)
+                        : m.getContent();
+                inferred.addAll(routeByKeywords(snippet, isSuperAdmin));
+            }
+            if (inferred.size() >= MAX_SELECTED_GROUPS) {
+                break;
+            }
+        }
+        return inferred;
     }
 
     private Optional<Set<String>> routeByVector(String message, Map<String, String> pageContext, boolean isSuperAdmin) {

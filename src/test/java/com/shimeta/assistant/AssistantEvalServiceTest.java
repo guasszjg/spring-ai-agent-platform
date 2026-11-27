@@ -56,7 +56,7 @@ class AssistantEvalServiceTest {
         Set<String> known = new HashSet<>(AssistantEvalScorer.WRITE_TOOLS);
         known.addAll(List.of("list_agents", "get_agent_detail", "list_knowledge_bases", "list_knowledge_documents",
                 "list_mcp_servers", "list_skills", "get_gateway_status", "get_usage_summary", "diagnose_agent",
-                "list_templates", "search_platform_docs", "test_gateway_channel",
+                "list_templates", "search_platform_docs", "test_gateway_channel", "navigate_to_page",
                 "list_resources", "get_resource", "run_retrieval_test", "get_agent_logs", "get_tool_usage",
                 "list_share_links"));
         List<AssistantEvalCase> cases = service.cases();

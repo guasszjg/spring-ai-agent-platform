@@ -7,6 +7,7 @@ import com.shimeta.mcp.McpServerRequest;
 import com.shimeta.mcp.McpServerService;
 import com.shimeta.mcp.McpServerView;
 import com.shimeta.model.Agent;
+import com.shimeta.model.PromptVariable;
 import com.shimeta.model.AgentTemplate;
 import com.shimeta.model.CreateUserRequest;
 import com.shimeta.model.DifyConfigRequest;
@@ -112,10 +113,12 @@ public class AssistantExtendedWriteTools {
     static final String REVOKE_API_KEY = "revoke_api_key";
     // B 级：停用分享链接（可以在调试页重新启用，所以不算高危）
     static final String DISABLE_SHARE_LINK = "disable_share_link";
+    // B 级：增删改智能体自定义提示词变量
+    static final String MANAGE_AGENT_VARIABLE = "manage_agent_variable";
 
     private static final Set<String> HANDLED_TOOLS = Set.of(
             CREATE_HTTP_TOOL, CREATE_SKILL, SAVE_AGENT_AS_TEMPLATE, REGISTER_MCP_SERVER,
-            UPDATE_AGENT_SETTINGS, UPDATE_KB_SETTINGS, UPDATE_FAQ, ROLLBACK_AGENT_PROMPT, DISABLE_SHARE_LINK,
+            UPDATE_AGENT_SETTINGS, UPDATE_KB_SETTINGS, UPDATE_FAQ, ROLLBACK_AGENT_PROMPT, DISABLE_SHARE_LINK, MANAGE_AGENT_VARIABLE,
             REBUILD_KB_INDEX, RUN_RAG_EVAL, REFRESH_MCP_SERVER,
             DELETE_RESOURCE, MANAGE_USER, MANAGE_GATEWAY_CHANNEL, UPDATE_GUARDRAIL_POLICY, REVOKE_API_KEY);
 
@@ -241,6 +244,7 @@ public class AssistantExtendedWriteTools {
                                 Map.entry("topP", prop("number", "Top P 0~1，可选")),
                                 Map.entry("maxTokens", prop("integer", "最大输出长度 128~32768，可选")),
                                 Map.entry("memoryTurns", prop("integer", "上下文记忆轮数 0~10，可选")),
+                                Map.entry("memoryCompression", prop("boolean", "是否开启超长对话自动记忆压缩（仅 memoryTurns > 0 时生效，默认 false），可选")),
                                 Map.entry("thinkingMode", enumProp("思考模式：OFF 关闭、AUTO 跟随默认、ON 开启", "OFF", "AUTO", "ON")),
                                 Map.entry("knowledgeMode", enumProp("知识库模式：PRE_RETRIEVE 先检索后回答、AGENTIC 模型自主检索", "PRE_RETRIEVE", "AGENTIC")),
                                 Map.entry("addSkills", Map.of("type", "array", "items", Map.of("type", "string"), "description", "要关联的技能名称或 ID 列表")),
@@ -289,6 +293,22 @@ public class AssistantExtendedWriteTools {
                                 "agent", prop("string", "智能体 ID、编码或名称"),
                                 "version", prop("string", "目标版本 ID 或版本号（如 \"2\" 或 \"v2\"）")), "agent", "version"),
                         this::draftRollbackAgentPrompt),
+                AssistantTool.write(MANAGE_AGENT_VARIABLE, "生成管理智能体变量操作",
+                        "为智能体新增、修改或删除自定义提示词变量（B 级修改对比卡片；确认后前端会自动打开「添加自定义变量」弹窗逐项填入并保存）。"
+                                + "当用户说\"帮我加一个变量\"\"添加门店名称变量\"\"修改/删除自定义变量\"时必须调用此工具。",
+                        schema(Map.ofEntries(
+                                Map.entry("agent", prop("string", "智能体 ID、编码或名称")),
+                                Map.entry("operation", enumProp("操作类型：add 新增（默认）、update 修改已有变量、delete 删除变量", "add", "update", "delete")),
+                                Map.entry("key", prop("string", "变量名 Key，字母开头仅含字母/数字/下划线（最长 32 位），如 store_name")),
+                                Map.entry("label", prop("string", "显示名称，如 门店名称，不传默认同 key")),
+                                Map.entry("type", enumProp("字段类型：text 单行文本（默认）、paragraph 多行文本、select 下拉选项、number 数字",
+                                        "text", "paragraph", "select", "number")),
+                                Map.entry("required", prop("boolean", "是否必填，默认 false")),
+                                Map.entry("defaultValue", prop("string", "默认值，可选")),
+                                Map.entry("options", Map.of("type", "array", "items", Map.of("type", "string"),
+                                        "description", "当 type=select 时的下拉选项列表")),
+                                Map.entry("placeholder", prop("string", "输入提示，可选"))), "agent", "key"),
+                        this::draftManageAgentVariable),
 
                 // ---------- C 级：运行任务 ----------
                 AssistantTool.write(REBUILD_KB_INDEX, "生成重建知识库索引操作",
@@ -637,6 +657,15 @@ public class AssistantExtendedWriteTools {
             if (mem != agent.resolveMemoryTurns()) {
                 payload.put("memoryTurns", mem);
                 pb.addDiff("上下文记忆轮数", agent.resolveMemoryTurns() + " 轮", mem + " 轮");
+                changes++;
+            }
+        }
+        Boolean memComp = bool(args, "memoryCompression");
+        if (memComp != null) {
+            boolean curComp = Boolean.TRUE.equals(agent.getMemoryCompression());
+            if (memComp != curComp) {
+                payload.put("memoryCompression", memComp);
+                pb.addDiff("记忆压缩", curComp ? "开启" : "关闭", memComp ? "开启" : "关闭");
                 changes++;
             }
         }
@@ -1539,7 +1568,205 @@ public class AssistantExtendedWriteTools {
             case UPDATE_GUARDRAIL_POLICY -> executeUpdateGuardrailPolicy(p, actor);
             case REVOKE_API_KEY -> executeRevokeApiKey(p, actor);
             case DISABLE_SHARE_LINK -> executeDisableShareLink(p, actor);
+            case MANAGE_AGENT_VARIABLE -> executeManageAgentVariable(p, actor);
             default -> throw new IllegalStateException("不支持的扩展写操作：" + toolName);
+        };
+    }
+
+    // ==================== B 级：管理智能体自定义变量 ====================
+
+    Map<String, Object> draftManageAgentVariable(JsonNode args, ToolContext ctx) {
+        CurrentActor actor = ctx.actor();
+        AssistantQueryTools.AgentMatch match = queryTools.resolveAgent(text(args, "agent"), actor);
+        if (match.agent() == null) {
+            return match.response();
+        }
+        Agent agent = requireManageableAgent(match.agent(), actor);
+        String opRaw = text(args, "operation");
+        String op = (opRaw == null ? "add" : opRaw).toLowerCase(Locale.ROOT);
+        if (!Set.of("add", "update", "delete").contains(op)) {
+            throw new IllegalArgumentException("operation 只能是 add、update 或 delete");
+        }
+        String key = text(args, "key");
+        if (key == null) {
+            throw new IllegalArgumentException("请提供变量名 Key（如 store_name）");
+        }
+        if (key.length() > 32) {
+            throw new IllegalArgumentException("变量名 Key 最长 32 位");
+        }
+        List<PromptVariable> existing = new ArrayList<>();
+        if (agent.getPromptVariables() != null) {
+            for (PromptVariable pv : agent.getPromptVariables()) {
+                if (pv != null) existing.add(pv.copy());
+            }
+        }
+        int existingIdx = -1;
+        for (int i = 0; i < existing.size(); i++) {
+            if (key.equals(existing.get(i).getKey())) {
+                existingIdx = i;
+                break;
+            }
+        }
+
+        List<PromptVariable> nextList = new ArrayList<>();
+        for (PromptVariable pv : existing) {
+            nextList.add(pv.copy());
+        }
+        PromptVariable targetVar;
+        if ("delete".equals(op)) {
+            if (existingIdx < 0) {
+                throw new IllegalArgumentException("智能体「" + agent.getName() + "」中不存在变量「" + key + "」");
+            }
+            targetVar = nextList.remove(existingIdx);
+        } else {
+            if ("add".equals(op) && existingIdx >= 0) {
+                op = "update";
+            }
+            PromptVariable base = existingIdx >= 0 ? nextList.get(existingIdx) : new PromptVariable();
+            String label = text(args, "label");
+            String type = text(args, "type");
+            String defVal = args.has("defaultValue") ? args.path("defaultValue").asText("") : null;
+            String placeholder = args.has("placeholder") ? args.path("placeholder").asText("") : null;
+            List<String> options = args.has("options") && args.get("options").isArray() ? textList(args, "options") : null;
+
+            PromptVariable item = new PromptVariable(
+                    key,
+                    label != null ? label : (base.getLabel() != null && !base.getLabel().isBlank() ? base.getLabel() : key),
+                    type != null ? type : (base.getType() != null ? base.getType() : PromptVariable.TYPE_TEXT),
+                    args.hasNonNull("required") ? args.get("required").asBoolean() : Boolean.TRUE.equals(base.getRequired()),
+                    defVal != null ? defVal : (base.getDefaultValue() != null ? base.getDefaultValue() : ""),
+                    options != null ? options : (base.getOptions() != null ? base.getOptions() : List.of()),
+                    placeholder != null ? placeholder : (base.getPlaceholder() != null ? base.getPlaceholder() : "")
+            );
+            if (existingIdx >= 0) {
+                nextList.set(existingIdx, item);
+            } else {
+                nextList.add(item);
+            }
+            List<PromptVariable> validated = PromptVariable.normalizeList(nextList);
+            nextList = validated;
+            targetVar = validated.stream().filter(v -> key.equals(v.getKey())).findFirst().orElse(item);
+        }
+
+        String beforeDesc = formatVariablesSummary(existing);
+        String afterDesc = formatVariablesSummary(nextList);
+
+        Map<String, Object> varMap = new LinkedHashMap<>();
+        varMap.put("key", targetVar.getKey());
+        varMap.put("label", targetVar.getLabel() != null ? targetVar.getLabel() : targetVar.getKey());
+        varMap.put("type", targetVar.getType() != null ? targetVar.getType() : PromptVariable.TYPE_TEXT);
+        varMap.put("required", Boolean.TRUE.equals(targetVar.getRequired()));
+        varMap.put("defaultValue", targetVar.getDefaultValue() != null ? targetVar.getDefaultValue() : "");
+        varMap.put("options", targetVar.getOptions() != null ? targetVar.getOptions() : List.of());
+        varMap.put("placeholder", targetVar.getPlaceholder() != null ? targetVar.getPlaceholder() : "");
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("agentId", agent.getId());
+        payload.put("operation", op);
+        payload.put("variable", varMap);
+
+        String opLabel = "delete".equals(op) ? "删除自定义变量" : ("update".equals(op) ? "修改自定义变量" : "新增自定义变量");
+        var pb = previewBuilder()
+                .addField("智能体", agent.getName())
+                .addField("操作", opLabel)
+                .addField("变量名", "{{" + targetVar.getKey() + "}}")
+                .addField("显示名称", String.valueOf(varMap.get("label")));
+        if (!"delete".equals(op)) {
+            pb.addField("字段类型", variableTypeLabel(targetVar.getType()))
+                    .addField("是否必填", Boolean.TRUE.equals(targetVar.getRequired()) ? "是（必填）" : "否");
+            if (targetVar.getOptions() != null && !targetVar.getOptions().isEmpty()) {
+                pb.addField("下拉选项", String.join("、", targetVar.getOptions()));
+            }
+            if (targetVar.getDefaultValue() != null && !targetVar.getDefaultValue().isBlank()) {
+                pb.addField("默认值", targetVar.getDefaultValue());
+            }
+            if (targetVar.getPlaceholder() != null && !targetVar.getPlaceholder().isBlank()) {
+                pb.addField("输入提示", targetVar.getPlaceholder());
+            }
+            pb.note("确认后，若当前在调试页，助手会自动打开「添加自定义变量」弹窗逐项填入并保存。");
+        }
+        pb.addDiff("自定义变量列表", beforeDesc, afterDesc);
+
+        return support.createPendingCard(ctx, MANAGE_AGENT_VARIABLE, "B",
+                opLabel + "：{{" + targetVar.getKey() + "}}（" + agent.getName() + "）",
+                payload, pb.build(), "AGENT");
+    }
+
+    private AssistantWriteTools.ExecutionResult executeManageAgentVariable(JsonNode p, CurrentActor actor) {
+        Agent current = loadManageableAgent(p.path("agentId").asText(), actor);
+        String op = p.path("operation").asText("add").toLowerCase(Locale.ROOT);
+        JsonNode vNode = p.path("variable");
+        String key = vNode.path("key").asText("").trim();
+        if (key.isEmpty()) {
+            throw new IllegalStateException("缺少变量名 Key");
+        }
+        List<PromptVariable> nextList = new ArrayList<>();
+        if (current.getPromptVariables() != null) {
+            for (PromptVariable pv : current.getPromptVariables()) {
+                if (pv != null) nextList.add(pv.copy());
+            }
+        }
+        int idx = -1;
+        for (int i = 0; i < nextList.size(); i++) {
+            if (key.equals(nextList.get(i).getKey())) {
+                idx = i;
+                break;
+            }
+        }
+        if ("delete".equals(op)) {
+            if (idx >= 0) {
+                nextList.remove(idx);
+            }
+        } else {
+            List<String> opts = new ArrayList<>();
+            if (vNode.has("options") && vNode.get("options").isArray()) {
+                vNode.get("options").forEach(o -> opts.add(o.asText("")));
+            }
+            PromptVariable item = new PromptVariable(
+                    key,
+                    vNode.path("label").asText(key),
+                    vNode.path("type").asText(PromptVariable.TYPE_TEXT),
+                    vNode.path("required").asBoolean(false),
+                    vNode.path("defaultValue").asText(""),
+                    opts,
+                    vNode.path("placeholder").asText("")
+            );
+            if (idx >= 0) {
+                nextList.set(idx, item);
+            } else {
+                nextList.add(item);
+            }
+        }
+        List<PromptVariable> normalized = PromptVariable.normalizeList(nextList);
+        Agent patch = AssistantWriteTools.patchFrom(current);
+        patch.setPromptVariables(normalized);
+        agentService.update(current.getId(), patch, actor);
+        String actionText = "delete".equals(op) ? "已删除变量" : ("update".equals(op) ? "已更新变量" : "已新增变量");
+        return new AssistantWriteTools.ExecutionResult("AGENT", current.getId(),
+                actionText + " {{" + key + "}}", "去调试",
+                AssistantQueryTools.agentLink(current.getId()), null,
+                "当前共 " + normalized.size() + " 个自定义变量：" + formatVariablesSummary(normalized));
+    }
+
+    private static String formatVariablesSummary(List<PromptVariable> list) {
+        if (list == null || list.isEmpty()) {
+            return "（无自定义变量）";
+        }
+        List<String> parts = new ArrayList<>();
+        for (PromptVariable v : list) {
+            String lbl = v.getLabel() != null && !v.getLabel().isBlank() ? v.getLabel() : v.getKey();
+            parts.add("{{" + v.getKey() + "}}(" + lbl + ")");
+        }
+        return String.join("、", parts);
+    }
+
+    private static String variableTypeLabel(String type) {
+        if (type == null) return "单行文本";
+        return switch (type.toLowerCase(Locale.ROOT)) {
+            case "paragraph" -> "多行文本";
+            case "select" -> "下拉选项";
+            case "number" -> "数字";
+            default -> "单行文本";
         };
     }
 
@@ -1623,6 +1850,7 @@ public class AssistantExtendedWriteTools {
         if (p.hasNonNull("topP")) patch.setTopP(p.get("topP").asDouble());
         if (p.hasNonNull("maxTokens")) patch.setMaxTokens(p.get("maxTokens").asInt());
         if (p.hasNonNull("memoryTurns")) patch.setMemoryTurns(p.get("memoryTurns").asInt());
+        if (p.hasNonNull("memoryCompression")) patch.setMemoryCompression(p.get("memoryCompression").asBoolean());
         if (p.hasNonNull("thinkingMode")) patch.setThinkingMode(p.get("thinkingMode").asText());
         if (p.hasNonNull("knowledgeMode")) patch.setKnowledgeMode(p.get("knowledgeMode").asText());
         if (p.has("skillIds") && p.get("skillIds").isArray()) {
@@ -1639,6 +1867,7 @@ public class AssistantExtendedWriteTools {
                 + "，模型=" + blankOr(readbackAgent.getModelName(), "跟随默认")
                 + "，温度=" + readbackAgent.getTemperature()
                 + "，记忆=" + readbackAgent.resolveMemoryTurns() + "轮"
+                + (readbackAgent.isMemoryCompressionEnabled() ? "(压缩开)" : "")
                 + "，思考=" + Agent.normalizeThinkingMode(readbackAgent.getThinkingMode())
                 + "，知识库模式=" + Agent.normalizeKnowledgeMode(readbackAgent.getKnowledgeMode());
         return new AssistantWriteTools.ExecutionResult("AGENT", readbackAgent.getId(),
@@ -2350,6 +2579,7 @@ public class AssistantExtendedWriteTools {
                 String.valueOf(a.getTopP()),
                 String.valueOf(a.getMaxTokens()),
                 String.valueOf(a.resolveMemoryTurns()),
+                String.valueOf(Boolean.TRUE.equals(a.getMemoryCompression())),
                 Agent.normalizeThinkingMode(a.getThinkingMode()),
                 Agent.normalizeKnowledgeMode(a.getKnowledgeMode()),
                 String.valueOf(a.getSkillIds()),

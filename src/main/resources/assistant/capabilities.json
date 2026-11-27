@@ -144,7 +144,12 @@
     "链路开",
     "链路关",
     "记录开放接口调用链路",
-    "贴边隐藏"
+    "贴边隐藏",
+    "记忆压缩",
+    "自定义变量",
+    "变量表单",
+    "压缩记忆",
+    "写入草稿试聊"
   ],
   "capabilities": [
     { "id": "overview.usage.summary", "menu": "监控 › 概览", "tabId": "overview", "action": "查询 Token 总量、输入输出与预估成本", "handling": "READ", "tool": "get_usage_summary", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "概览" },
@@ -154,11 +159,13 @@
     { "id": "overview.usage.failover_explain", "menu": "监控 › 概览", "tabId": "overview", "action": "了解概览中主备通道故障切换次数说明", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "概览" },
 
     { "id": "agent.list", "menu": "构建 › 智能体", "tabId": "agents", "action": "查询可见智能体列表与运行状态", "handling": "READ", "tool": "list_agents", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/智能体列表" },
+    { "id": "assistant.navigate.page", "menu": "构建 › 智能体", "tabId": "agents", "action": "跨页面跳转到指定智能体调试页、知识库详情或控制台模块", "handling": "READ", "tool": "navigate_to_page", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "AI 助手" },
     { "id": "agent.detail", "menu": "构建 › 智能体", "tabId": "agents", "action": "查看单个智能体完整配置摘要", "handling": "READ", "tool": "get_agent_detail", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/编排与调试" },
     { "id": "agent.diagnose", "menu": "构建 › 智能体", "tabId": "agents", "action": "诊断智能体无回复、回答不准或工具/知识库失效问题", "handling": "READ", "tool": "diagnose_agent", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "常见问题/智能体调试时没有回复" },
     { "id": "agent.create", "menu": "构建 › 智能体", "tabId": "agents", "action": "创建新智能体（或基于模板创建）", "handling": "WRITE", "risk": "A", "tool": "create_agent", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/创建智能体" },
     { "id": "agent.status.toggle", "menu": "构建 › 智能体", "tabId": "agents", "action": "启用或停用智能体", "handling": "WRITE", "risk": "B", "tool": "set_agent_status", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/智能体列表" },
     { "id": "agent.prompt.update", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "修改智能体系统提示词", "handling": "WRITE", "risk": "B", "tool": "update_agent_prompt", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/编排与调试" },
+    { "id": "agent.variable.manage", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "新增、修改或删除智能体自定义提示词变量", "handling": "WRITE", "risk": "B", "tool": "manage_agent_variable", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/编排与调试" },
     { "id": "agent.kb.bind", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "给智能体绑定或解绑知识库", "handling": "WRITE", "risk": "B", "tool": "bind_knowledge_base", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/编排与调试" },
     { "id": "agent.api_key.create", "menu": "构建 › 智能体 › 访问入口", "tabId": "agents", "action": "为智能体签发专属对话 API 凭证", "handling": "WRITE", "risk": "A", "tool": "create_api_key", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "开放与安全/通过开放 API 调用智能体" },
     { "id": "agent.share_link.list", "menu": "构建 › 智能体 › 访问入口", "tabId": "agents", "action": "查询智能体分享链接的状态、到期时间与用量", "handling": "READ", "tool": "list_share_links", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/访问入口" },
@@ -169,10 +176,10 @@
     { "id": "agent.delete", "menu": "构建 › 智能体", "tabId": "agents", "action": "删除智能体", "handling": "WRITE", "risk": "D", "tool": "delete_resource", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "AI 助手" },
     { "id": "agent.update.model_route", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "修改智能体主通道、模型与备用通道路由", "handling": "WRITE", "risk": "B", "tool": "update_agent_settings", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "配置项详细说明/智能体模型与对话参数" },
     { "id": "agent.update.temperature", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "修改智能体温度、Top P 与最大输出长度", "handling": "WRITE", "risk": "B", "tool": "update_agent_settings", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "配置项详细说明/智能体模型与对话参数" },
-    { "id": "agent.update.memory_turns", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "修改智能体上下文记忆轮数（0～10 轮）", "handling": "WRITE", "risk": "B", "tool": "update_agent_settings", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "配置项详细说明/智能体模型与对话参数" },
+    { "id": "agent.update.memory_turns", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "修改智能体上下文记忆轮数（0～10 轮）与记忆压缩开关", "handling": "WRITE", "risk": "B", "tool": "update_agent_settings", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "配置项详细说明/智能体模型与对话参数" },
     { "id": "agent.update.thinking_mode", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "修改智能体思考模式（OFF/AUTO/ON）", "handling": "WRITE", "risk": "B", "tool": "update_agent_settings", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "配置项详细说明/智能体模型与对话参数" },
     { "id": "agent.update.knowledge_mode", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "切换先检索后回答与模型自主检索模式", "handling": "WRITE", "risk": "B", "tool": "update_agent_settings", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "配置项详细说明/智能体模型与对话参数" },
-    { "id": "agent.update.variables", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "在提示词中使用变量与提示词缓存说明", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/编排与调试" },
+    { "id": "agent.update.variables", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "配置内置与自定义提示词变量（调试/分享表单与开放接口 inputs 注入）及提示词缓存说明", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/编排与调试" },
     { "id": "agent.update.tools", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "在智能体上勾选内置/HTTP/MCP 工具", "handling": "WRITE", "risk": "B", "tool": "update_agent_settings", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/编排与调试" },
     { "id": "agent.update.skills", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "给智能体关联或取消关联技能", "handling": "WRITE", "risk": "B", "tool": "update_agent_settings", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/编排与调试" },
     { "id": "agent.prompt.versions.list", "menu": "构建 › 智能体 › 编排", "tabId": "agents", "action": "查看智能体提示词历史版本与差异对比", "handling": "READ", "tool": "list_resources", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/编排与调试" },
@@ -262,7 +269,7 @@
     { "id": "role.list", "menu": "管理 › 角色与权限", "tabId": "roles", "action": "查看系统固定角色权限对照矩阵", "handling": "READ", "tool": "list_resources", "roles": ["SUPER_ADMIN"], "docAnchor": "用户管理" },
 
     { "id": "assistant_eval.view", "menu": "管理 › 助手评测", "tabId": "assistant-eval", "action": "查看与运行平台 AI 助手回归评测", "handling": "GUIDE", "roles": ["SUPER_ADMIN"], "docAnchor": "AI 助手" },
-    { "id": "assistant.usage.explain", "menu": "管理 › 助手评测", "tabId": "assistant-eval", "action": "了解 AI 助手执行模式、问答模式、操作卡片与页面上下文", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "AI 助手" },
+    { "id": "assistant.usage.explain", "menu": "管理 › 助手评测", "tabId": "assistant-eval", "action": "了解 AI 助手执行模式、问答模式、操作卡片、多轮记忆与自动压缩及页面上下文", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "AI 助手" },
 
     { "id": "security.overview", "menu": "管理 › 开放与安全", "tabId": "security", "action": "了解开放与安全模块功能结构与风险总览", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "开放与安全" },
     { "id": "security.docs.chat_api", "menu": "管理 › 开放与安全 › 接入文档", "tabId": "security", "action": "了解通过开放 API 调用智能体对话（阻塞/流式/FAQ附图）", "handling": "DOC", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "3. 对话接口" },

@@ -7102,5 +7102,91 @@
       ]
     },
     "referenceAnswer": "参考能力项「了解 FAQ 图片与视频附件说明」（菜单：数据 › 自建知识库，文档锚点：知识库/文档与 FAQ），多图 3 秒自动轮播切换、视频自动播放且播完自动连播切换下一个。"
+  },
+  {
+    "id": "nav-page-01",
+    "category": "平台查询",
+    "capabilityId": "assistant.navigate.page",
+    "variant": "standard",
+    "role": "DEVELOPER",
+    "question": "带我进入智能体列表页面",
+    "expect": {
+      "toolsAny": [
+        "navigate_to_page"
+      ],
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0
+    },
+    "referenceAnswer": "调用 navigate_to_page 跳转到智能体列表页面（/dashboard?tab=agents）。"
+  },
+  {
+    "id": "nav-page-02",
+    "category": "平台查询",
+    "capabilityId": "assistant.navigate.page",
+    "variant": "paraphrase",
+    "role": "SUPER_ADMIN",
+    "question": "帮我打开模型网关页面看看",
+    "expect": {
+      "toolsAny": [
+        "navigate_to_page"
+      ],
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0
+    },
+    "referenceAnswer": "调用 navigate_to_page 跳转到模型网关页面（/dashboard?tab=gateway）。"
+  },
+  {
+    "id": "var-manage-01",
+    "category": "写操作确认",
+    "capabilityId": "agent.variable.manage",
+    "variant": "standard",
+    "role": "DEVELOPER",
+    "question": "帮我的智能体新增一个自定义变量 store_name，显示名称叫门店名称",
+    "expect": {
+      "toolsAny": [
+        "manage_agent_variable"
+      ],
+      "cardsMin": 1
+    },
+    "referenceAnswer": "调用 manage_agent_variable 生成新增变量 store_name 的待确认操作卡片。"
+  },
+  {
+    "id": "var-manage-02",
+    "category": "写操作确认",
+    "capabilityId": "agent.variable.manage",
+    "variant": "paraphrase",
+    "role": "SUPER_ADMIN",
+    "question": "给这个智能体加一个必填的下拉变量 city，选项是深圳、上海、北京",
+    "expect": {
+      "toolsAny": [
+        "manage_agent_variable"
+      ],
+      "cardsMin": 1
+    },
+    "referenceAnswer": "调用 manage_agent_variable 生成新增必填下拉变量 city 的待确认操作卡片。"
+  },
+  {
+    "id": "var-manage-03",
+    "category": "只读权限边界",
+    "capabilityId": "agent.variable.manage",
+    "variant": "viewer_denied",
+    "role": "VIEWER",
+    "question": "帮这个智能体添加一个自定义变量 store_name",
+    "expect": {
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0,
+      "answerContainsAny": [
+        "只读",
+        "权限",
+        "不能"
+      ]
+    },
+    "referenceAnswer": "只读观察员无权新增或修改智能体变量，应拒绝并说明权限限制。"
   }
 ]

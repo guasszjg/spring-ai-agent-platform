@@ -52,6 +52,9 @@ public class Agent {
     /** 上下文记忆轮数：每次对话带上最近 N 轮问答，0 = 关闭记忆 */
     @Column(name = "memory_turns")
     private Integer memoryTurns = DEFAULT_MEMORY_TURNS;
+    /** 超长对话自动记忆压缩：开启后超出记忆轮数的早期对话在后台异步浓缩为摘要，默认关闭；null 表示更新请求未修改 */
+    @Column(name = "memory_compression")
+    private Boolean memoryCompression;
     /** 思考模式：AUTO 跟随模型默认 / ON 开启 / OFF 关闭 */
     @Column(name = "thinking_mode", length = 8)
     private String thinkingMode = DEFAULT_THINKING_MODE;
@@ -283,6 +286,19 @@ public class Agent {
             return DEFAULT_MEMORY_TURNS;
         }
         return Math.max(0, Math.min(MAX_MEMORY_TURNS, memoryTurns));
+    }
+
+    public Boolean getMemoryCompression() {
+        return memoryCompression;
+    }
+
+    public void setMemoryCompression(Boolean memoryCompression) {
+        this.memoryCompression = memoryCompression;
+    }
+
+    /** 仅在开启上下文记忆（memoryTurns > 0）且打开记忆压缩开关时生效 */
+    public boolean isMemoryCompressionEnabled() {
+        return Boolean.TRUE.equals(memoryCompression) && resolveMemoryTurns() > 0;
     }
 
     public void setMaxTokens(Integer maxTokens) {

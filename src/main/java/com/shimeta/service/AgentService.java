@@ -212,6 +212,7 @@ public class AgentService {
         agent.setToolsConfig(toolConfigSanitizer.sanitize(agent.getToolsConfig()));
         agent.setPromptVariables(com.shimeta.model.PromptVariable.normalizeList(agent.getPromptVariables()));
         agent.setMemoryTurns(agent.resolveMemoryTurns());
+        agent.setMemoryCompression(Boolean.TRUE.equals(agent.getMemoryCompression()));
         agent.setThinkingMode(Agent.normalizeThinkingMode(agent.getThinkingMode()));
         agent.setKnowledgeMode(Agent.normalizeKnowledgeMode(agent.getKnowledgeMode()));
         agent.setPrimaryProviderId(blankToNull(agent.getPrimaryProviderId()));
@@ -276,6 +277,9 @@ public class AgentService {
         if (agentUpdate.getMaxTokens() != null) existing.setMaxTokens(agentUpdate.getMaxTokens());
         if (agentUpdate.getMemoryTurns() != null) {
             existing.setMemoryTurns(Math.max(0, Math.min(Agent.MAX_MEMORY_TURNS, agentUpdate.getMemoryTurns())));
+        }
+        if (agentUpdate.getMemoryCompression() != null) {
+            existing.setMemoryCompression(Boolean.TRUE.equals(agentUpdate.getMemoryCompression()));
         }
         if (agentUpdate.getThinkingMode() != null) {
             existing.setThinkingMode(Agent.normalizeThinkingMode(agentUpdate.getThinkingMode()));
@@ -384,6 +388,7 @@ public class AgentService {
         clone.setTopP(source.getTopP());
         clone.setMaxTokens(source.getMaxTokens());
         clone.setMemoryTurns(source.resolveMemoryTurns());
+        clone.setMemoryCompression(Boolean.TRUE.equals(source.getMemoryCompression()));
         clone.setThinkingMode(Agent.normalizeThinkingMode(source.getThinkingMode()));
         clone.setKnowledgeMode(Agent.normalizeKnowledgeMode(source.getKnowledgeMode()));
         clone.setPrimaryProviderId(source.getPrimaryProviderId());

@@ -99,6 +99,22 @@ class AssistantToolRouterTest {
         var withPage = router.route("这个怎么样", Map.of("page", "debug", "resourceType", "AGENT", "resourceId", "ag-1"),
                 null, dev, false);
         assertTrue(withPage.groupIds().contains("agents"), "页面上下文应自动补入对应工具组");
+
+        // 助手上一轮主动提议查热门智能体排行，用户简短回复「可以」或「好的」时，不能当成纯寒暄丢弃工具
+        String lastOffer = "本周总 Token 812,883。需要我帮你查一下热门智能体排行吗？";
+        var yesCan = router.route("可以", Map.of("page", "overview"), Set.of("usage"), dev, false, lastOffer);
+        assertFalse("chitchat".equals(yesCan.strategy()), "有上下文时回复「可以」不应按寒暄处理");
+        assertTrue(yesCan.groupIds().contains("usage") || yesCan.groupIds().contains("agents"));
+        assertTrue(yesCan.hitsReadDataGroup(), "肯定承接数据查询提议时应触发工具查询保障");
+
+        var yesOk = router.route("好的", Map.of("page", "overview"), Set.of("usage"), dev, false, lastOffer);
+        assertFalse("chitchat".equals(yesOk.strategy()), "有上下文时回复「好的」不应按寒暄处理");
+        assertTrue(yesOk.hitsReadDataGroup());
+
+        // 首轮无历史时回复「好的」仍作为寒暄，不强制调工具
+        var firstTurnOk = router.route("好的", Map.of("page", "overview"), null, dev, false, null);
+        assertEquals("chitchat", firstTurnOk.strategy());
+        assertFalse(firstTurnOk.hitsReadDataGroup());
     }
 
     @Test

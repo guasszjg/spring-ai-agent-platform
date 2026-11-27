@@ -206,8 +206,106 @@ public class AssistantQueryTools {
                 AssistantTool.adminRead("test_gateway_channel", "测试模型通道",
                         "对一个大模型通道发起一次连通性测试并返回结果（仅超级管理员）。用户问\"XX 通道还能用吗\"\"帮我测一下通道\"时使用。",
                         schema(Map.of("channel", prop("string", "通道名称或 ID")), "channel"),
-                        (args, ctx) -> testGatewayChannel(args, ctx.actor()))
+                        (args, ctx) -> testGatewayChannel(args, ctx.actor())),
+                AssistantTool.read("navigate_to_page", "跳转平台页面",
+                        "替用户直接打开或跳转到指定页面（支持跨路由无缝切换）。当用户说\"进入这个智能体的调试界面\"\"打开 XX 智能体\"\"去知识库看看\"\"切到模型网关\"\"返回智能体列表\"时必须调用此工具。",
+                        schema(Map.of(
+                                "page", enumProp("目标页面：agent_debug（智能体调试页）、agents（智能体列表）、knowledge（知识库列表或详情）、overview（概览）、templates（场景模板）、skills（技能库）、tools（工具管理）、gateway（模型网关，仅超管）、users（用户管理，仅超管）、security（开放与安全）",
+                                        "agent_debug", "agents", "knowledge", "overview", "templates", "skills", "tools", "gateway", "users", "security"),
+                                "agent", prop("string", "当 page=agent_debug 时必填：智能体的 ID、编码或名称"),
+                                "knowledgeBase", prop("string", "当 page=knowledge 且要直接打开某知识库详情时填写：知识库 ID 或名称"),
+                                "subTab", prop("string", "可选子页签：agent_debug 支持 orchestrate/logs/monitor/api；knowledge 支持 documents/faqs/retrieval-test/evaluation；tools 支持 tools/mcp；security 支持 overview/keys/clients/policy/audit/alerts"),
+                                "keyword", prop("string", "可选：跳转后顺便在目标页搜索框输入的关键词")),
+                                "page"),
+                        (args, ctx) -> navigateToPage(args, ctx.actor()))
         );
+    }
+
+    // ==================== navigate_to_page ====================
+
+    Map<String, Object> navigateToPage(JsonNode args, CurrentActor actor) {
+        String page = text(args, "page");
+        if (page == null) {
+            throw new IllegalArgumentException("请指定目标页面 page");
+        }
+        String normalizedPage = page.toLowerCase(Locale.ROOT);
+        String subTab = text(args, "subTab");
+        String keyword = text(args, "keyword");
+
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("navigated", true);
+        m.put("page", normalizedPage);
+        if (subTab != null) {
+            m.put("subTab", subTab);
+        }
+        if (keyword != null) {
+            m.put("keyword", keyword);
+        }
+
+        switch (normalizedPage) {
+            case "agent_debug" -> {
+                String agentRef = text(args, "agent");
+                if (agentRef == null) {
+                    throw new IllegalArgumentException("打开智能体调试页时请提供智能体的名称、编码或 ID");
+                }
+                AgentMatch match = resolveAgent(agentRef, actor);
+                if (match.agent() == null) {
+                    return match.response();
+                }
+                Agent agent = match.agent();
+                String url = agentLink(agent.getId());
+                if (subTab != null && !subTab.isBlank() && !"orchestrate".equalsIgnoreCase(subTab)) {
+                    url = url + "?tab=" + ("api".equalsIgnoreCase(subTab) ? "access" : subTab.toLowerCase(Locale.ROOT));
+                }
+                m.put("agentId", agent.getId());
+                m.put("agentName", agent.getName());
+                m.put("title", "智能体「" + agent.getName() + "」调试页");
+                m.put("url", url);
+                m.put("link", url);
+                return ok(m);
+            }
+            case "knowledge" -> {
+                String kbRef = text(args, "knowledgeBase");
+                if (kbRef != null) {
+                    KnowledgeBase kb = resolveKnowledgeBase(kbRef, actor);
+                    String tab = "DIFY".equalsIgnoreCase(kb.getProvider()) ? "knowledge-dify" : "knowledge";
+                    String url = "/dashboard?tab=" + tab + "&kb=" + kb.getId();
+                    m.put("kbId", kb.getId());
+                    m.put("kbName", kb.getName());
+                    m.put("dashboardTab", tab);
+                    m.put("title", "知识库「" + kb.getName() + "」");
+                    m.put("url", url);
+                    m.put("link", url);
+                    return ok(m);
+                }
+                String url = "/dashboard?tab=knowledge";
+                m.put("dashboardTab", "knowledge");
+                m.put("title", "自建知识库");
+                m.put("url", url);
+                m.put("link", url);
+                return ok(m);
+            }
+            case "gateway", "users" -> {
+                if (!actor.isSuperAdmin()) {
+                    throw new IllegalStateException("该页面仅超级管理员可访问");
+                }
+                String url = "/dashboard?tab=" + normalizedPage;
+                m.put("dashboardTab", normalizedPage);
+                m.put("title", "gateway".equals(normalizedPage) ? "模型网关" : "用户管理");
+                m.put("url", url);
+                m.put("link", url);
+                return ok(m);
+            }
+            case "overview", "agents", "templates", "skills", "tools", "security" -> {
+                String url = "/dashboard?tab=" + normalizedPage;
+                m.put("dashboardTab", normalizedPage);
+                m.put("title", PAGE_NAMES.getOrDefault(normalizedPage, normalizedPage));
+                m.put("url", url);
+                m.put("link", url);
+                return ok(m);
+            }
+            default -> throw new IllegalArgumentException("不支持的目标页面：" + page);
+        }
     }
 
     // ==================== test_gateway_channel ====================
@@ -432,7 +530,17 @@ public class AssistantQueryTools {
         m.put("temperature", a.getTemperature());
         m.put("maxTokens", a.getMaxTokens());
         m.put("memoryTurns", a.resolveMemoryTurns());
+        m.put("memoryCompression", a.isMemoryCompressionEnabled());
         m.put("thinkingMode", Agent.normalizeThinkingMode(a.getThinkingMode()));
+        if (a.getPromptVariables() != null && !a.getPromptVariables().isEmpty()) {
+            m.put("promptVariables", a.getPromptVariables().stream().map(v -> Map.of(
+                    "key", v.getKey(),
+                    "label", v.getLabel() != null ? v.getLabel() : v.getKey(),
+                    "type", v.getType() != null ? v.getType() : "text",
+                    "required", Boolean.TRUE.equals(v.getRequired()),
+                    "defaultValue", v.getDefaultValue() != null ? v.getDefaultValue() : ""
+            )).toList());
+        }
         m.put("route", agentRouteSummary(a, actor));
         m.put("tags", a.getTags());
         m.put("knowledgeBases", knowledgeBaseRefs(a, actor));

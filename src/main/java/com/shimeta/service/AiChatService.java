@@ -170,6 +170,12 @@ public class AiChatService {
     private static final ThreadLocal<List<String>> RETRIEVED_FAQ_IMAGES = new ThreadLocal<>();
     private static final ThreadLocal<List<String>> RETRIEVED_FAQ_VIDEOS = new ThreadLocal<>();
     private static final com.fasterxml.jackson.databind.ObjectMapper TRACE_MAPPER = new com.fasterxml.jackson.databind.ObjectMapper();
+    private ConversationCompactionService compactionService;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setCompactionService(ConversationCompactionService compactionService) {
+        this.compactionService = compactionService;
+    }
 
     public ChatResponse chat(ChatRequest request, StreamSink sink) {
         long startTime = System.currentTimeMillis();
@@ -313,6 +319,12 @@ public class AiChatService {
         java.util.Map<String, String> resolvedInputs = com.shimeta.model.PromptVariable.resolveInputs(
                 agent.getPromptVariables(), request.getInputs(), true);
 
+        // 仅当智能体开启了「记忆压缩」且续接已有会话时读取早期摘要（默认关闭，零额外查询）
+        String memorySummary = (agent.isMemoryCompressionEnabled()
+                && request.getConversationId() != null && !request.getConversationId().isBlank())
+                ? conversationService.getMemorySummary(agent.getId(), request.getConversationId(), request.getAccount()).orElse(null)
+                : null;
+
         if (traceCtx != null && prepareStepId != null) {
             int kbCount = agent.getKnowledgeBaseIds() != null ? agent.getKnowledgeBaseIds().size() : 0;
             int skillCount = agent.getSkillIds() != null ? agent.getSkillIds().size() : 0;
@@ -320,6 +332,10 @@ public class AiChatService {
             int historyCount = request.getHistory() != null ? request.getHistory().size() : 0;
             java.util.Map<String, Object> prepDetail = new java.util.LinkedHashMap<>();
             prepDetail.put("memoryTurnsConfig", agent.resolveMemoryTurns());
+            prepDetail.put("memoryCompression", agent.isMemoryCompressionEnabled());
+            if (memorySummary != null) {
+                prepDetail.put("memorySummaryChars", memorySummary.length());
+            }
             prepDetail.put("historyMessages", historyCount);
             prepDetail.put("knowledgeBaseCount", kbCount);
             prepDetail.put("knowledgeMode", agent.isAgenticKnowledge() ? "模型自主检索" : "先检索后回答");
@@ -330,15 +346,17 @@ public class AiChatService {
                 prepDetail.put("promptVariables", resolvedInputs);
             }
             traceCtx.finishStep(prepareStepId,
-                    String.format("历史 %d 条 · 知识库 %d 个 · 工具 %d 个 · 技能 %d 个%s",
-                            historyCount, kbCount, toolCount, skillCount,
+                    String.format("历史 %d 条%s · 知识库 %d 个 · 工具 %d 个 · 技能 %d 个%s",
+                            historyCount,
+                            memorySummary != null ? "+记忆摘要" : "",
+                            kbCount, toolCount, skillCount,
                             resolvedInputs.isEmpty() ? "" : " · 变量 " + resolvedInputs.size() + " 个"),
                     prepDetail);
         }
 
         try {
             OpenAiCompatibleClient.ChatResult routed = invokeViaGateway(agent, routeChoice, userMessage, request.getHistory(),
-                    request.getGeneration(), request.getPrompt(), request.getInputs(), tools, request.getEnabledTools(), routedModel, trackedSink, trace);
+                    request.getGeneration(), request.getPrompt(), request.getInputs(), memorySummary, tools, request.getEnabledTools(), routedModel, trackedSink, trace);
             if (routed != null && routed.content() != null && !routed.content().isBlank()) {
                 reply = routed.content();
                 executionModel = routedModel[0];
@@ -366,8 +384,10 @@ public class AiChatService {
             } else if (chatClient != null) {
                 log.info("Invoking Spring AI ChatClient for Agent: [{}] with model: [{}]", agent.getName(), executionModel);
                 
+                String summaryBlock = (memorySummary != null && !memorySummary.isBlank())
+                        ? "【早期对话记忆摘要】\n" + memorySummary.trim() : null;
                 PromptLayout layout = buildPromptLayout(request.getPrompt(), agent, userMessage, request.getEnabledTools(),
-                        null, null, true, request.getInputs());
+                        null, summaryBlock, true, request.getInputs());
                 var clientRequest = chatClient.prompt()
                         .system(layout.system());
 
@@ -480,6 +500,9 @@ public class AiChatService {
                 request.getNewConversationId()
         );
         response.setConversationId(conversation.getId());
+        if (realModelReply && compactionService != null && agent.isMemoryCompressionEnabled()) {
+            compactionService.compactAgentAsync(agent, conversation.getId());
+        }
         return response;
     }
 
@@ -576,6 +599,7 @@ public class AiChatService {
                                                                String userMessage,
                                                                List<ChatMessage> history, ChatGeneration generation,
                                                                String livePrompt, java.util.Map<String, Object> inputs,
+                                                               String memorySummary,
                                                                List<java.util.Map<String, Object>> tools,
                                                                List<String> enabledTools,
                                                                String[] routedModel, StreamSink sink, RouteTrace trace) {
@@ -616,7 +640,9 @@ public class AiChatService {
             // 技能靠 load_skill 工具加载，通道不支持工具调用时也不放技能目录
             com.shimeta.skill.SkillSession skills = primaryTools ? toolRegistry.currentSkillSession() : null;
             String skillCatalog = skills != null ? skills.catalog() : null;
-            String systemAppendix = joinNonBlank(agenticKnowledge ? knowledge.guidance() : null, skillCatalog);
+            String summaryAppendix = (memorySummary != null && !memorySummary.isBlank())
+                    ? "【早期对话记忆摘要】\n" + memorySummary.trim() : null;
+            String systemAppendix = joinNonBlank(joinNonBlank(agenticKnowledge ? knowledge.guidance() : null, skillCatalog), summaryAppendix);
             boolean retrieveFirst = !agenticKnowledge;
 
             // 主备通道都配置了上下文窗口时取较小的那个，切到备用通道时同一份消息也放得下

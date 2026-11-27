@@ -56,6 +56,18 @@ public class AgentConversationService {
     }
 
     @Transactional(readOnly = true)
+    public Optional<String> getMemorySummary(String agentId, String conversationId, String account) {
+        if (conversationId == null || conversationId.isBlank()) {
+            return Optional.empty();
+        }
+        return conversationRepository.findById(conversationId.trim())
+                .filter(c -> agentId != null && agentId.equals(c.getAgentId()))
+                .filter(c -> account == null || account.isBlank() || account.trim().equals(c.getAccount()))
+                .map(AgentConversation::getMemorySummary)
+                .filter(s -> s != null && !s.isBlank());
+    }
+
+    @Transactional(readOnly = true)
     public List<ChatMessage> recentHistory(String agentId, String conversationId, String account, int turns) {
         if (turns <= 0 || conversationId == null || conversationId.isBlank()) {
             return List.of();

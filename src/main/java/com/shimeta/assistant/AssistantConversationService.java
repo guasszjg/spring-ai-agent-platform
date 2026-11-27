@@ -97,6 +97,16 @@ public class AssistantConversationService {
         return all.subList(Math.max(0, all.size() - limit), all.size());
     }
 
+    /** 已有滚动记忆摘要时，仅取摘要截断点之后的未压缩消息（最多 limit 条，避免把已浓缩的消息重复发给模型）。 */
+    public List<AssistantMessage> recentHistoryAfterSummary(String conversationId, int summaryMsgCount, int limit) {
+        List<AssistantMessage> all = messageRepository.findByConversationIdOrderByCreatedAtAsc(conversationId);
+        int start = Math.max(0, Math.min(summaryMsgCount, all.size()));
+        if (all.size() - start > limit) {
+            start = all.size() - limit;
+        }
+        return all.subList(start, all.size());
+    }
+
     public List<Map<String, Object>> list(CurrentActor actor) {
         if (actor == null || actor.getUserId() == null) {
             return List.of();
@@ -118,6 +128,8 @@ public class AssistantConversationService {
             m.put("id", c.getId());
             m.put("title", c.getTitle());
             m.put("updatedAt", c.getUpdatedAt());
+            m.put("memorySummary", c.getMemorySummary());
+            m.put("summaryMsgCount", c.getSummaryMsgCount());
             m.put("messages", messageRepository.findByConversationIdOrderByCreatedAtAsc(c.getId()));
             return m;
         });
@@ -134,6 +146,8 @@ public class AssistantConversationService {
             messageRepository.clearContents(c.getId());
             actionRepository.clearForConversation(c.getId());
             c.setTitle(null);
+            c.setMemorySummary(null);
+            c.setSummaryMsgCount(0);
             c.setDeletedAt(LocalDateTime.now());
             conversationRepository.save(c);
         });

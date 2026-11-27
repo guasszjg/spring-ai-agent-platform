@@ -45,10 +45,16 @@ public class AssistantController {
     private final RateLimiter rateLimiter;
     private final int rateLimitPerMinute;
     private AssistantEvalService evalService;
+    private com.shimeta.service.ConversationCompactionService compactionService;
 
     @Autowired(required = false)
     public void setEvalService(AssistantEvalService evalService) {
         this.evalService = evalService;
+    }
+
+    @Autowired(required = false)
+    public void setCompactionService(com.shimeta.service.ConversationCompactionService compactionService) {
+        this.compactionService = compactionService;
     }
 
     public AssistantController(AiChatService aiChatService,
@@ -178,6 +184,24 @@ public class AssistantController {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error("会话不存在或已删除"));
         }
         return ResponseEntity.ok(ApiResponse.ok(null));
+    }
+
+    /** 手动触发当前助手会话的早期记忆压缩，返回最新摘要与已压缩条数。 */
+    @PostMapping("/conversations/{id}/compact")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> compactConversation(@PathVariable String id) {
+        CurrentActor actor = CurrentActor.get();
+        if (conversationService.find(id, actor).isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error("会话不存在或已删除"));
+        }
+        if (compactionService == null) {
+            return ResponseEntity.ok(ApiResponse.ok("记忆压缩服务未启用", Map.of("compacted", false, "summaryMsgCount", 0)));
+        }
+        var result = compactionService.compactAssistantNow(id);
+        Map<String, Object> data = new java.util.LinkedHashMap<>();
+        data.put("compacted", result.compacted());
+        data.put("memorySummary", result.memorySummary());
+        data.put("summaryMsgCount", result.summaryMsgCount());
+        return ResponseEntity.ok(ApiResponse.ok(result.message(), data));
     }
 
     /** 页面上下文只接受已知字段并限制长度；资源是否可见由助手按当前用户权限再校验 */

@@ -624,4 +624,55 @@ class AssistantServiceTest {
         verify(openAiClient, times(1)).streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(),
                 any(), any(), any(), anyInt(), any(), any());
     }
+
+    @Test
+    void tightContextWindowNeverWipesLatestTurnAndPreservesAssistantOfferTail() {
+        // 模拟 4096 窗口下 system + tools 已占满预算时，绝不能把上一轮对话也全裁掉导致助手失忆
+        List<Map<String, Object>> base = new ArrayList<>();
+        base.add(Map.of("role", "system", "content", "系统提示与全量菜单说明".repeat(250)));
+        base.add(Map.of("role", "user", "content", "这周 token 用了多少，成本多少？"));
+        base.add(Map.of("role", "assistant", "content",
+                "本周总 Token 812,883。" + "详细表格数据内容。".repeat(120) + "需要我帮你查一下热门智能体排行吗？"));
+        base.add(Map.of("role", "user", "content", "可以"));
+
+        List<Map<String, Object>> fitted = service.fitMessagesForWindow(base, List.of(), 4096);
+
+        assertEquals(4, fitted.size(), "即使 4096 窗口非常紧张，也必须浓缩保留最近一轮 user+assistant 历史");
+        assertEquals("user", fitted.get(1).get("role"));
+        assertEquals("assistant", fitted.get(2).get("role"));
+        assertTrue(String.valueOf(fitted.get(2).get("content")).contains("热门智能体排行"),
+                "浓缩保留时必须保住助手上一轮结尾的提议内容");
+        assertEquals("可以", fitted.get(3).get("content"));
+    }
+
+    @Test
+    void affirmativeFollowUpWithColdCacheInfersHistoryToolsAndCallsTool() {
+        AssistantMessage prevUser = new AssistantMessage();
+        prevUser.setRole(AssistantMessage.ROLE_USER);
+        prevUser.setContent("这周 token 用了多少？");
+        AssistantMessage prevAssistant = new AssistantMessage();
+        prevAssistant.setRole(AssistantMessage.ROLE_ASSISTANT);
+        prevAssistant.setContent("本周总 Token 812,883。需要我帮你查一下热门智能体排行吗？");
+        prevAssistant.setToolCalls("[{\"name\":\"get_usage_summary\",\"ok\":true}]");
+        when(conversationService.recentHistory(eq("asc-1"), anyInt())).thenReturn(List.of(prevUser, prevAssistant));
+
+        when(openAiClient.streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(), any(), any(), any(), anyInt(), any(), any()))
+                .thenReturn(new OpenAiCompatibleClient.StreamResult("", List.of(
+                        new OpenAiCompatibleClient.ToolCall("call_rank", "list_agents", "{}")), 100, 12))
+                .thenAnswer(inv -> {
+                    contentCallback(inv).accept("热门智能体排行如下...");
+                    return new OpenAiCompatibleClient.StreamResult("热门智能体排行如下...", List.of(), 130, 20);
+                });
+
+        service.converse(new AssistantChatRequest("asc-1", "可以", "AGENT", Map.of("page", "overview")), actor, sink);
+
+        ArgumentCaptor<List<Map<String, Object>>> msgCap = ArgumentCaptor.forClass(List.class);
+        verify(openAiClient, times(2)).streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(),
+                msgCap.capture(), any(), any(), anyInt(), any(), any());
+        List<Map<String, Object>> sent = msgCap.getAllValues().get(0);
+        assertTrue(sent.size() >= 4, "应完整携带上一轮 user+assistant 历史和本轮「可以」");
+        assertEquals("这周 token 用了多少？", sent.get(1).get("content"));
+        assertTrue(String.valueOf(sent.get(2).get("content")).contains("热门智能体排行"));
+        assertEquals("可以", sent.get(3).get("content"));
+    }
 }

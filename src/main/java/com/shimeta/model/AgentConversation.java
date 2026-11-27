@@ -40,6 +40,14 @@ public class AgentConversation {
 
     private long totalTokens;
 
+    /** 早期对话滚动记忆摘要（开启智能体「记忆压缩」后异步维护，仅压缩滑窗之前的轮次） */
+    @Column(name = "memory_summary", columnDefinition = "TEXT")
+    private String memorySummary;
+
+    /** 已被浓缩进 memorySummary 的历史消息条数（按时间正序前 N 条） */
+    @Column(name = "summary_msg_count")
+    private Integer summaryMsgCount = 0;
+
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
@@ -116,6 +124,22 @@ public class AgentConversation {
 
     public void setTotalTokens(long totalTokens) {
         this.totalTokens = totalTokens;
+    }
+
+    public String getMemorySummary() {
+        return memorySummary;
+    }
+
+    public void setMemorySummary(String memorySummary) {
+        this.memorySummary = memorySummary;
+    }
+
+    public Integer getSummaryMsgCount() {
+        return summaryMsgCount == null ? 0 : summaryMsgCount;
+    }
+
+    public void setSummaryMsgCount(Integer summaryMsgCount) {
+        this.summaryMsgCount = summaryMsgCount == null ? 0 : Math.max(0, summaryMsgCount);
     }
 
     public LocalDateTime getCreatedAt() {

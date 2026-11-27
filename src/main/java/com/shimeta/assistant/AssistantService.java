@@ -72,7 +72,8 @@ public class AssistantService {
             "(已|已经)(为你|为您|帮你|帮您)?生成[^。\n]{0,12}卡片|卡片[^。\n]{0,6}已(经)?(为你|为您|帮你|帮您)?生成");
     /** 宁宽勿严的写操作意图判断：纯查询时不挂载写工具与冗长卡片规则，避免 4096 等小上下文窗口溢出 */
     private static final java.util.regex.Pattern WRITE_INTENT = java.util.regex.Pattern.compile(
-            "(?i)(创建|新建|建一|建个|加一|添加|新增|修改|改成|改为|更新|编辑|调整|调成|换成|切换|激活|绑定|解绑|关联|取消关联|"
+            "(?i)(创建|新建|建一|建个|加一|加个|加入|添加|新增|修改|改成|改为|改一下|改改|更新|编辑|调整|调成|换成|切换|激活|绑定|解绑|关联|取消关联|"
+                    + "优化|润色|改写|重写|完善|精简|补全|重构|整理|写一|帮我写|设置|配置|设为|变量|"
                     + "停用|启用|开启|关闭|暂停|发布|上线|下线|签发|生成|凭证|api\\s*key|apikey|faq|卡片|套用|存为|登记|刷新|"
                     + "回滚|重建|跑.*评测|运行.*评测|重置|吊销|轮换|重命名|删除|移除|撤)");
     /** Ollama OpenAI 兼容接口未配置 contextWindow 时的保守默认窗口，避免输入顶爆 4096 返回空内容 */
@@ -178,7 +179,12 @@ public class AssistantService {
             sink.send("error", Map.of("message", e.getMessage()));
             return null;
         }
-        List<AssistantMessage> history = conversationService.recentHistory(conversation.getId(), HISTORY_LIMIT);
+        String memorySummary = conversation.getMemorySummary();
+        int summaryMsgCount = conversation.getSummaryMsgCount();
+        boolean hasMemorySummary = memorySummary != null && !memorySummary.isBlank() && summaryMsgCount > 0;
+        List<AssistantMessage> history = hasMemorySummary
+                ? conversationService.recentHistoryAfterSummary(conversation.getId(), summaryMsgCount, HISTORY_LIMIT)
+                : conversationService.recentHistory(conversation.getId(), HISTORY_LIMIT);
         AssistantMessage userMessage = new AssistantMessage();
         userMessage.setRole(AssistantMessage.ROLE_USER);
         userMessage.setContent(effectiveMessage);
@@ -195,10 +201,11 @@ public class AssistantService {
         if (agentModeDowngraded) {
             mode = AssistantChatRequest.MODE_CHAT;
         }
-        boolean includeWrite = agentMode && mayNeedWriteTools(effectiveMessage, actionNotes);
-        java.util.Set<String> prevGroups = agentMode ? conversationGroups.get(conversation.getId()) : null;
+        String lastAssistantReply = lastAssistantContent(history);
+        boolean includeWrite = agentMode && mayNeedWriteTools(effectiveMessage, actionNotes, lastAssistantReply);
+        java.util.Set<String> prevGroups = agentMode ? resolvePreviousGroups(conversation.getId(), history, actor) : null;
         AssistantToolRouter.ToolSelection selection = agentMode
-                ? toolRouter.route(effectiveMessage, request.context(), prevGroups, actor, includeWrite)
+                ? toolRouter.route(effectiveMessage, request.context(), prevGroups, actor, includeWrite, lastAssistantReply)
                 : AssistantToolRouter.ToolSelection.ALL;
         if (agentMode && !selection.groupIds().isEmpty()) {
             conversationGroups.put(conversation.getId(), selection.groupIds());
@@ -214,6 +221,9 @@ public class AssistantService {
         String system = (AssistantChatRequest.MODE_CHAT.equals(mode)
                 ? AssistantPrompts.chatMode(actor) + docsContext(effectiveMessage, actor, routeWindow)
                 : AssistantPrompts.agentMode(actor, includeWrite)) + pageContext(request.context(), actor);
+        if (hasMemorySummary) {
+            system += "\n\n【早期对话记忆摘要（已浓缩前 " + summaryMsgCount + " 条消息）】\n" + memorySummary.trim();
+        }
         List<Map<String, Object>> messages = buildMessages(system, history, actionNotes, effectiveMessage);
 
         if (route.isEmpty()) {
@@ -274,16 +284,24 @@ public class AssistantService {
         done.put("degraded", turn.degraded);
         done.put("notice", turn.notice);
         done.put("actionIds", toolContext.createdActions().stream().map(AssistantAction::getId).toList());
+        if (hasMemorySummary) {
+            done.put("memorySummary", memorySummary);
+            done.put("summaryMsgCount", summaryMsgCount);
+        }
         if (!turn.verificationFlags.isEmpty()) {
             done.put("verificationFlags", turn.verificationFlags);
         }
         sink.send("done", done);
+        if (!turn.degraded && !turn.blocked && compactionService != null) {
+            compactionService.compactAssistantAsync(conversation.getId());
+        }
         return toolContext;
     }
 
     private AssistantQueryTools queryTools;
     private AssistantAnswerVerifier answerVerifier = new AssistantAnswerVerifier();
     private AssistantToolRouter toolRouter = new AssistantToolRouter();
+    private com.shimeta.service.ConversationCompactionService compactionService;
     /** 会话级工具组记忆（LRU 上限 500），支持多轮追问时自动继承上一轮语义工具组 */
     private final Map<String, java.util.Set<String>> conversationGroups = java.util.Collections.synchronizedMap(
             new LinkedHashMap<>(64, 0.75f, true) {
@@ -313,6 +331,12 @@ public class AssistantService {
         if (toolRouter != null) {
             this.toolRouter = toolRouter;
         }
+    }
+
+    /** 可选注入：会话滚动记忆压缩服务（避免改动已有构造器签名）。 */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setCompactionService(com.shimeta.service.ConversationCompactionService compactionService) {
+        this.compactionService = compactionService;
     }
 
     /** 页面上下文（P3）：用户在哪个页面、正在看哪个资源，让模型理解"这个智能体""当前知识库" */
@@ -404,13 +428,56 @@ public class AssistantService {
                 continue;
             }
             String role = AssistantMessage.ROLE_ASSISTANT.equals(item.getRole()) ? "assistant" : "user";
-            String content = item.getContent().length() > HISTORY_MESSAGE_MAX_CHARS
-                    ? item.getContent().substring(0, HISTORY_MESSAGE_MAX_CHARS) + "…"
-                    : item.getContent();
+            String content = truncatePreserveTail(item.getContent(), HISTORY_MESSAGE_MAX_CHARS);
             messages.add(Map.of("role", role, "content", content));
         }
         messages.add(Map.of("role", "user", "content", userMessage));
         return messages;
+    }
+
+    /** 截断过长历史消息时同时保留开头与结尾（结尾常含助手的追问/提议，如“需要我帮你查……吗？”），总长度 maxChars + 1 */
+    static String truncatePreserveTail(String text, int maxChars) {
+        if (text == null || text.length() <= maxChars) {
+            return text;
+        }
+        if (maxChars <= 16) {
+            return text.substring(0, Math.max(0, maxChars)) + "…";
+        }
+        int tailLen = Math.min(480, Math.max(80, maxChars / 3));
+        int headLen = maxChars - tailLen;
+        return text.substring(0, headLen) + "…" + text.substring(text.length() - tailLen);
+    }
+
+    private static String lastAssistantContent(List<AssistantMessage> history) {
+        if (history == null || history.isEmpty()) {
+            return null;
+        }
+        for (int i = history.size() - 1; i >= 0; i--) {
+            AssistantMessage m = history.get(i);
+            if (m != null && AssistantMessage.ROLE_ASSISTANT.equals(m.getRole())
+                    && !Boolean.TRUE.equals(m.getDegraded())
+                    && m.getContent() != null && !m.getContent().isBlank()) {
+                return m.getContent();
+            }
+        }
+        return null;
+    }
+
+    /** 读取会话上一轮工具组：内存缓存未命中（如重启或重新打开历史会话）时，从数据库历史自动恢复 */
+    private java.util.Set<String> resolvePreviousGroups(String conversationId, List<AssistantMessage> history, CurrentActor actor) {
+        java.util.Set<String> cached = conversationGroups.get(conversationId);
+        if (cached != null && !cached.isEmpty()) {
+            return cached;
+        }
+        if (history == null || history.isEmpty()) {
+            return null;
+        }
+        java.util.Set<String> inferred = toolRouter.inferGroupsFromHistory(history, actor);
+        if (!inferred.isEmpty()) {
+            conversationGroups.put(conversationId, inferred);
+            return inferred;
+        }
+        return null;
     }
 
     /** 将系统级纠正指令并入首条 system 消息，避免在消息尾部追加第二条 system 导致本地 Jinja 模板报 400。 */
@@ -598,6 +665,11 @@ public class AssistantService {
                 if (resultSummary != null) {
                     doneEvent.put("detail", resultSummary);
                 }
+                // 实时界面联动：只读查询/搜索工具完成后附带 uiEffect，驱动当前页面自动搜索、定位与高亮
+                Map<String, Object> uiEffect = AssistantUiEffects.fromReadTool(call.name(), call.arguments(), outcome);
+                if (uiEffect != null) {
+                    doneEvent.put("uiEffect", uiEffect);
+                }
                 sink.send("tool", doneEvent);
                 // 写工具生成了待确认操作：推送操作卡片
                 for (AssistantAction action : toolContext.createdActions().subList(actionsBefore, toolContext.createdActions().size())) {
@@ -625,13 +697,28 @@ public class AssistantService {
 
     /** 判断本轮是否可能涉及写操作：纯查询或纯寒暄不挂载写工具，节省上下文并提高选工具准确率 */
     static boolean mayNeedWriteTools(String message, List<String> actionNotes) {
-        if (AssistantToolRouter.isPureChitchat(message)) {
+        return mayNeedWriteTools(message, actionNotes, null);
+    }
+
+    static boolean mayNeedWriteTools(String message, List<String> actionNotes, String lastAssistantReply) {
+        boolean hasPrevReply = lastAssistantReply != null && !lastAssistantReply.isBlank();
+        if (AssistantToolRouter.isPureChitchat(message, hasPrevReply)) {
             return false;
         }
         if (actionNotes != null && !actionNotes.isEmpty()) {
             return true;
         }
-        return message != null && WRITE_INTENT.matcher(message).find();
+        if (message != null && WRITE_INTENT.matcher(message).find()) {
+            return true;
+        }
+        // 上一轮助手刚提议过写操作，本轮用户回复“可以 / 好的 / 行 / 帮我改”等肯定追问时，挂载写工具
+        if (hasPrevReply && AssistantToolRouter.isAffirmativeFollowUp(message)) {
+            String tail = lastAssistantReply.length() > 240
+                    ? lastAssistantReply.substring(lastAssistantReply.length() - 240)
+                    : lastAssistantReply;
+            return WRITE_INTENT.matcher(tail).find();
+        }
+        return false;
     }
 
     /**
@@ -748,13 +835,44 @@ public class AssistantService {
         if (drop == 0) {
             return fitted;
         }
+        List<Map<String, Object>> keptHistory;
+        if (drop >= history.size() && !history.isEmpty()) {
+            // 严禁把最近一轮对话也全裁光导致助手失忆：至少浓缩保留最后一轮（保留结尾提议与用户原问题）
+            keptHistory = compactLatestTurn(history, Math.max(220, historyBudget));
+        } else {
+            keptHistory = history.subList(drop, history.size());
+        }
         List<Map<String, Object>> result = new ArrayList<>();
         result.add(fitted.get(0));
-        result.addAll(history.subList(drop, history.size()));
+        result.addAll(keptHistory);
         result.addAll(fitted.subList(tailStart, fitted.size()));
         log.info("Assistant context window {}: trimmed history {} -> {} messages (tool ~{} tokens)",
-                window, history.size(), history.size() - drop, toolTokens);
+                window, history.size(), keptHistory.size(), toolTokens);
         return result;
+    }
+
+    /** 预算紧张时将最近一轮对话浓缩保留（头+尾截断），保证模型知道上一轮聊了什么、提议了什么 */
+    private List<Map<String, Object>> compactLatestTurn(List<Map<String, Object>> history, int tokenFloor) {
+        int lastIdx = history.size() - 1;
+        int startIdx = lastIdx;
+        if (lastIdx >= 1 && "assistant".equals(history.get(lastIdx).get("role"))
+                && "user".equals(history.get(lastIdx - 1).get("role"))) {
+            startIdx = lastIdx - 1;
+        }
+        // 只保留以 user 开头的一轮（若历史仅剩单条 assistant 也跳过避免角色错序）
+        if (!"user".equals(history.get(startIdx).get("role"))) {
+            return List.of();
+        }
+        int maxCharsPerMsg = Math.max(180, Math.min(600, tokenFloor));
+        List<Map<String, Object>> compact = new ArrayList<>();
+        for (int i = startIdx; i <= lastIdx; i++) {
+            Map<String, Object> m = history.get(i);
+            String role = String.valueOf(m.get("role"));
+            String content = m.get("content") == null ? "" : String.valueOf(m.get("content"));
+            int cap = "user".equals(role) ? Math.min(200, maxCharsPerMsg) : maxCharsPerMsg;
+            compact.add(Map.of("role", role, "content", truncatePreserveTail(content, cap)));
+        }
+        return compact;
     }
 
     private String trimToolContentForWindow(String content, List<Map<String, Object>> messages,

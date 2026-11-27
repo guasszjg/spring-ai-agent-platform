@@ -122,9 +122,14 @@ public class AssistantActionService {
         }
         action.setResult(toJson(result));
         action.setExecutedAt(LocalDateTime.now());
-        Map<String, Object> card = card(actionRepository.save(action));
+        AssistantAction saved = actionRepository.save(action);
+        Map<String, Object> card = card(saved);
         if (secret != null) {
             card.put("secret", secret);
+        }
+        Map<String, Object> uiEffect = AssistantUiEffects.fromExecutedAction(saved, result);
+        if (uiEffect != null) {
+            card.put("uiEffect", uiEffect);
         }
         return card;
     }
@@ -227,6 +232,8 @@ public class AssistantActionService {
         m.put("toolName", action.getToolName());
         m.put("title", action.getTitle());
         m.put("riskLevel", action.getRiskLevel());
+        m.put("resourceType", action.getResourceType());
+        m.put("resourceId", action.getResourceId());
         m.put("status", status);
         m.put("preview", readJson(action.getPreview()));
         m.put("result", readJson(action.getResult()));

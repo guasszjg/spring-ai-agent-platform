@@ -35,6 +35,14 @@ public class AssistantConversation {
     @Column(name = "deleted_at")
     private LocalDateTime deletedAt;
 
+    /** 早期对话滚动记忆摘要（超出滑窗的较早轮次在后台异步浓缩保存） */
+    @Column(name = "memory_summary", columnDefinition = "TEXT")
+    private String memorySummary;
+
+    /** 已被浓缩进 memorySummary 的历史消息条数（按时间正序前 N 条） */
+    @Column(name = "summary_msg_count")
+    private Integer summaryMsgCount = 0;
+
     @PrePersist
     void onCreate() {
         if (id == null || id.isBlank()) {
@@ -66,4 +74,8 @@ public class AssistantConversation {
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
     public LocalDateTime getDeletedAt() { return deletedAt; }
     public void setDeletedAt(LocalDateTime deletedAt) { this.deletedAt = deletedAt; }
+    public String getMemorySummary() { return memorySummary; }
+    public void setMemorySummary(String memorySummary) { this.memorySummary = memorySummary; }
+    public Integer getSummaryMsgCount() { return summaryMsgCount == null ? 0 : summaryMsgCount; }
+    public void setSummaryMsgCount(Integer summaryMsgCount) { this.summaryMsgCount = summaryMsgCount == null ? 0 : Math.max(0, summaryMsgCount); }
 }
