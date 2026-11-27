@@ -393,8 +393,15 @@ class AssistantServiceTest {
     void readOnlyQuestionsOmitWriteToolsToSaveContext() {
         assertFalse(AssistantService.mayNeedWriteTools("技能库里有哪些技能？", List.of()));
         assertFalse(AssistantService.mayNeedWriteTools("使用最多的模型是哪个？", List.of()));
+        assertFalse(AssistantService.mayNeedWriteTools("打开这个智能体的调试界面", List.of()));
         assertTrue(AssistantService.mayNeedWriteTools("帮我新建一个售后客服智能体", List.of()));
         assertTrue(AssistantService.mayNeedWriteTools("名字改成退货助手", List.of()));
+        assertTrue(AssistantService.mayNeedWriteTools("帮我关掉这个智能体的 deepseek 联网工具", List.of()));
+        assertTrue(AssistantService.mayNeedWriteTools("把 deepseek 联网搜索关了", List.of()));
+        assertTrue(AssistantService.mayNeedWriteTools("禁用 deepseek 联网搜索", List.of()));
+        assertTrue(AssistantService.mayNeedWriteTools("去掉这个智能体的联网搜索", List.of()));
+        assertTrue(AssistantService.mayNeedWriteTools("取消 deepseek 联网搜索", List.of()));
+        assertTrue(AssistantService.mayNeedWriteTools("帮我打开 deepseek 联网搜索", List.of()));
         assertTrue(AssistantService.mayNeedWriteTools("那刚才那个呢", List.of("「创建智能体」已确认")));
 
         when(openAiClient.streamChat(anyString(), anyString(), anyString(), any(), anyBoolean(), any(), any(), any(), anyInt(), any(), any()))

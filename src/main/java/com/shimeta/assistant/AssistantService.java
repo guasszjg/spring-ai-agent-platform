@@ -74,7 +74,8 @@ public class AssistantService {
     private static final java.util.regex.Pattern WRITE_INTENT = java.util.regex.Pattern.compile(
             "(?i)(创建|新建|建一|建个|加一|加个|加入|添加|新增|修改|改成|改为|改一下|改改|更新|编辑|调整|调成|换成|切换|激活|绑定|解绑|关联|取消关联|"
                     + "优化|润色|改写|重写|完善|精简|补全|重构|整理|写一|帮我写|设置|配置|设为|变量|"
-                    + "停用|启用|开启|关闭|暂停|发布|上线|下线|签发|生成|凭证|api\\s*key|apikey|faq|卡片|套用|存为|登记|刷新|"
+                    + "停用|启用|开启|关闭|关掉|关了|禁用|禁掉|去掉|取消|卸载|帮我关|帮我开|开一下|打开.{0,20}(开关|工具|联网|搜索|记忆|压缩|思考)|"
+                    + "暂停|发布|上线|下线|签发|生成|凭证|api\\s*key|apikey|faq|卡片|套用|存为|登记|刷新|"
                     + "回滚|重建|跑.*评测|运行.*评测|重置|吊销|轮换|重命名|删除|移除|撤)");
     /** Ollama OpenAI 兼容接口未配置 contextWindow 时的保守默认窗口，避免输入顶爆 4096 返回空内容 */
     static final int OLLAMA_DEFAULT_CONTEXT_WINDOW = 4096;

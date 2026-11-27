@@ -434,4 +434,47 @@ class AssistantExtendedWriteToolsTest {
         assertTrue(action.getPreview().contains("ollama(qwen3.5-9b)"));
         assertTrue(action.getPreview().contains("qwen3.5:9b"));
     }
+
+    @Test
+    void removeToolWorksWhenToolsConfigIsNullAndMatchesNaturalAlias() throws Exception {
+        Agent agent = new Agent();
+        agent.setId("ag-null-tools");
+        agent.setName("test01");
+        agent.setToolsConfig(null); // 新建智能体未显式保存过 toolsConfig，前端默认启用所有非 MCP 内置工具
+        when(agentService.getById("test01", dev)).thenReturn(Optional.of(agent));
+        when(authorizationService.canManageAgent(dev, agent)).thenReturn(true);
+
+        PlatformToolView timeTool = new PlatformToolView();
+        timeTool.setId("pt-time");
+        timeTool.setCode("current_time");
+        timeTool.setName("current_time");
+        timeTool.setTitle("获取当前时间");
+        timeTool.setCategory("BUILTIN");
+        timeTool.setEnabled(true);
+
+        PlatformToolView dsTool = new PlatformToolView();
+        dsTool.setId("pt-ds");
+        dsTool.setCode("deepseek_web_search");
+        dsTool.setName("deepseek_web_search");
+        dsTool.setTitle("DeepSeek Search");
+        dsTool.setPrefix("deepseek");
+        dsTool.setCategory("BUILTIN");
+        dsTool.setEnabled(true);
+
+        when(platformToolService.list()).thenReturn(List.of(timeTool, dsTool));
+        queryTools.setPlatformToolService(platformToolService);
+
+        assertEquals(List.of("获取当前时间", "DeepSeek Search"), queryTools.enabledToolNames(null));
+        assertEquals(List.of("获取当前时间", "DeepSeek Search"), queryTools.enabledToolNames("[]"));
+        assertEquals(List.of("deepseek_web_search"),
+                queryTools.enabledToolNames("[{\"title\":\"\",\"name\":\"\",\"code\":\"deepseek_web_search\",\"enabled\":true}]"));
+
+        ToolContext ctx = ToolContext.of(dev, "asc-tool-rm");
+        extendedWriteTools.draftUpdateAgentSettings(
+                mapper.readTree("{\"agent\":\"test01\",\"removeTools\":[\"deepseek 联网工具\"]}"), ctx);
+        AssistantAction action = ctx.createdActions().get(0);
+        String toolsConfig = mapper.readTree(action.getPayload()).path("toolsConfig").asText();
+        assertEquals(List.of("获取当前时间"), queryTools.enabledToolNames(toolsConfig));
+        assertTrue(action.getPreview().contains("DeepSeek Search"));
+    }
 }

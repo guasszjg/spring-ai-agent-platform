@@ -76,6 +76,20 @@ public class PlatformToolService {
                 .collect(Collectors.toList());
     }
 
+    /** 只读查询平台工具列表（不触发写事务与 flush，供 AI 助手等只读查询路径使用）。 */
+    @Transactional(readOnly = true)
+    public List<PlatformToolView> listReadOnly() {
+        List<PlatformToolView> views = repository.findAllByOrderBySortOrderAsc().stream()
+                .map(this::toView)
+                .collect(Collectors.toList());
+        if (!views.isEmpty()) {
+            return views;
+        }
+        return PlatformToolCatalog.builtins().stream()
+                .map(this::toView)
+                .collect(Collectors.toList());
+    }
+
     @Transactional
     public PageResult<PlatformToolView> page(String keyword, String category, int page, int size) {
         List<PlatformToolView> all = list();

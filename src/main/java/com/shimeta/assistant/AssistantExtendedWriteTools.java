@@ -2510,6 +2510,14 @@ public class AssistantExtendedWriteTools {
     }
 
     private String computeUpdatedToolsConfig(String existingJson, List<String> addTools, List<String> removeTools) {
+        List<PlatformToolView> catalog = List.of();
+        if (platformToolService != null) {
+            List<PlatformToolView> ro = platformToolService.listReadOnly();
+            catalog = (ro != null && !ro.isEmpty()) ? ro : platformToolService.list();
+            if (catalog == null) {
+                catalog = List.of();
+            }
+        }
         List<Map<String, Object>> list = new ArrayList<>();
         if (existingJson != null && !existingJson.isBlank()) {
             try {
@@ -2522,19 +2530,34 @@ public class AssistantExtendedWriteTools {
                     }
                 }
             } catch (Exception ignored) {
-                // 现有 JSON 损坏时从空开始重建
+                // 现有 JSON 损坏时从默认列表重建
             }
         }
-        List<PlatformToolView> catalog = platformToolService != null ? platformToolService.list() : List.of();
+        // 与调试页（DebugView.vue）一致：未显式保存过 toolsConfig 的智能体默认带有所有已启用的非 MCP 工具
+        if (list.isEmpty() && !catalog.isEmpty()) {
+            for (PlatformToolView t : catalog) {
+                if (t == null || !Boolean.TRUE.equals(t.getEnabled()) || "MCP".equalsIgnoreCase(t.getCategory())) {
+                    continue;
+                }
+                Map<String, Object> entry = new LinkedHashMap<>();
+                entry.put("id", t.getId());
+                entry.put("code", t.getCode());
+                entry.put("name", t.getName() != null && !t.getName().isBlank() ? t.getName() : t.getCode());
+                entry.put("title", t.getTitle() != null && !t.getTitle().isBlank() ? t.getTitle() : t.getName());
+                entry.put("prefix", t.getPrefix());
+                entry.put("category", t.getCategory());
+                entry.put("enabled", true);
+                list.add(entry);
+            }
+        }
         for (String ref : addTools) {
-            PlatformToolView found = catalog.stream()
-                    .filter(t -> ref.equalsIgnoreCase(t.getCode()) || ref.equalsIgnoreCase(t.getName()) || ref.equalsIgnoreCase(t.getTitle()))
-                    .findFirst().orElse(null);
-            String code = found != null ? found.getCode() : ref;
-            String title = found != null && found.getTitle() != null ? found.getTitle() : code;
+            PlatformToolView found = resolveCatalogTool(ref, catalog);
+            String code = found != null && found.getCode() != null ? found.getCode() : ref;
+            String name = found != null && found.getName() != null && !found.getName().isBlank() ? found.getName() : code;
+            String title = found != null && found.getTitle() != null && !found.getTitle().isBlank() ? found.getTitle() : name;
             boolean exists = false;
             for (Map<String, Object> item : list) {
-                if (code.equalsIgnoreCase(String.valueOf(item.get("name"))) || code.equalsIgnoreCase(String.valueOf(item.get("code")))) {
+                if (toolItemMatches(item, ref, found)) {
                     item.put("enabled", true);
                     exists = true;
                     break;
@@ -2542,17 +2565,19 @@ public class AssistantExtendedWriteTools {
             }
             if (!exists) {
                 Map<String, Object> added = new LinkedHashMap<>();
-                added.put("name", code);
+                if (found != null && found.getId() != null) added.put("id", found.getId());
+                added.put("code", code);
+                added.put("name", name);
                 added.put("title", title);
+                if (found != null && found.getCategory() != null) added.put("category", found.getCategory());
                 added.put("enabled", true);
                 list.add(added);
             }
         }
         for (String ref : removeTools) {
+            PlatformToolView found = resolveCatalogTool(ref, catalog);
             for (Map<String, Object> item : list) {
-                if (ref.equalsIgnoreCase(String.valueOf(item.get("name")))
-                        || ref.equalsIgnoreCase(String.valueOf(item.get("code")))
-                        || ref.equalsIgnoreCase(String.valueOf(item.get("title")))) {
+                if (toolItemMatches(item, ref, found)) {
                     item.put("enabled", false);
                 }
             }
@@ -2562,6 +2587,78 @@ public class AssistantExtendedWriteTools {
         } catch (Exception e) {
             throw new IllegalStateException("工具配置序列化失败");
         }
+    }
+
+    private static PlatformToolView resolveCatalogTool(String ref, List<PlatformToolView> catalog) {
+        if (ref == null || ref.isBlank() || catalog == null || catalog.isEmpty()) {
+            return null;
+        }
+        String r = ref.trim();
+        String lower = r.toLowerCase(Locale.ROOT);
+        // 1. 精确匹配 code / name / title / id
+        for (PlatformToolView t : catalog) {
+            if (r.equalsIgnoreCase(t.getCode()) || r.equalsIgnoreCase(t.getName())
+                    || r.equalsIgnoreCase(t.getTitle()) || r.equalsIgnoreCase(t.getId())) {
+                return t;
+            }
+        }
+        // 2. 常见中英文别名与子串匹配（如 "DeepSeek 联网搜索" / "deepseek" -> DeepSeek Search，"博查" -> Bocha）
+        String compact = lower.replaceAll("[\\s_\\-·]+", "");
+        for (PlatformToolView t : catalog) {
+            String hay = ((t.getCode() == null ? "" : t.getCode()) + " "
+                    + (t.getName() == null ? "" : t.getName()) + " "
+                    + (t.getTitle() == null ? "" : t.getTitle()) + " "
+                    + (t.getPrefix() == null ? "" : t.getPrefix()) + " "
+                    + (t.getDescription() == null ? "" : t.getDescription())).toLowerCase(Locale.ROOT);
+            if (hay.contains(lower)) {
+                return t;
+            }
+            if (compact.contains("deepseek") && hay.contains("deepseek")) {
+                return t;
+            }
+            if ((compact.contains("bocha") || compact.contains("博查")) && (hay.contains("bocha") || hay.contains("博查"))) {
+                return t;
+            }
+        }
+        return null;
+    }
+
+    private static boolean toolItemMatches(Map<String, Object> item, String ref, PlatformToolView resolved) {
+        String itemCode = item.get("code") == null ? "" : String.valueOf(item.get("code"));
+        String itemName = item.get("name") == null ? "" : String.valueOf(item.get("name"));
+        String itemTitle = item.get("title") == null ? "" : String.valueOf(item.get("title"));
+        String itemPrefix = item.get("prefix") == null ? "" : String.valueOf(item.get("prefix"));
+        if (ref != null) {
+            String r = ref.trim();
+            if (r.equalsIgnoreCase(itemCode) || r.equalsIgnoreCase(itemName) || r.equalsIgnoreCase(itemTitle)) {
+                return true;
+            }
+        }
+        if (resolved != null) {
+            if (resolved.getCode() != null && (resolved.getCode().equalsIgnoreCase(itemCode) || resolved.getCode().equalsIgnoreCase(itemName))) {
+                return true;
+            }
+            if (resolved.getName() != null && (resolved.getName().equalsIgnoreCase(itemName) || resolved.getName().equalsIgnoreCase(itemCode))) {
+                return true;
+            }
+            if (resolved.getTitle() != null && resolved.getTitle().equalsIgnoreCase(itemTitle)) {
+                return true;
+            }
+        }
+        if (ref != null && !ref.isBlank()) {
+            String lower = ref.trim().toLowerCase(Locale.ROOT);
+            String hay = (itemCode + " " + itemName + " " + itemTitle + " " + itemPrefix).toLowerCase(Locale.ROOT);
+            if (hay.contains(lower)) {
+                return true;
+            }
+            if (lower.contains("deepseek") && hay.contains("deepseek")) {
+                return true;
+            }
+            if ((lower.contains("bocha") || lower.contains("博查")) && (hay.contains("bocha") || hay.contains("博查"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static List<String> skillNamesOf(Set<String> ids, List<SkillView> visible) {

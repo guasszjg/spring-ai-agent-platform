@@ -191,7 +191,13 @@ public final class AssistantUiEffects {
                         "temperature", "topP", "maxTokens", "memoryTurns", "memoryCompression",
                         "thinkingMode", "knowledgeMode", "primaryProviderId", "modelName");
                 if (!fd.isEmpty()) e.put("formData", fd);
-                e.put("label", "AI 助手正在打开模型设置同步参数…");
+                boolean toolsChanged = payload != null && payload.hasNonNull("toolsConfig");
+                boolean skillsChanged = payload != null && payload.hasNonNull("skillIds");
+                if (toolsChanged) e.put("toolsChanged", true);
+                if (skillsChanged) e.put("skillsChanged", true);
+                e.put("label", toolsChanged
+                        ? "AI 助手正在同步智能体工具开关…"
+                        : (skillsChanged ? "AI 助手正在同步智能体技能关联…" : "AI 助手正在打开模型设置同步参数…"));
                 yield e;
             }
             case "manage_agent_variable" -> {

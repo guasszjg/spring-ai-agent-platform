@@ -26,11 +26,15 @@ import com.shimeta.service.DifyConfigService;
 import com.shimeta.service.EmbeddingConfigService;
 import com.shimeta.service.KnowledgeBaseService;
 import com.shimeta.service.LlmGatewayService;
+import com.shimeta.service.PlatformToolService;
 import com.shimeta.service.ResourceAuthorizationService;
+import com.shimeta.model.PlatformToolView;
 import com.shimeta.skill.SkillService;
 import com.shimeta.skill.SkillView;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -62,6 +66,8 @@ import java.util.Set;
 @Component
 public class AssistantQueryTools {
 
+    private static final Logger log = LoggerFactory.getLogger(AssistantQueryTools.class);
+
     static final int DEFAULT_LIMIT = 10;
     static final int MAX_LIMIT = 20;
     private static final int PROMPT_SUMMARY_CHARS = 200;
@@ -81,6 +87,7 @@ public class AssistantQueryTools {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private McpServerService mcpServerService;
     private SkillService skillService;
+    private PlatformToolService platformToolService;
     private AssistantExtendedQueryTools extendedQueryTools;
     private ObjectProvider<AssistantExtendedQueryTools> extendedQueryToolsProvider;
 
@@ -116,6 +123,11 @@ public class AssistantQueryTools {
     @Autowired(required = false)
     public void setSkillService(SkillService skillService) {
         this.skillService = skillService;
+    }
+
+    @Autowired(required = false)
+    public void setPlatformToolService(PlatformToolService platformToolService) {
+        this.platformToolService = platformToolService;
     }
 
     @Autowired(required = false)
@@ -545,7 +557,15 @@ public class AssistantQueryTools {
         m.put("tags", a.getTags());
         m.put("knowledgeBases", knowledgeBaseRefs(a, actor));
         m.put("skills", skillRefs(a, actor));
-        m.put("enabledTools", enabledToolNames(a.getToolsConfig()));
+        List<String> enabledTools = enabledToolNames(a.getToolsConfig());
+        m.put("enabledTools", enabledTools);
+        List<Map<String, Object>> enabledToolDetails = enabledToolDetails(a.getToolsConfig());
+        if (!enabledToolDetails.isEmpty()) {
+            m.put("enabledToolDetails", enabledToolDetails);
+        }
+        if (isUsingDefaultTools(a.getToolsConfig())) {
+            m.put("toolsUsingPlatformDefaults", true);
+        }
         boolean canEdit = authorizationService.canManageAgent(actor, a);
         m.put("canEdit", canEdit);
         m.put("canRun", authorizationService.canRunAgent(actor, a));
@@ -678,18 +698,20 @@ public class AssistantQueryTools {
 
     List<String> enabledToolNames(String toolsConfig) {
         if (toolsConfig == null || toolsConfig.isBlank()) {
-            return List.of();
+            return defaultEnabledToolNames();
         }
         try {
             JsonNode root = objectMapper.readTree(toolsConfig);
+            if (!root.isArray() || root.isEmpty()) {
+                // 与调试页 DebugView.vue 一致：空数组 "[]" 同样回退为平台默认启用的非 MCP 工具
+                return defaultEnabledToolNames();
+            }
             List<String> names = new ArrayList<>();
-            if (root.isArray()) {
-                for (JsonNode tool : root) {
-                    if (tool.path("enabled").asBoolean(true)) {
-                        String name = tool.path("title").asText(tool.path("name").asText(""));
-                        if (!name.isBlank()) {
-                            names.add(name);
-                        }
+            for (JsonNode tool : root) {
+                if (tool.path("enabled").asBoolean(true)) {
+                    String name = firstNonBlankText(tool.path("title"), tool.path("name"), tool.path("code"));
+                    if (!name.isBlank()) {
+                        names.add(name);
                     }
                 }
             }
@@ -697,6 +719,112 @@ public class AssistantQueryTools {
         } catch (Exception e) {
             return List.of();
         }
+    }
+
+    private boolean isUsingDefaultTools(String toolsConfig) {
+        if (toolsConfig == null || toolsConfig.isBlank()) {
+            return true;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(toolsConfig);
+            return !root.isArray() || root.isEmpty();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private List<Map<String, Object>> enabledToolDetails(String toolsConfig) {
+        if (isUsingDefaultTools(toolsConfig)) {
+            List<Map<String, Object>> details = new ArrayList<>();
+            for (PlatformToolView t : listPlatformToolsSafely()) {
+                if (t == null || !Boolean.TRUE.equals(t.getEnabled()) || "MCP".equalsIgnoreCase(t.getCategory())) {
+                    continue;
+                }
+                Map<String, Object> item = new LinkedHashMap<>();
+                if (t.getCode() != null && !t.getCode().isBlank()) item.put("code", t.getCode());
+                if (t.getName() != null && !t.getName().isBlank()) item.put("name", t.getName());
+                if (t.getTitle() != null && !t.getTitle().isBlank()) item.put("title", t.getTitle());
+                if (t.getPrefix() != null && !t.getPrefix().isBlank()) item.put("prefix", t.getPrefix());
+                details.add(item);
+            }
+            return details;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(toolsConfig);
+            if (!root.isArray()) {
+                return List.of();
+            }
+            List<Map<String, Object>> details = new ArrayList<>();
+            for (JsonNode tool : root) {
+                if (!tool.path("enabled").asBoolean(true)) {
+                    continue;
+                }
+                Map<String, Object> item = new LinkedHashMap<>();
+                String code = tool.path("code").asText("").trim();
+                String name = tool.path("name").asText("").trim();
+                String title = tool.path("title").asText("").trim();
+                String prefix = tool.path("prefix").asText("").trim();
+                if (!code.isEmpty()) item.put("code", code);
+                if (!name.isEmpty()) item.put("name", name);
+                if (!title.isEmpty()) item.put("title", title);
+                if (!prefix.isEmpty()) item.put("prefix", prefix);
+                if (!item.isEmpty()) {
+                    details.add(item);
+                }
+            }
+            return details;
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+
+    private List<String> defaultEnabledToolNames() {
+        // 与调试页（DebugView.vue）一致：未显式保存过 toolsConfig 的智能体默认启用平台所有已启用的非 MCP 内置/自定义工具
+        List<String> defaults = new ArrayList<>();
+        for (PlatformToolView t : listPlatformToolsSafely()) {
+            if (t == null || !Boolean.TRUE.equals(t.getEnabled())) {
+                continue;
+            }
+            if ("MCP".equalsIgnoreCase(t.getCategory())) {
+                continue;
+            }
+            String label = t.getTitle() != null && !t.getTitle().isBlank()
+                    ? t.getTitle()
+                    : (t.getName() != null && !t.getName().isBlank() ? t.getName() : t.getCode());
+            if (label != null && !label.isBlank()) {
+                defaults.add(label);
+            }
+        }
+        return defaults;
+    }
+
+    private List<PlatformToolView> listPlatformToolsSafely() {
+        if (platformToolService == null) {
+            return List.of();
+        }
+        try {
+            List<PlatformToolView> views = platformToolService.listReadOnly();
+            if (views != null && !views.isEmpty()) {
+                return views;
+            }
+            List<PlatformToolView> fallback = platformToolService.list();
+            return fallback != null ? fallback : List.of();
+        } catch (RuntimeException e) {
+            log.warn("Failed to load default platform tools for assistant query: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
+    private static String firstNonBlankText(JsonNode... nodes) {
+        for (JsonNode n : nodes) {
+            if (n != null && !n.isNull() && !n.isMissingNode()) {
+                String v = n.asText("").trim();
+                if (!v.isEmpty()) {
+                    return v;
+                }
+            }
+        }
+        return "";
     }
 
     // ==================== list_knowledge_bases ====================
