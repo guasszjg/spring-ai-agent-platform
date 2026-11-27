@@ -718,13 +718,36 @@ public class AssistantExtendedWriteTools {
         List<String> addTools = textList(args, "addTools");
         List<String> removeTools = textList(args, "removeTools");
         if (!addTools.isEmpty() || !removeTools.isEmpty()) {
-            List<String> beforeToolNames = queryTools.enabledToolNames(agent.getToolsConfig());
-            String updatedJson = computeUpdatedToolsConfig(agent.getToolsConfig(), addTools, removeTools);
-            List<String> afterToolNames = queryTools.enabledToolNames(updatedJson);
-            if (!beforeToolNames.equals(afterToolNames)) {
-                payload.put("toolsConfig", updatedJson);
-                pb.addDiff("启用工具", joinOrEmpty(beforeToolNames), joinOrEmpty(afterToolNames));
+            List<PlatformToolView> catalog = new ArrayList<>(queryTools.agentToolCatalog());
+            if (mcpServerService != null) {
+                mcpServerService.availableTools().forEach(tool -> {
+                    PlatformToolView view = new PlatformToolView();
+                    view.setId("mcp:" + tool.getId());
+                    view.setCode(tool.getFunctionName());
+                    view.setName(tool.getFunctionName());
+                    view.setTitle(tool.getTitle() != null ? tool.getTitle() : tool.getToolName());
+                    view.setPrefix(tool.getServerSlug());
+                    view.setCategory("MCP");
+                    view.setEnabled(true);
+                    catalog.add(view);
+                });
+            }
+            List<JsonNode> configured = queryTools.configuredTools(agent.getToolsConfig());
+            List<JsonNode> before = configured.isEmpty() ? queryTools.defaultToolEntries(catalog) : configured;
+            List<JsonNode> after = new ArrayList<>();
+            before.forEach(tool -> after.add(tool.deepCopy()));
+            List<JsonNode> options = catalog.stream().filter(tool -> Boolean.TRUE.equals(tool.getEnabled()))
+                    .map(queryTools::toolEntry).toList();
+            for (String ref : addTools) setToolEnabled(after, options, ref, true);
+            for (String ref : removeTools) setToolEnabled(after, options, ref, false);
+            if (!before.equals(after)) {
+                payload.put("toolsConfig", objectMapper.valueToTree(after).toString());
+                pb.addDiff("启用工具", joinOrEmpty(AssistantQueryTools.enabledToolLabels(before)),
+                        joinOrEmpty(AssistantQueryTools.enabledToolLabels(after)));
                 changes++;
+            } else if (changes == 0) {
+                throw new IllegalArgumentException("指定工具已处于请求的开关状态：" + String.join("、",
+                        java.util.stream.Stream.concat(addTools.stream(), removeTools.stream()).toList()));
             }
         }
 
@@ -1870,6 +1893,10 @@ public class AssistantExtendedWriteTools {
                 + (readbackAgent.isMemoryCompressionEnabled() ? "(压缩开)" : "")
                 + "，思考=" + Agent.normalizeThinkingMode(readbackAgent.getThinkingMode())
                 + "，知识库模式=" + Agent.normalizeKnowledgeMode(readbackAgent.getKnowledgeMode());
+        if (p.hasNonNull("toolsConfig")) {
+            readback += "，已启用工具=" + joinOrEmpty(AssistantQueryTools.enabledToolLabels(
+                    queryTools.configuredTools(readbackAgent.getToolsConfig())));
+        }
         return new AssistantWriteTools.ExecutionResult("AGENT", readbackAgent.getId(),
                 "已更新智能体「" + readbackAgent.getName() + "」配置", "去调试",
                 AssistantQueryTools.agentLink(readbackAgent.getId()), null, readback);
@@ -2509,156 +2536,71 @@ public class AssistantExtendedWriteTools {
                 .toList();
     }
 
-    private String computeUpdatedToolsConfig(String existingJson, List<String> addTools, List<String> removeTools) {
-        List<PlatformToolView> catalog = List.of();
-        if (platformToolService != null) {
-            List<PlatformToolView> ro = platformToolService.listReadOnly();
-            catalog = (ro != null && !ro.isEmpty()) ? ro : platformToolService.list();
-            if (catalog == null) {
-                catalog = List.of();
-            }
+    private static void setToolEnabled(List<JsonNode> attached, List<JsonNode> options, String ref, boolean enabled) {
+        JsonNode option = resolveTool(ref, options);
+        JsonNode target = option == null ? resolveTool(ref, attached) : findAttachedTool(option, attached);
+        if (target == null && option == null) {
+            throw new IllegalArgumentException("找不到工具「" + ref + "」，请使用工具名称或编码");
         }
-        List<Map<String, Object>> list = new ArrayList<>();
-        if (existingJson != null && !existingJson.isBlank()) {
-            try {
-                JsonNode root = objectMapper.readTree(existingJson);
-                if (root.isArray()) {
-                    for (JsonNode n : root) {
-                        @SuppressWarnings("unchecked")
-                        Map<String, Object> item = objectMapper.convertValue(n, LinkedHashMap.class);
-                        list.add(item);
-                    }
-                }
-            } catch (Exception ignored) {
-                // 现有 JSON 损坏时从默认列表重建
-            }
+        if (enabled && option == null) {
+            throw new IllegalArgumentException("工具「" + ref + "」当前不可用，请先在工具管理中检查配置");
         }
-        // 与调试页（DebugView.vue）一致：未显式保存过 toolsConfig 的智能体默认带有所有已启用的非 MCP 工具
-        if (list.isEmpty() && !catalog.isEmpty()) {
-            for (PlatformToolView t : catalog) {
-                if (t == null || !Boolean.TRUE.equals(t.getEnabled()) || "MCP".equalsIgnoreCase(t.getCategory())) {
-                    continue;
-                }
-                Map<String, Object> entry = new LinkedHashMap<>();
-                entry.put("id", t.getId());
-                entry.put("code", t.getCode());
-                entry.put("name", t.getName() != null && !t.getName().isBlank() ? t.getName() : t.getCode());
-                entry.put("title", t.getTitle() != null && !t.getTitle().isBlank() ? t.getTitle() : t.getName());
-                entry.put("prefix", t.getPrefix());
-                entry.put("category", t.getCategory());
-                entry.put("enabled", true);
-                list.add(entry);
-            }
+        if (target == null) {
+            if (enabled) attached.add(option.deepCopy());
+            return;
         }
-        for (String ref : addTools) {
-            PlatformToolView found = resolveCatalogTool(ref, catalog);
-            String code = found != null && found.getCode() != null ? found.getCode() : ref;
-            String name = found != null && found.getName() != null && !found.getName().isBlank() ? found.getName() : code;
-            String title = found != null && found.getTitle() != null && !found.getTitle().isBlank() ? found.getTitle() : name;
-            boolean exists = false;
-            for (Map<String, Object> item : list) {
-                if (toolItemMatches(item, ref, found)) {
-                    item.put("enabled", true);
-                    exists = true;
-                    break;
-                }
-            }
-            if (!exists) {
-                Map<String, Object> added = new LinkedHashMap<>();
-                if (found != null && found.getId() != null) added.put("id", found.getId());
-                added.put("code", code);
-                added.put("name", name);
-                added.put("title", title);
-                if (found != null && found.getCategory() != null) added.put("category", found.getCategory());
-                added.put("enabled", true);
-                list.add(added);
-            }
-        }
-        for (String ref : removeTools) {
-            PlatformToolView found = resolveCatalogTool(ref, catalog);
-            for (Map<String, Object> item : list) {
-                if (toolItemMatches(item, ref, found)) {
-                    item.put("enabled", false);
-                }
-            }
-        }
-        try {
-            return objectMapper.writeValueAsString(list);
-        } catch (Exception e) {
-            throw new IllegalStateException("工具配置序列化失败");
+        if (AssistantQueryTools.toolEnabled(target) != enabled) {
+            ((com.fasterxml.jackson.databind.node.ObjectNode) target).put("enabled", enabled);
         }
     }
 
-    private static PlatformToolView resolveCatalogTool(String ref, List<PlatformToolView> catalog) {
-        if (ref == null || ref.isBlank() || catalog == null || catalog.isEmpty()) {
-            return null;
-        }
-        String r = ref.trim();
-        String lower = r.toLowerCase(Locale.ROOT);
-        // 1. 精确匹配 code / name / title / id
-        for (PlatformToolView t : catalog) {
-            if (r.equalsIgnoreCase(t.getCode()) || r.equalsIgnoreCase(t.getName())
-                    || r.equalsIgnoreCase(t.getTitle()) || r.equalsIgnoreCase(t.getId())) {
-                return t;
-            }
-        }
-        // 2. 常见中英文别名与子串匹配（如 "DeepSeek 联网搜索" / "deepseek" -> DeepSeek Search，"博查" -> Bocha）
-        String compact = lower.replaceAll("[\\s_\\-·]+", "");
-        for (PlatformToolView t : catalog) {
-            String hay = ((t.getCode() == null ? "" : t.getCode()) + " "
-                    + (t.getName() == null ? "" : t.getName()) + " "
-                    + (t.getTitle() == null ? "" : t.getTitle()) + " "
-                    + (t.getPrefix() == null ? "" : t.getPrefix()) + " "
-                    + (t.getDescription() == null ? "" : t.getDescription())).toLowerCase(Locale.ROOT);
-            if (hay.contains(lower)) {
-                return t;
-            }
-            if (compact.contains("deepseek") && hay.contains("deepseek")) {
-                return t;
-            }
-            if ((compact.contains("bocha") || compact.contains("博查")) && (hay.contains("bocha") || hay.contains("博查"))) {
-                return t;
-            }
+    private static JsonNode findAttachedTool(JsonNode option, List<JsonNode> attached) {
+        for (String field : List.of("code", "id", "name", "title")) {
+            String key = normalizeToolRef(option.path(field).asText(""));
+            if (key.isEmpty()) continue;
+            List<JsonNode> matches = attached.stream()
+                    .filter(tool -> key.equals(normalizeToolRef(tool.path(field).asText(""))))
+                    .filter(tool -> field.equals("code") || field.equals("id") || tool.path("code").asText("").isBlank())
+                    .toList();
+            if (!matches.isEmpty()) return uniqueTool(option.path("name").asText(), matches);
         }
         return null;
     }
 
-    private static boolean toolItemMatches(Map<String, Object> item, String ref, PlatformToolView resolved) {
-        String itemCode = item.get("code") == null ? "" : String.valueOf(item.get("code"));
-        String itemName = item.get("name") == null ? "" : String.valueOf(item.get("name"));
-        String itemTitle = item.get("title") == null ? "" : String.valueOf(item.get("title"));
-        String itemPrefix = item.get("prefix") == null ? "" : String.valueOf(item.get("prefix"));
-        if (ref != null) {
-            String r = ref.trim();
-            if (r.equalsIgnoreCase(itemCode) || r.equalsIgnoreCase(itemName) || r.equalsIgnoreCase(itemTitle)) {
-                return true;
-            }
+    private static JsonNode resolveTool(String ref, List<JsonNode> tools) {
+        String normalized = normalizeToolRef(ref);
+        if (normalized.isEmpty()) return null;
+        for (String field : List.of("code", "id", "name", "title")) {
+            List<JsonNode> exact = tools.stream()
+                    .filter(tool -> normalized.equals(normalizeToolRef(tool.path(field).asText("")))).toList();
+            if (!exact.isEmpty()) return uniqueTool(ref, exact);
         }
-        if (resolved != null) {
-            if (resolved.getCode() != null && (resolved.getCode().equalsIgnoreCase(itemCode) || resolved.getCode().equalsIgnoreCase(itemName))) {
-                return true;
+        String alias = switch (normalized) {
+            case "deepseek", "deepseek联网", "deepseek联网工具", "deepseek联网搜索",
+                    "deepseek搜索", "deepseek搜索工具", "deepseek联网搜索工具" -> "deepseekwebsearch";
+            case "bocha", "博查", "博查搜索", "博查联网搜索", "博查联网工具" -> "bochawebsearch";
+            default -> "";
+        };
+        List<JsonNode> matches = tools.stream().filter(tool -> {
+            if (!alias.isEmpty()) {
+                return alias.equals(normalizeToolRef(tool.path("code").asText("")))
+                        || alias.equals(normalizeToolRef(tool.path("name").asText("")));
             }
-            if (resolved.getName() != null && (resolved.getName().equalsIgnoreCase(itemName) || resolved.getName().equalsIgnoreCase(itemCode))) {
-                return true;
-            }
-            if (resolved.getTitle() != null && resolved.getTitle().equalsIgnoreCase(itemTitle)) {
-                return true;
-            }
+            return List.of("name", "title", "code").stream()
+                    .anyMatch(field -> normalizeToolRef(tool.path(field).asText("")).contains(normalized));
+        }).toList();
+        return uniqueTool(ref, matches);
+    }
+
+    private static String normalizeToolRef(String value) {
+        return value.toLowerCase(Locale.ROOT).replaceAll("[\\s_\\-·]+", "");
+    }
+
+    private static JsonNode uniqueTool(String ref, List<JsonNode> matches) {
+        if (matches.size() > 1) {
+            throw new IllegalArgumentException("工具「" + ref + "」匹配到多项，请使用完整名称或编码");
         }
-        if (ref != null && !ref.isBlank()) {
-            String lower = ref.trim().toLowerCase(Locale.ROOT);
-            String hay = (itemCode + " " + itemName + " " + itemTitle + " " + itemPrefix).toLowerCase(Locale.ROOT);
-            if (hay.contains(lower)) {
-                return true;
-            }
-            if (lower.contains("deepseek") && hay.contains("deepseek")) {
-                return true;
-            }
-            if ((lower.contains("bocha") || lower.contains("博查")) && (hay.contains("bocha") || hay.contains("博查"))) {
-                return true;
-            }
-        }
-        return false;
+        return matches.isEmpty() ? null : matches.getFirst();
     }
 
     private static List<String> skillNamesOf(Set<String> ids, List<SkillView> visible) {

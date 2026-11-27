@@ -160,7 +160,7 @@ public class AssistantQueryTools {
                                 "limit", prop("integer", "返回数量，默认 10，最大 20"))),
                         (args, ctx) -> listAgents(args, ctx.actor())),
                 AssistantTool.read("get_agent_detail", "查看智能体配置",
-                        "查看一个智能体的完整配置摘要：模型与通道路由、提示词摘要、上下文记忆、思考模式、知识库使用方式、绑定的知识库/技能/工具、状态和调用指标。",
+                        "查看一个智能体的完整配置摘要：模型与通道路由、提示词摘要、上下文记忆、思考模式、知识库使用方式、绑定的知识库/技能/工具、状态和调用指标。toolStates 包含工具开关；toolsUsingPlatformDefaults 为 true 时使用平台默认工具。toolStateError 表示状态未知。",
                         schema(Map.of("agent", prop("string", "智能体的 ID、编码或名称")), "agent"),
                         (args, ctx) -> getAgentDetail(args, ctx.actor())),
                 AssistantTool.read("list_knowledge_bases", "查询知识库列表",
@@ -557,14 +557,21 @@ public class AssistantQueryTools {
         m.put("tags", a.getTags());
         m.put("knowledgeBases", knowledgeBaseRefs(a, actor));
         m.put("skills", skillRefs(a, actor));
-        List<String> enabledTools = enabledToolNames(a.getToolsConfig());
-        m.put("enabledTools", enabledTools);
-        List<Map<String, Object>> enabledToolDetails = enabledToolDetails(a.getToolsConfig());
-        if (!enabledToolDetails.isEmpty()) {
-            m.put("enabledToolDetails", enabledToolDetails);
-        }
-        if (isUsingDefaultTools(a.getToolsConfig())) {
-            m.put("toolsUsingPlatformDefaults", true);
+        try {
+            List<JsonNode> configured = configuredTools(a.getToolsConfig());
+            List<JsonNode> effective = configured.isEmpty() ? defaultToolEntries(agentToolCatalog()) : configured;
+            m.put("enabledTools", enabledToolLabels(effective));
+            m.put("enabledToolDetails", effective.stream().filter(AssistantQueryTools::toolEnabled)
+                    .map(AssistantQueryTools::toolIdentity).toList());
+            m.put("toolStates", effective.stream().map(tool -> {
+                Map<String, Object> state = toolIdentity(tool);
+                state.put("enabled", toolEnabled(tool));
+                return state;
+            }).toList());
+            m.put("toolsUsingPlatformDefaults", configured.isEmpty());
+        } catch (RuntimeException e) {
+            log.warn("Failed to resolve agent tool settings: {}", e.getMessage());
+            m.put("toolStateError", "读取工具状态失败，无法确认哪些工具已启用");
         }
         boolean canEdit = authorizationService.canManageAgent(actor, a);
         m.put("canEdit", canEdit);
@@ -697,122 +704,75 @@ public class AssistantQueryTools {
     }
 
     List<String> enabledToolNames(String toolsConfig) {
-        if (toolsConfig == null || toolsConfig.isBlank()) {
-            return defaultEnabledToolNames();
-        }
+        List<JsonNode> configured;
         try {
-            JsonNode root = objectMapper.readTree(toolsConfig);
-            if (!root.isArray() || root.isEmpty()) {
-                // 与调试页 DebugView.vue 一致：空数组 "[]" 同样回退为平台默认启用的非 MCP 工具
-                return defaultEnabledToolNames();
-            }
-            List<String> names = new ArrayList<>();
-            for (JsonNode tool : root) {
-                if (tool.path("enabled").asBoolean(true)) {
-                    String name = firstNonBlankText(tool.path("title"), tool.path("name"), tool.path("code"));
-                    if (!name.isBlank()) {
-                        names.add(name);
-                    }
-                }
-            }
-            return names;
-        } catch (Exception e) {
+            configured = configuredTools(toolsConfig);
+        } catch (IllegalStateException e) {
             return List.of();
         }
+        return enabledToolLabels(configured.isEmpty() ? defaultToolEntries(agentToolCatalog()) : configured);
     }
 
-    private boolean isUsingDefaultTools(String toolsConfig) {
-        if (toolsConfig == null || toolsConfig.isBlank()) {
-            return true;
-        }
-        try {
-            JsonNode root = objectMapper.readTree(toolsConfig);
-            return !root.isArray() || root.isEmpty();
-        } catch (Exception e) {
-            return false;
-        }
+    static List<String> enabledToolLabels(List<JsonNode> tools) {
+        return tools.stream().filter(AssistantQueryTools::toolEnabled)
+                .map(tool -> firstNonBlankText(tool.path("title"), tool.path("name"), tool.path("code")))
+                .filter(name -> !name.isBlank()).toList();
     }
 
-    private List<Map<String, Object>> enabledToolDetails(String toolsConfig) {
-        if (isUsingDefaultTools(toolsConfig)) {
-            List<Map<String, Object>> details = new ArrayList<>();
-            for (PlatformToolView t : listPlatformToolsSafely()) {
-                if (t == null || !Boolean.TRUE.equals(t.getEnabled()) || "MCP".equalsIgnoreCase(t.getCategory())) {
-                    continue;
-                }
-                Map<String, Object> item = new LinkedHashMap<>();
-                if (t.getCode() != null && !t.getCode().isBlank()) item.put("code", t.getCode());
-                if (t.getName() != null && !t.getName().isBlank()) item.put("name", t.getName());
-                if (t.getTitle() != null && !t.getTitle().isBlank()) item.put("title", t.getTitle());
-                if (t.getPrefix() != null && !t.getPrefix().isBlank()) item.put("prefix", t.getPrefix());
-                details.add(item);
-            }
-            return details;
-        }
-        try {
-            JsonNode root = objectMapper.readTree(toolsConfig);
-            if (!root.isArray()) {
-                return List.of();
-            }
-            List<Map<String, Object>> details = new ArrayList<>();
-            for (JsonNode tool : root) {
-                if (!tool.path("enabled").asBoolean(true)) {
-                    continue;
-                }
-                Map<String, Object> item = new LinkedHashMap<>();
-                String code = tool.path("code").asText("").trim();
-                String name = tool.path("name").asText("").trim();
-                String title = tool.path("title").asText("").trim();
-                String prefix = tool.path("prefix").asText("").trim();
-                if (!code.isEmpty()) item.put("code", code);
-                if (!name.isEmpty()) item.put("name", name);
-                if (!title.isEmpty()) item.put("title", title);
-                if (!prefix.isEmpty()) item.put("prefix", prefix);
-                if (!item.isEmpty()) {
-                    details.add(item);
-                }
-            }
-            return details;
-        } catch (Exception e) {
+    static boolean toolEnabled(JsonNode tool) {
+        return tool.path("enabled").asBoolean(true);
+    }
+
+    List<JsonNode> configuredTools(String config) {
+        if (config == null || config.isBlank()) {
             return List.of();
         }
-    }
-
-    private List<String> defaultEnabledToolNames() {
-        // 与调试页（DebugView.vue）一致：未显式保存过 toolsConfig 的智能体默认启用平台所有已启用的非 MCP 内置/自定义工具
-        List<String> defaults = new ArrayList<>();
-        for (PlatformToolView t : listPlatformToolsSafely()) {
-            if (t == null || !Boolean.TRUE.equals(t.getEnabled())) {
-                continue;
+        try {
+            JsonNode json = objectMapper.readTree(config);
+            List<JsonNode> entries = new ArrayList<>();
+            if (json != null && json.isArray()) {
+                json.forEach(tool -> {
+                    if (tool.isObject()) entries.add(tool);
+                });
             }
-            if ("MCP".equalsIgnoreCase(t.getCategory())) {
-                continue;
-            }
-            String label = t.getTitle() != null && !t.getTitle().isBlank()
-                    ? t.getTitle()
-                    : (t.getName() != null && !t.getName().isBlank() ? t.getName() : t.getCode());
-            if (label != null && !label.isBlank()) {
-                defaults.add(label);
-            }
+            return entries;
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new IllegalStateException("智能体工具配置无法读取", e);
         }
-        return defaults;
     }
 
-    private List<PlatformToolView> listPlatformToolsSafely() {
+    List<JsonNode> defaultToolEntries(List<PlatformToolView> catalog) {
+        return catalog.stream().filter(t -> Boolean.TRUE.equals(t.getEnabled()))
+                .filter(t -> !"MCP".equalsIgnoreCase(t.getCategory()))
+                .map(this::toolEntry).toList();
+    }
+
+    JsonNode toolEntry(PlatformToolView view) {
+        var entry = objectMapper.createObjectNode();
+        entry.put("id", view.getId());
+        entry.put("code", view.getCode());
+        entry.put("name", view.getName());
+        entry.put("title", view.getTitle());
+        entry.put("prefix", view.getPrefix());
+        entry.put("category", view.getCategory());
+        entry.put("enabled", true);
+        return entry;
+    }
+
+    List<PlatformToolView> agentToolCatalog() {
         if (platformToolService == null) {
             return List.of();
         }
-        try {
-            List<PlatformToolView> views = platformToolService.listReadOnly();
-            if (views != null && !views.isEmpty()) {
-                return views;
-            }
-            List<PlatformToolView> fallback = platformToolService.list();
-            return fallback != null ? fallback : List.of();
-        } catch (RuntimeException e) {
-            log.warn("Failed to load default platform tools for assistant query: {}", e.getMessage());
-            return List.of();
+        return platformToolService.listAgentToolOptions();
+    }
+
+    private static Map<String, Object> toolIdentity(JsonNode tool) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        for (String field : List.of("code", "name", "title", "prefix")) {
+            String value = tool.path(field).asText("").trim();
+            if (!value.isEmpty()) item.put(field, value);
         }
+        return item;
     }
 
     private static String firstNonBlankText(JsonNode... nodes) {

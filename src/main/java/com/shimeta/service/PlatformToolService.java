@@ -90,6 +90,29 @@ public class PlatformToolService {
                 .collect(Collectors.toList());
     }
 
+    /** 工具开关只需要标识与状态，读取时不解密任何工具凭证。 */
+    @Transactional(readOnly = true)
+    public List<PlatformToolView> listAgentToolOptions() {
+        List<PlatformTool> tools = new ArrayList<>(repository.findAllByOrderBySortOrderAsc());
+        for (PlatformTool builtin : PlatformToolCatalog.builtins()) {
+            if (tools.stream().noneMatch(tool -> builtin.getId().equals(tool.getId())
+                    || builtin.getCode().equals(tool.getCode()))) {
+                tools.add(builtin);
+            }
+        }
+        return tools.stream().map(tool -> {
+            PlatformToolView view = new PlatformToolView();
+            view.setId(tool.getId());
+            view.setCode(tool.getCode());
+            view.setName(tool.getName());
+            view.setTitle(tool.getTitle());
+            view.setPrefix(tool.getPrefix());
+            view.setCategory(tool.getCategory());
+            view.setEnabled(tool.getEnabled());
+            return view;
+        }).toList();
+    }
+
     @Transactional
     public PageResult<PlatformToolView> page(String keyword, String category, int page, int size) {
         List<PlatformToolView> all = list();

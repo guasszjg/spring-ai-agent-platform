@@ -461,11 +461,18 @@ class AssistantExtendedWriteToolsTest {
         dsTool.setCategory("BUILTIN");
         dsTool.setEnabled(true);
 
-        when(platformToolService.list()).thenReturn(List.of(timeTool, dsTool));
+        PlatformToolView otherSearch = new PlatformToolView();
+        otherSearch.setCode("deepseek_custom_search");
+        otherSearch.setName("deepseek_custom_search");
+        otherSearch.setTitle("DeepSeek 专用查询");
+        otherSearch.setCategory("SEARCH");
+        otherSearch.setEnabled(true);
+
+        when(platformToolService.listAgentToolOptions()).thenReturn(List.of(timeTool, dsTool, otherSearch));
         queryTools.setPlatformToolService(platformToolService);
 
-        assertEquals(List.of("获取当前时间", "DeepSeek Search"), queryTools.enabledToolNames(null));
-        assertEquals(List.of("获取当前时间", "DeepSeek Search"), queryTools.enabledToolNames("[]"));
+        assertEquals(List.of("获取当前时间", "DeepSeek Search", "DeepSeek 专用查询"), queryTools.enabledToolNames(null));
+        assertEquals(List.of("获取当前时间", "DeepSeek Search", "DeepSeek 专用查询"), queryTools.enabledToolNames("[]"));
         assertEquals(List.of("deepseek_web_search"),
                 queryTools.enabledToolNames("[{\"title\":\"\",\"name\":\"\",\"code\":\"deepseek_web_search\",\"enabled\":true}]"));
 
@@ -474,7 +481,26 @@ class AssistantExtendedWriteToolsTest {
                 mapper.readTree("{\"agent\":\"test01\",\"removeTools\":[\"deepseek 联网工具\"]}"), ctx);
         AssistantAction action = ctx.createdActions().get(0);
         String toolsConfig = mapper.readTree(action.getPayload()).path("toolsConfig").asText();
-        assertEquals(List.of("获取当前时间"), queryTools.enabledToolNames(toolsConfig));
+        assertEquals(List.of("获取当前时间", "DeepSeek 专用查询"), queryTools.enabledToolNames(toolsConfig));
         assertTrue(action.getPreview().contains("DeepSeek Search"));
+
+        when(agentService.getById(agent.getId(), dev)).thenReturn(Optional.of(agent));
+        when(agentService.update(eq(agent.getId()), any(Agent.class), eq(dev))).thenAnswer(inv -> {
+            Agent patch = inv.getArgument(1);
+            agent.setToolsConfig(patch.getToolsConfig());
+            return agent;
+        });
+        AssistantWriteTools.ExecutionResult applied = extendedWriteTools.execute(
+                AssistantExtendedWriteTools.UPDATE_AGENT_SETTINGS, action.getPayload(), null, dev);
+        assertEquals(List.of("获取当前时间", "DeepSeek 专用查询"), queryTools.enabledToolNames(agent.getToolsConfig()));
+        assertTrue(applied.readback().contains("已启用工具=获取当前时间"));
+        assertFalse(applied.readback().contains("DeepSeek Search"));
+
+        ToolContext unknown = ToolContext.of(dev, "asc-tool-unknown");
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                extendedWriteTools.draftUpdateAgentSettings(
+                        mapper.readTree("{\"agent\":\"test01\",\"addTools\":[\"invented_tool\"]}"), unknown));
+        assertTrue(error.getMessage().contains("找不到工具"));
+        assertTrue(unknown.createdActions().isEmpty());
     }
 }
