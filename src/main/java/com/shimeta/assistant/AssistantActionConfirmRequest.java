@@ -1,5 +1,7 @@
 package com.shimeta.assistant;
 
+import com.fasterxml.jackson.databind.JsonNode;
+
 /**
  * 待确认操作卡片的确认请求体（4.4 执行能力）：
  * <ul>
@@ -8,5 +10,8 @@ package com.shimeta.assistant;
  *       不经过模型、不落库、不进对话记录与审计日志。</li>
  * </ul>
  */
-public record AssistantActionConfirmRequest(String confirmName, String secretValue) {
+public record AssistantActionConfirmRequest(String confirmName, String secretValue, JsonNode formData) {
+    public AssistantActionConfirmRequest(String confirmName, String secretValue) {
+        this(confirmName, secretValue, null);
+    }
 }

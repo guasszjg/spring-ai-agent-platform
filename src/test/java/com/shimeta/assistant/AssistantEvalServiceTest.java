@@ -58,7 +58,7 @@ class AssistantEvalServiceTest {
                 "list_mcp_servers", "list_skills", "get_gateway_status", "get_usage_summary", "diagnose_agent",
                 "list_templates", "search_platform_docs", "test_gateway_channel", "navigate_to_page",
                 "list_resources", "get_resource", "run_retrieval_test", "get_agent_logs", "get_tool_usage",
-                "list_share_links"));
+                "list_share_links", "prepare_console_action"));
         List<AssistantEvalCase> cases = service.cases();
 
         assertTrue(cases.size() >= 250, "扩充后评测用例数量应不少于 250，实际 " + cases.size());

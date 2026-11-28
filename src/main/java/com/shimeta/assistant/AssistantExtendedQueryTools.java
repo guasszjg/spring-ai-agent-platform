@@ -175,9 +175,43 @@ public class AssistantExtendedQueryTools {
                         schema(Map.of(
                                 "agent", prop("string", "可选：智能体 ID、编码或名称，不传则统计当前用户可见的全部智能体"))),
                         (args, ctx) -> getToolUsage(args, ctx.actor())),
+                AssistantTool.read("prepare_console_action", "打开真实操作表单",
+                        "只定位页面并准备待用户确认的表单，不执行写入。用于新建、编辑或复制智能体，预填主备通道、发布提示词，"
+                                + "创建/编辑/启用/停用/删除/定位分享链接，或者打开知识库的本地文件上传、索引进度与检索评测。"
+                                + "也支持场景模板、技能、HTTP 工具、MCP、模型网关、用户角色、开放凭证、终端、告警及日志评测页面。"
+                                + "编辑或定位已有记录时传入查到的 ID；同名时请先向用户确认。HTTP 与 MCP 测试可打开对应编辑表单，由用户点测试。"
+                                + "route_edit 的通道 ID 先从 get_agent_detail 查询；上传必须由用户自己选文件。"
+                                + "访问码、密钥和密码严禁放入参数。成功后请提示用户在页面确认，不要声称已保存。",
+                        schema(Map.of(
+                                "operation", enumProp("操作",
+                                        "agent_create", "agent_edit", "agent_copy", "route_edit", "prompt_publish",
+                                        "share_create", "share_edit", "share_enable", "share_disable", "share_delete", "share_focus",
+                                        "kb_upload", "kb_rebuild", "kb_eval", "kb_retrieval",
+                                        "template_create", "template_edit", "template_delete", "template_focus",
+                                        "skill_create", "skill_edit", "skill_focus", "skill_enable", "skill_disable", "http_create", "http_edit", "http_focus", "http_enable", "http_disable",
+                                        "mcp_create", "mcp_edit", "mcp_focus", "mcp_enable", "mcp_disable", "gateway_create", "gateway_edit", "gateway_routing",
+                                        "user_create", "user_edit", "user_role", "user_enable", "user_disable", "roles_view",
+                                        "key_create", "key_rotate", "terminal_create", "terminal_edit", "alert_create", "alert_edit",
+                                        "overview_filter", "agent_logs", "eval_review"),
+                                "agent", prop("string", "智能体名称、编码或 ID，agent_create 不需要"),
+                                "link", prop("string", "分享链接名称或 ID，share_create 不需要"),
+                                "knowledgeBase", prop("string", "知识库名称或 ID，只用于 kb_*"),
+                                "target", prop("string", "目标资源 ID 或完整名称；日志用会话 ID，评测用运行 ID"),
+                                "section", enumProp("网关分类", "llm", "embedding", "rerank", "ocr", "dify"),
+                                "fields", Map.of("type", "object", "description",
+                                        "可选的草稿字段。智能体：name/category/description/systemPrompt/temperature/tags/status。"
+                                        + "路由：primaryProviderId/fallbackProviderId/modelName，空字符串表示跟随平台。"
+                                        + "提示词：systemPrompt。分享链接：name/accessMode/expiresInDays/maxMessages/maxTokens/maxVisitors/"
+                                        + "visitorRpm/title/welcomeMessage/exampleQuestions/showRecordNotice。召回：query/topK。"
+                                        + "模板：name/category/description/systemPrompt/temperature。技能：name/description/content。"
+                                        + "HTTP/MCP：name/description。网关：name/modelName/defaultModel/timeoutMs；路由用 defaultProviderId/fallbackProviderId/failoverEnabled。"
+                                        + "用户：nickname。终端：label/rateLimitRpm/dailyTokenQuota。告警：name/threshold/timeWindowMinutes/silenceMinutes/enabled。"
+                                        + "概览用 range(today/7days/30days)。日志用 keyword，target 指定时打开对应会话，可用 traceMessageId 展开该消息调用链。")),
+                                "operation"),
+                        (args, ctx) -> prepareConsoleAction(args, ctx.actor())),
                 AssistantTool.read(LIST_SHARE_LINKS, "查询分享链接",
                         "查询某个智能体的分享链接（免登录聊天页）：名称、地址、访问方式、当前是否可用及原因、到期时间、对话次数、token 和访客数。"
-                                + "不返回访问码（访问码只在新建时显示一次）。用户问\"分享链接还能用吗\"\"链接什么时候到期\"\"链接被用了多少\"时使用。",
+                                + "不返回访问码，访问码只在授权的管理页面查看。用户问\"分享链接还能用吗\"\"链接什么时候到期\"\"链接被用了多少\"时使用。",
                         schema(Map.of(
                                 "agent", prop("string", "智能体的 ID、编码或名称")), "agent"),
                         (args, ctx) -> listShareLinks(args, ctx.actor()))
@@ -235,8 +269,154 @@ public class AssistantExtendedQueryTools {
         body.put("total", items.size());
         body.put("links", items);
         body.put("manageLink", AssistantQueryTools.agentLink(match.agent().getId()) + "?tab=access");
-        body.put("note", "新建链接、修改访问码与有效期请到智能体调试页「访问入口 → Web 应用」操作");
+        body.put("note", "可用 prepare_console_action 直接打开链接表单，访问码由用户在授权页面输入");
         return ok(body);
+    }
+
+    Map<String, Object> prepareConsoleAction(JsonNode args, CurrentActor actor) {
+        String operation = text(args, "operation");
+        if (operation == null || actor == null || (actor.isViewer() && !Set.of(
+                "template_focus", "skill_focus", "http_focus", "overview_filter", "agent_logs").contains(operation))) {
+            throw new IllegalArgumentException("请指定操作，且当前账号需有对应的管理权限");
+        }
+        Map<String, Object> info = new LinkedHashMap<>();
+        info.put("operation", operation);
+        String target = text(args, "target");
+        List<String> fields;
+        switch (operation) {
+            case "agent_create" -> {
+                info.put("page", "agents");
+                fields = List.of("name", "category", "description", "systemPrompt", "temperature", "tags", "status");
+            }
+            case "agent_edit", "agent_copy", "route_edit", "prompt_publish",
+                    "share_create", "share_edit", "share_enable", "share_disable", "share_delete", "share_focus" -> {
+                AssistantQueryTools.AgentMatch match = queryTools.resolveAgent(text(args, "agent"), actor);
+                if (match.agent() == null) return match.response();
+                Agent agent = match.agent();
+                if (!queryTools.canPrepareAgentForm(actor, agent, "agent_copy".equals(operation))) {
+                    throw new IllegalArgumentException("当前账号没有操作该智能体的权限");
+                }
+                info.put("agentId", agent.getId());
+                if (operation.startsWith("share_")) {
+                    info.put("page", "agent_debug");
+                    if (!"share_create".equals(operation)) {
+                        info.put("linkId", exactShareLink(agent.getId(), text(args, "link"), actor));
+                    }
+                    fields = List.of("name", "accessMode", "expiresInDays", "maxMessages", "maxTokens", "maxVisitors",
+                            "visitorRpm", "title", "welcomeMessage", "exampleQuestions", "showRecordNotice");
+                } else if ("route_edit".equals(operation) || "prompt_publish".equals(operation)) {
+                    info.put("page", "agent_debug");
+                    fields = "route_edit".equals(operation)
+                            ? List.of("primaryProviderId", "fallbackProviderId", "modelName") : List.of("systemPrompt");
+                } else {
+                    info.put("page", "agents");
+                    fields = "agent_edit".equals(operation)
+                            ? List.of("name", "category", "description", "systemPrompt", "temperature", "tags", "status")
+                            : List.of();
+                }
+            }
+            case "kb_upload", "kb_rebuild", "kb_eval", "kb_retrieval" -> {
+                KnowledgeBase kb = queryTools.resolveKnowledgeBase(text(args, "knowledgeBase"), actor);
+                if (!queryTools.canPrepareKnowledgeForm(actor, kb)) {
+                    throw new IllegalArgumentException("当前账号没有管理该知识库的权限");
+                }
+                if (("kb_rebuild".equals(operation) || "kb_eval".equals(operation))
+                        && !"SPRING_AI".equals(kb.getProvider())) {
+                    throw new IllegalArgumentException("该操作只适用于自建知识库");
+                }
+                info.put("page", "knowledge");
+                info.put("kbId", kb.getId());
+                fields = "kb_retrieval".equals(operation) ? List.of("query", "topK") : List.of();
+            }
+            case "template_create", "template_edit", "template_delete", "template_focus" -> {
+                info.put("page", "templates");
+                if (!"template_create".equals(operation)) {
+                    target = resolveExactTemplate(target, actor).getId();
+                }
+                fields = List.of("name", "category", "description", "systemPrompt", "temperature");
+            }
+            case "skill_create", "skill_edit", "skill_focus", "skill_enable", "skill_disable" -> {
+                info.put("page", "skills");
+                fields = List.of("name", "description", "content", "changeNote");
+            }
+            case "http_create", "http_edit", "http_focus", "http_enable", "http_disable", "mcp_create", "mcp_edit", "mcp_focus", "mcp_enable", "mcp_disable" -> {
+                info.put("page", "tools");
+                if (operation.startsWith("mcp_")) {
+                    requireSuperAdmin(actor, "打开管理页面");
+                    info.put("subTab", "mcp");
+                }
+                fields = List.of("name", "description");
+            }
+            case "gateway_create", "gateway_edit", "gateway_routing" -> {
+                requireSuperAdmin(actor, "打开管理页面");
+                String section = "gateway_routing".equals(operation) ? "llm" : text(args, "section");
+                if (section == null || !Set.of("llm", "embedding", "rerank", "ocr", "dify").contains(section)) {
+                    throw new IllegalArgumentException("请指定网关分类");
+                }
+                info.put("page", "gateway");
+                info.put("dashboardTab", "gateway-" + section);
+                fields = List.of("name", "modelName", "defaultModel", "timeoutMs", "defaultProviderId",
+                        "fallbackProviderId", "failoverEnabled");
+            }
+            case "user_create", "user_edit", "user_role", "user_enable", "user_disable", "roles_view" -> {
+                requireSuperAdmin(actor, "打开管理页面");
+                info.put("page", "roles_view".equals(operation) ? "roles" : "users");
+                fields = List.of("nickname");
+            }
+            case "key_create", "key_rotate", "terminal_create", "terminal_edit", "alert_create", "alert_edit" -> {
+                info.put("page", "security");
+                info.put("subTab", operation.startsWith("key_") ? "api_key"
+                        : operation.startsWith("alert_") ? "alert_rule" : "terminal");
+                fields = List.of("name", "label", "rateLimitRpm", "dailyTokenQuota", "threshold",
+                        "timeWindowMinutes", "silenceMinutes", "enabled");
+            }
+            case "overview_filter" -> {
+                info.put("page", "overview");
+                fields = List.of("range");
+            }
+            case "agent_logs" -> {
+                var match = queryTools.resolveAgent(text(args, "agent"), actor);
+                if (match.agent() == null) return match.response();
+                info.put("agentId", match.agent().getId());
+                info.put("page", "agent_debug");
+                fields = List.of("keyword", "traceMessageId");
+            }
+            case "eval_review" -> {
+                requireSuperAdmin(actor, "打开管理页面");
+                info.put("page", "assistant-eval");
+                fields = List.of();
+            }
+            default -> throw new IllegalArgumentException("不支持的页面操作");
+        }
+        if (target != null) info.put("resourceRef", target);
+        com.fasterxml.jackson.databind.node.ObjectNode safe = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode();
+        JsonNode input = args.path("fields");
+        for (String key : fields) {
+            JsonNode value = input.get(key);
+            if (value != null && (value.isTextual() || value.isNumber() || value.isBoolean()
+                    || ("tags".equals(key) || "exampleQuestions".equals(key)) && value.isArray()
+                    && java.util.stream.StreamSupport.stream(value.spliterator(), false).allMatch(JsonNode::isTextual))) {
+                safe.set(key, value);
+            }
+        }
+        if (!safe.isEmpty()) info.put("formData", safe);
+        info.put("message", "正在打开相应页面，界面会显示定位结果。需要变更时，请用户核对后提交。");
+
+        return ok(info);
+    }
+
+    private String exactShareLink(String agentId, String ref, CurrentActor actor) {
+        if (shareLinkService == null || ref == null || ref.isBlank()) {
+            throw new IllegalArgumentException("请提供分享链接的完整名称或 ID");
+        }
+        var links = shareLinkService.list(agentId, actor);
+        var id = links.stream().filter(link -> ref.equals(link.get("id"))).findFirst();
+        if (id.isPresent()) return String.valueOf(id.get().get("id"));
+        var matches = links.stream().filter(link -> ref.equalsIgnoreCase(String.valueOf(link.get("name")))).toList();
+        if (matches.size() != 1) {
+            throw new IllegalArgumentException(matches.isEmpty() ? "找不到该分享链接" : "有多个同名分享链接，请提供 ID");
+        }
+        return String.valueOf(matches.getFirst().get("id"));
     }
 
     // ==================== list_resources ====================
@@ -363,16 +543,27 @@ public class AssistantExtendedQueryTools {
     }
 
     private Map<String, Object> getTemplate(String ref, CurrentActor actor) {
-        List<AgentTemplate> templates = templateService.list(null, null, actor);
-        AgentTemplate t = templates.stream()
-                .filter(item -> equalsAnyIgnoreCase(ref, item.getId(), item.getName()))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("未找到场景模板「" + ref + "」"));
+        AgentTemplate t = resolveExactTemplate(ref, actor);
         Map<String, Object> detail = templateSummary(t);
         detail.put("systemPromptSummary", truncate(t.getSystemPrompt(), 300));
         detail.put("temperature", t.getTemperature());
         detail.put("maxTokens", t.getMaxTokens());
         return ok(Map.of("type", "template", "item", detail));
+    }
+
+    private AgentTemplate resolveExactTemplate(String ref, CurrentActor actor) {
+        if (ref == null || ref.isBlank()) {
+            throw new IllegalArgumentException("请提供场景模板的完整名称或 ID");
+        }
+        var templates = templateService.list(null, null, actor);
+        var byId = templates.stream().filter(item -> ref.equalsIgnoreCase(item.getId())).findFirst();
+        if (byId.isPresent()) return byId.get();
+        var matches = templates.stream().filter(item -> ref.equalsIgnoreCase(item.getName())).toList();
+        if (matches.size() != 1) {
+            throw new IllegalArgumentException(matches.isEmpty() ? "未找到场景模板「" + ref + "」"
+                    : "有多个同名场景模板，请提供 ID");
+        }
+        return matches.getFirst();
     }
 
     private Map<String, Object> templateSummary(AgentTemplate t) {

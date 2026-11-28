@@ -7188,5 +7188,55 @@
       ]
     },
     "referenceAnswer": "只读观察员无权新增或修改智能体变量，应拒绝并说明权限限制。"
+  },
+  {
+    "id": "assistant-console-agent-edit",
+    "category": "执行导航",
+    "capabilityId": "assistant.prepare.console_action",
+    "variant": "standard",
+    "role": "DEVELOPER",
+    "question": "帮我打开 {{agent}} 的编辑表单，把描述预填为售后咨询，先别保存。",
+    "expect": {
+      "toolsAll": [
+        "prepare_console_action"
+      ],
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0,
+      "args": [
+        {
+          "tool": "prepare_console_action",
+          "field": "operation",
+          "pattern": "agent_edit"
+        }
+      ]
+    },
+    "referenceAnswer": "准备智能体编辑表单，用户在页面核对后保存。"
+  },
+  {
+    "id": "assistant-console-kb-upload",
+    "category": "执行导航",
+    "capabilityId": "assistant.prepare.console_action",
+    "variant": "paraphrase",
+    "role": "SUPER_ADMIN",
+    "question": "我要往 {{kb}} 加一份本地文档，帮我找好上传入口，文件我自己选。",
+    "expect": {
+      "toolsAll": [
+        "prepare_console_action"
+      ],
+      "toolsNone": [
+        "@write"
+      ],
+      "cardsMax": 0,
+      "args": [
+        {
+          "tool": "prepare_console_action",
+          "field": "operation",
+          "pattern": "kb_upload"
+        }
+      ]
+    },
+    "referenceAnswer": "定位目标知识库上传区，用户选择文件后再确认上传。"
   }
 ]

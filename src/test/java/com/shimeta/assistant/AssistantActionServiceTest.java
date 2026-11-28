@@ -1,5 +1,6 @@
 package com.shimeta.assistant;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shimeta.model.AssistantAction;
 import com.shimeta.model.UserRole;
 import com.shimeta.repository.AssistantActionRepository;
@@ -74,6 +75,33 @@ class AssistantActionServiceTest {
         assertTrue(action.getResult().contains("/debug/agent-9"));
         verify(auditRecorder).record(eq("assistant.action.create_agent"), eq("AGENT"), eq("agent-9"), eq("SUCCESS"),
                 isNull(), eq("LOW"), contains("via=assistant"));
+    }
+
+    @Test
+    void faqFormChangesAreValidatedBeforeClaimAndPreservePendingTarget() throws Exception {
+        action.setToolName("add_faq");
+        action.setPayload("{\"knowledgeBaseId\":\"kb-7\",\"question\":\"Original\",\"answer\":\"Draft answer\"}");
+        var mapper = new ObjectMapper();
+        var invalid = new AssistantActionConfirmRequest(null, null, mapper.readTree("{\"knowledgeBaseId\":\"kb-other\"}"));
+        assertThrows(AssistantActionService.ConfirmationMismatchException.class,
+                () -> service.confirm("act-1", invalid, dev));
+        verify(actionRepository, never()).claim(anyString(), anyString(), any());
+
+        when(actionRepository.claim(eq("act-1"), eq("u-dev"), any())).thenReturn(1);
+        when(writeTools.execute(eq("add_faq"), anyString(), eq(dev))).thenAnswer(inv -> {
+            var effective = mapper.readTree(inv.getArgument(1, String.class));
+            assertEquals("kb-7", effective.path("knowledgeBaseId").asText());
+            assertEquals("Original", effective.path("question").asText());
+            assertEquals("Edited answer", effective.path("answer").asText());
+            return new AssistantWriteTools.ExecutionResult("KNOWLEDGE_BASE", "kb-7", "Saved",
+                    null, null, null, null, Map.of("faqId", "faq-7"));
+        });
+        var edited = new AssistantActionConfirmRequest(null, null, mapper.readTree("{\"answer\":\"Edited answer\"}"));
+        Map<String, Object> card = service.confirm("act-1", edited, dev);
+        assertEquals(AssistantAction.EXECUTED, card.get("status"));
+        assertTrue(action.getPayload().contains("Edited answer"));
+        assertTrue(((Map<?, ?>) card.get("uiEffect")).containsValue("faq-7"));
+        assertFalse(((Map<?, ?>) card.get("uiEffect")).containsKey("formData"));
     }
 
     @Test

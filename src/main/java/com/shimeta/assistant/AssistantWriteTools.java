@@ -495,7 +495,12 @@ public class AssistantWriteTools {
 
     /** 执行结果：资源类型与 ID、给用户看的说明、跳转链接（可为空）、一次性展示密钥（不落库）与执行后回读摘要。 */
     public record ExecutionResult(String resourceType, String resourceId, String message, String linkLabel, String linkUrl,
-                                  String secret, String readback) {
+                                  String secret, String readback, Map<String, Object> uiResult) {
+        public ExecutionResult(String resourceType, String resourceId, String message, String linkLabel,
+                               String linkUrl, String secret, String readback) {
+            this(resourceType, resourceId, message, linkLabel, linkUrl, secret, readback, Map.of());
+        }
+
         public ExecutionResult(String resourceType, String resourceId, String message, String linkLabel, String linkUrl) {
             this(resourceType, resourceId, message, linkLabel, linkUrl, null, null);
         }
@@ -580,7 +585,8 @@ public class AssistantWriteTools {
         String kbId = resolveId(p, "knowledgeBaseId", "knowledgeBaseFrom", actor);
         KnowledgeFaq faq = knowledgeBaseService.createFaq(kbId, req, actor);
         return new ExecutionResult("KNOWLEDGE_BASE", kbId, "已添加 FAQ（ID " + faq.getId() + "）",
-                "查看知识库", AssistantQueryTools.knowledgeBaseLink(kbId));
+                "查看知识库", AssistantQueryTools.knowledgeBaseLink(kbId), null, null,
+                faq.getId() == null ? Map.of() : Map.of("faqId", faq.getId()));
     }
 
     private ExecutionResult executeBindKnowledgeBase(JsonNode p, CurrentActor actor) {
@@ -599,7 +605,7 @@ public class AssistantWriteTools {
         String kbName = knowledgeBaseRepository.findById(kbId).map(KnowledgeBase::getName).orElse(kbId);
         return new ExecutionResult("AGENT", agent.getId(),
                 (unbind ? "已为「" + agent.getName() + "」解绑知识库「" : "已为「" + agent.getName() + "」绑定知识库「") + kbName + "」",
-                "去调试", AssistantQueryTools.agentLink(agent.getId()));
+                "去调试", AssistantQueryTools.agentLink(agent.getId()), null, null, Map.of("kbId", kbId));
     }
 
     private ExecutionResult executeUpdateAgentPrompt(JsonNode p, CurrentActor actor) {

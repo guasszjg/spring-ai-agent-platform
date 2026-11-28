@@ -105,7 +105,7 @@ public class AssistantToolRouter {
     static final List<ToolGroup> GROUPS = List.of(
             new ToolGroup("agents", "智能体与诊断",
                     Set.of("list_agents", "get_agent_detail", "diagnose_agent", "get_agent_logs", "list_resources", "get_resource",
-                            "list_share_links", "navigate_to_page"),
+                            "list_share_links", "navigate_to_page", "prepare_console_action"),
                     Set.of("create_agent", "set_agent_status", "update_agent_prompt", "bind_knowledge_base",
                             "update_agent_settings", "manage_agent_variable", "rollback_agent_prompt", "save_agent_as_template", "delete_resource",
                             "disable_share_link"),
@@ -124,7 +124,7 @@ public class AssistantToolRouter {
                     ),
                     Pattern.compile("(?i)(智能体|agent|助手|机器人|提示词|prompt|变量|回滚|温度|记忆轮数|思考模式|诊断|排查|没回复|没有回复|回答不对|不准确|检索不到|对话日志|历史版本|停用|启用|分享链接|分享|访问码|免登录)")),
             new ToolGroup("knowledge", "知识库与召回",
-                    Set.of("list_knowledge_bases", "list_knowledge_documents", "run_retrieval_test", "list_resources", "get_resource", "navigate_to_page"),
+                    Set.of("list_knowledge_bases", "list_knowledge_documents", "run_retrieval_test", "list_resources", "get_resource", "navigate_to_page", "prepare_console_action"),
                     Set.of("create_knowledge_base", "add_faq", "bind_knowledge_base",
                             "update_kb_settings", "update_faq", "rebuild_kb_index", "run_rag_eval", "delete_resource"),
                     true, false,
@@ -138,7 +138,7 @@ public class AssistantToolRouter {
                     ),
                     Pattern.compile("(?i)(知识库|资料库|kb|文档|切片|索引|重建索引|faq|问答对|召回|检索测试|检索评测|rag|dify|topk|阈值|权重)")),
             new ToolGroup("templates", "场景模板",
-                    Set.of("list_templates", "list_resources", "get_resource"),
+                    Set.of("list_templates", "list_resources", "get_resource", "prepare_console_action"),
                     Set.of("create_agent", "save_agent_as_template", "delete_resource"),
                     true, false,
                     List.of(
@@ -148,7 +148,7 @@ public class AssistantToolRouter {
                     ),
                     Pattern.compile("(?i)(模板|template|套用|存为模板)")),
             new ToolGroup("tools_mcp", "工具与 MCP",
-                    Set.of("get_agent_detail", "list_mcp_servers", "get_tool_usage", "list_resources", "get_resource"),
+                    Set.of("get_agent_detail", "list_mcp_servers", "get_tool_usage", "list_resources", "get_resource", "prepare_console_action"),
                     Set.of("create_http_tool", "register_mcp_server", "refresh_mcp_server", "update_agent_settings", "delete_resource"),
                     true, false,
                     List.of(
@@ -160,7 +160,7 @@ public class AssistantToolRouter {
                     ),
                     Pattern.compile("(?i)(mcp|工具|插件|http\\s*工具|博查|bocha|deepseek|联网|工具开关|工具调用|工具统计|工具失败|刷新工具)")),
             new ToolGroup("skills", "技能库",
-                    Set.of("list_skills"),
+                    Set.of("list_skills", "prepare_console_action"),
                     Set.of("create_skill", "update_agent_settings", "delete_resource"),
                     true, false,
                     List.of(
@@ -170,7 +170,7 @@ public class AssistantToolRouter {
                     ),
                     Pattern.compile("(?i)(技能|skill)")),
             new ToolGroup("gateway", "模型网关",
-                    Set.of("get_gateway_status", "test_gateway_channel"),
+                    Set.of("get_gateway_status", "test_gateway_channel", "prepare_console_action"),
                     Set.of("manage_gateway_channel"),
                     true, false,
                     List.of(
@@ -181,7 +181,7 @@ public class AssistantToolRouter {
                     ),
                     Pattern.compile("(?i)(网关|通道|大模型|向量模型|embedding|rerank|ocr|连通|测试连接|通不通|能不能用|主通道|备用通道|降级)")),
             new ToolGroup("usage", "用量与成本",
-                    Set.of("get_usage_summary", "list_agents"),
+                    Set.of("get_usage_summary", "list_agents", "prepare_console_action"),
                     Set.of(),
                     true, false,
                     List.of(
@@ -192,7 +192,7 @@ public class AssistantToolRouter {
                     ),
                     Pattern.compile("(?i)(用量|成本|费用|花钱|花费|花了|token|排行|最多|分布|统计|调用量|调用次数)")),
             new ToolGroup("security", "开放与安全",
-                    Set.of("list_resources", "get_resource"),
+                    Set.of("list_resources", "get_resource", "prepare_console_action"),
                     Set.of("create_api_key", "revoke_api_key", "update_guardrail_policy"),
                     true, false,
                     List.of(
@@ -204,7 +204,7 @@ public class AssistantToolRouter {
                     ),
                     Pattern.compile("(?i)(凭证|api\\s*key|apikey|密钥|终端|x-client-id|护栏|敏感词|pii|注入|紧急停用|kill\\s*switch|审计日志|拦截记录|告警规则|告警|吊销|轮换)")),
             new ToolGroup("users_roles", "用户与角色",
-                    Set.of("list_resources", "get_resource"),
+                    Set.of("list_resources", "get_resource", "prepare_console_action"),
                     Set.of("manage_user"),
                     true, true,
                     List.of(
@@ -226,7 +226,7 @@ public class AssistantToolRouter {
                     ),
                     Pattern.compile("(?i)(怎么|如何|在哪里|在哪|什么意思|区别|配置项|参数|报错|错误码|401|403|422|429|部署|运维|开放接口|使用文档|平台文档)")),
             new ToolGroup("navigation", "页面跳转导航",
-                    Set.of("navigate_to_page", "list_agents", "list_knowledge_bases"),
+                    Set.of("navigate_to_page", "list_agents", "list_knowledge_bases", "prepare_console_action"),
                     Set.of(),
                     true, false,
                     List.of(

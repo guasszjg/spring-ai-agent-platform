@@ -444,6 +444,9 @@ public class Agent {
         if (status == null) {
             status = AgentStatus.RUNNING;
         }
+        if (memoryCompression == null) {
+            memoryCompression = false;
+        }
         if (callCount == null) {
             callCount = 0L;
         }

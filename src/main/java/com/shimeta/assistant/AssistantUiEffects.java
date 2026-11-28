@@ -119,6 +119,15 @@ public final class AssistantUiEffects {
                 e.put("label", title != null ? "AI 助手正在打开「" + title + "」" : "AI 助手正在切换页面");
                 yield e;
             }
+            case "prepare_console_action" -> {
+                String page = text(res, "page");
+                String operation = text(res, "operation");
+                if (page == null || operation == null) yield null;
+                Map<String, Object> e = base("console_form", page);
+                e.putAll(extractFields(res, "operation", "agentId", "kbId", "linkId", "resourceRef", "subTab", "dashboardTab", "formData"));
+                e.put("label", "正在定位目标并打开操作页面");
+                yield e;
+            }
             case "list_resources" -> fromListResources(args, res);
             default -> null;
         };
@@ -163,6 +172,51 @@ public final class AssistantUiEffects {
         };
     }
 
+    public static Map<String, Object> fromPendingAction(AssistantAction action) {
+        if (action == null || !AssistantAction.PENDING.equals(action.getStatus())) return null;
+        JsonNode payload = parse(action.getPayload());
+        if (payload == null || !payload.isObject()) return null;
+        Map<String, Object> e;
+        switch (action.getToolName()) {
+            case "update_agent_settings" -> {
+                if (!payload.path("toolChanges").isArray() || payload.path("toolChanges").isEmpty()
+                        || text(payload, "agentId") == null) return null;
+                var keys = payload.fieldNames();
+                while (keys.hasNext()) {
+                    if (!java.util.Set.of("agentId", "baselineSha256", "toolsConfig", "toolChanges").contains(keys.next())) {
+                        return null;
+                    }
+                }
+                e = base("agent_tools_preview", "agent_debug");
+                e.put("agentId", text(payload, "agentId"));
+                e.put("toolChanges", MAPPER.convertValue(payload.get("toolChanges"), java.util.List.class));
+            }
+            case "bind_knowledge_base" -> {
+                e = base("agent_kb_preview", "agent_debug");
+                e.putAll(extractFields(payload, "agentId", "agentFrom", "operation"));
+                String kbId = text(payload, "knowledgeBaseId");
+                if (kbId != null) e.put("kbId", kbId);
+                String kbFrom = text(payload, "knowledgeBaseFrom");
+                if (kbFrom != null) e.put("kbFrom", kbFrom);
+            }
+            case "add_faq", "update_faq" -> {
+                e = base("faq_preview", "knowledge");
+                String kbId = firstNonBlank(text(payload, "kbId"), text(payload, "knowledgeBaseId"));
+                if (kbId != null) e.put("kbId", kbId);
+                String kbFrom = text(payload, "knowledgeBaseFrom");
+                if (kbFrom != null) e.put("kbFrom", kbFrom);
+                String faqId = text(payload, "faqId");
+                if (faqId != null) e.put("faqId", faqId);
+                e.put("formData", extractFields(payload, "question", "answer", "category", "enabled",
+                        "imageUrls", "videoUrls"));
+            }
+            default -> { return null; }
+        }
+        e.put("actionId", action.getId());
+        e.put("label", "正在打开操作预览");
+        return e;
+    }
+
     /** 写操作卡片确认执行成功后，生成前端实时演播与刷新指令 */
     public static Map<String, Object> fromExecutedAction(AssistantAction action, Map<String, Object> result) {
         if (action == null || !AssistantAction.EXECUTED.equals(action.getStatus())) {
@@ -193,7 +247,12 @@ public final class AssistantUiEffects {
                 if (!fd.isEmpty()) e.put("formData", fd);
                 boolean toolsChanged = payload != null && payload.hasNonNull("toolsConfig");
                 boolean skillsChanged = payload != null && payload.hasNonNull("skillIds");
-                if (toolsChanged) e.put("toolsChanged", true);
+                if (toolsChanged) {
+                    e.put("toolsChanged", true);
+                    if (payload.path("toolChanges").isArray()) {
+                        e.put("toolChanges", MAPPER.convertValue(payload.get("toolChanges"), java.util.List.class));
+                    }
+                }
                 if (skillsChanged) e.put("skillsChanged", true);
                 e.put("label", toolsChanged
                         ? "AI 助手正在同步智能体工具开关…"
@@ -218,12 +277,15 @@ public final class AssistantUiEffects {
                 Map<String, Object> e = base("agent_kb_updated", "agent_debug");
                 String agentId = firstNonBlank(resId, text(payload, "agentId"));
                 if (agentId != null) e.put("agentId", agentId);
-                String kbId = firstNonBlank(text(payload, "knowledgeBaseId"), text(payload, "kbId"));
+                Object executedKbId = result == null ? null : result.get("kbId");
+                String kbId = firstNonBlank(text(payload, "knowledgeBaseId"), text(payload, "kbId"),
+                        executedKbId instanceof String id ? id : null);
                 if (kbId != null) e.put("kbId", kbId);
-                boolean unbind = payload != null && ("unbind".equalsIgnoreCase(payload.path("action").asText(""))
+                boolean unbind = payload != null && ("unbind".equalsIgnoreCase(payload.path("operation").asText(""))
+                        || "unbind".equalsIgnoreCase(payload.path("action").asText(""))
                         || payload.path("unbind").asBoolean(false));
                 e.put("operation", unbind ? "unbind" : "bind");
-                e.put("label", unbind ? "AI 助手正在取消关联知识库…" : "AI 助手正在打开关联知识库弹窗并绑定…");
+                e.put("label", "知识库关联已保存，正在刷新页面");
                 yield e;
             }
             case "set_agent_status" -> {
@@ -289,22 +351,24 @@ public final class AssistantUiEffects {
                     e.put("resourceId", kbId);
                     e.put("kbId", kbId);
                 }
+                if (result != null && result.get("runId") instanceof String runId) e.put("runId", runId);
                 e.put("subTab", "evaluation");
                 e.put("label", "AI 助手已发起知识库检索评测并切换到评测页");
                 yield e;
             }
             case "add_faq", "update_faq" -> {
                 Map<String, Object> e = base("faq_mutated", "knowledge");
-                String kbId = firstNonBlank(text(payload, "kbId"), text(payload, "knowledgeBaseId"));
+                e.put("actionId", action.getId());
+                String kbId = firstNonBlank(resId, text(payload, "kbId"), text(payload, "knowledgeBaseId"));
                 if (kbId != null) e.put("kbId", kbId);
-                if (resId != null) e.put("resourceId", resId);
-                String faqId = firstNonBlank(text(payload, "faqId"), resId);
+                Object createdId = result == null ? null : result.get("faqId");
+                String faqId = firstNonBlank(text(payload, "faqId"), createdId instanceof String value ? value : null);
                 if (faqId != null) e.put("faqId", faqId);
                 e.put("operation", "add_faq".equals(tool) ? "add" : "update");
+                String question = text(payload, "question");
+                if (question != null) e.put("keyword", question);
                 e.put("subTab", "faqs");
-                Map<String, Object> fd = extractFields(payload, "question", "answer", "category", "imageUrls", "videoUrls");
-                if (!fd.isEmpty()) e.put("formData", fd);
-                e.put("label", "add_faq".equals(tool) ? "AI 助手正在打开 FAQ 弹窗填入并保存…" : "AI 助手正在打开 FAQ 弹窗更新并保存…");
+                e.put("label", "FAQ 已保存，正在刷新列表");
                 yield e;
             }
             case "save_agent_as_template" -> {
@@ -349,7 +413,15 @@ public final class AssistantUiEffects {
                 Map<String, Object> e = base("resource_mutated", "gateway");
                 if (resId != null) e.put("resourceId", resId);
                 String op = text(payload, "operation");
-                if (op != null) e.put("operation", op);
+                if (op != null) {
+                    e.put("operation", op);
+                    e.put("dashboardTab", switch (op) {
+                        case "activate_embedding" -> "gateway-embedding";
+                        case "activate_rerank" -> "gateway-rerank";
+                        case "update_dify_key" -> "gateway-dify";
+                        default -> "gateway-llm";
+                    });
+                }
                 String name = text(payload, "name");
                 if (name != null) e.put("name", name);
                 e.put("label", "AI 助手已更新模型网关配置并刷新界面");
@@ -386,6 +458,8 @@ public final class AssistantUiEffects {
                 Map<String, Object> e = base("agent_share_updated", "agent_debug");
                 String agentId = text(payload, "agentId");
                 if (agentId != null) e.put("agentId", agentId);
+                String linkId = text(payload, "linkId");
+                if (linkId != null) e.put("linkId", linkId);
                 e.put("label", "AI 助手正在切换到访问入口并更新分享链接状态…");
                 yield e;
             }

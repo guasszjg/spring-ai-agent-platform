@@ -31,7 +31,7 @@ class AssistantToolRouterTest {
 
         var skills = router.route("技能库里有哪些技能？", null, null, dev, false);
         assertEquals(Set.of("skills"), skills.groupIds());
-        assertEquals(Set.of("list_skills"), skills.allowedReadTools());
+        assertEquals(Set.of("list_skills", "prepare_console_action"), skills.allowedReadTools());
         assertTrue(skills.hitsReadDataGroup());
 
         var usage = router.route("最近哪个模型最费钱？花费排行是什么", null, null, dev, false);

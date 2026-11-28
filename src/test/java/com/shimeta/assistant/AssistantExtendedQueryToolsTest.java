@@ -43,6 +43,7 @@ import com.shimeta.service.ResourceAuthorizationService;
 import com.shimeta.service.SecurityPlatformService;
 import com.shimeta.service.ToolUsageService;
 import com.shimeta.service.UserAdminService;
+import com.shimeta.service.share.ShareLinkService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -104,6 +105,8 @@ class AssistantExtendedQueryToolsTest {
     @Mock AgentConversationService conversationService;
     @Mock ToolUsageService toolUsageService;
 
+    @Mock ShareLinkService shareLinkService;
+
     private AssistantQueryTools queryTools;
     private AssistantExtendedQueryTools extendedTools;
 
@@ -117,6 +120,70 @@ class AssistantExtendedQueryToolsTest {
                 securityPlatformService, auditEventRepository, alertService, ragEvaluationService,
                 userAdminService, conversationService, toolUsageService);
         queryTools.setExtendedQueryTools(extendedTools);
+    }
+
+    @Test
+    void sharePreviewResolvesExactLinkAndOmitsAccessCode() throws Exception {
+        Agent agent = new Agent();
+        agent.setId("agent-1");
+        agent.setName("客服");
+        when(agentService.getById("agent-1", dev)).thenReturn(Optional.of(agent));
+        when(authorizationService.canViewAgent(dev, agent)).thenReturn(true);
+        when(authorizationService.canManageAgent(dev, agent)).thenReturn(true);
+        extendedTools.setShareLinkService(shareLinkService);
+        when(shareLinkService.list("agent-1", dev)).thenReturn(List.of(
+                Map.of("id", "link-1", "name", "演示"), Map.of("id", "link-2", "name", "演示备份")));
+
+        var args = mapper.readTree("""
+                {"operation":"share_edit","agent":"agent-1","link":"演示",
+                 "fields":{"name":"新名称","accessCode":"sensitive","expiresInDays":14}}
+                """);
+        var result = extendedTools.prepareConsoleAction(args, dev);
+        assertEquals("link-1", result.get("linkId"));
+        assertFalse(mapper.writeValueAsString(result).contains("sensitive"));
+        var effect = AssistantUiEffects.fromReadTool("prepare_console_action", args.toString(),
+                new AssistantToolRegistry.Outcome("prepare_console_action", "打开表单", true,
+                        mapper.writeValueAsString(result)));
+        assertEquals("console_form", effect.get("kind"));
+        assertEquals("agent_debug", effect.get("target"));
+        assertEquals("link-1", effect.get("linkId"));
+
+        assertThrows(IllegalArgumentException.class, () -> extendedTools.prepareConsoleAction(args, viewer));
+        when(authorizationService.canManageAgent(dev, agent)).thenReturn(false);
+        assertThrows(IllegalArgumentException.class, () -> extendedTools.prepareConsoleAction(args, dev));
+    }
+
+    @Test
+    void gatewayPreviewRequiresAdminAndOnlyForwardsAllowedScalars() throws Exception {
+        var args = mapper.readTree("""
+                {"operation":"gateway_edit","section":"embedding","target":"embedding-1",
+                 "fields":{"name":"Vector model","apiKey":"example-secret","timeoutMs":{"value":123}}}
+                """);
+        assertThrows(IllegalStateException.class, () -> extendedTools.prepareConsoleAction(args, dev));
+        var result = extendedTools.prepareConsoleAction(args, admin);
+        var effect = AssistantUiEffects.fromReadTool("prepare_console_action", args.toString(),
+                new AssistantToolRegistry.Outcome("prepare_console_action", "打开表单", true,
+                        mapper.writeValueAsString(result)));
+        assertEquals("gateway-embedding", effect.get("dashboardTab"));
+        assertEquals("embedding-1", effect.get("resourceRef"));
+        assertEquals(Map.of("name", "Vector model"), effect.get("formData"));
+    }
+
+    @Test
+    void templatePreviewResolvesUniqueNameAndRejectsAmbiguity() throws Exception {
+        var first = new AgentTemplate();
+        first.setId("template-1");
+        first.setName("客服模板");
+        var second = new AgentTemplate();
+        second.setId("template-2");
+        second.setName(first.getName());
+        var args = mapper.readTree("""
+                {"operation":"template_edit","target":"客服模板"}
+                """);
+        when(templateService.list(isNull(), isNull(), eq(dev))).thenReturn(List.of(first), List.of(first, second));
+
+        assertEquals(first.getId(), extendedTools.prepareConsoleAction(args, dev).get("resourceRef"));
+        assertThrows(IllegalArgumentException.class, () -> extendedTools.prepareConsoleAction(args, dev));
     }
 
     @Test

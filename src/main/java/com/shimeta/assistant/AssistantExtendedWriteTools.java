@@ -742,6 +742,7 @@ public class AssistantExtendedWriteTools {
             for (String ref : removeTools) setToolEnabled(after, options, ref, false);
             if (!before.equals(after)) {
                 payload.put("toolsConfig", objectMapper.valueToTree(after).toString());
+                payload.put("toolChanges", changedToolSwitches(before, after));
                 pb.addDiff("启用工具", joinOrEmpty(AssistantQueryTools.enabledToolLabels(before)),
                         joinOrEmpty(AssistantQueryTools.enabledToolLabels(after)));
                 changes++;
@@ -1994,7 +1995,8 @@ public class AssistantExtendedWriteTools {
         String readback = "评测运行 ID=" + run.id() + "，题目数=" + run.caseCount() + "，状态=" + run.status();
         return new AssistantWriteTools.ExecutionResult("KNOWLEDGE_BASE", kbId,
                 "已启动检索评测（共 " + run.caseCount() + " 道题）", "查看评测",
-                AssistantQueryTools.knowledgeBaseLink(kbId), null, readback);
+                AssistantQueryTools.knowledgeBaseLink(kbId), null, readback,
+                run.id() == null ? Map.of() : Map.of("runId", run.id()));
     }
 
     private AssistantWriteTools.ExecutionResult executeRefreshMcpServer(JsonNode p, CurrentActor actor) {
@@ -2534,6 +2536,24 @@ public class AssistantExtendedWriteTools {
                 .filter(a -> a.getKnowledgeBaseIds() != null && a.getKnowledgeBaseIds().contains(kbId))
                 .map(Agent::getName)
                 .toList();
+    }
+
+    private static List<Map<String, Object>> changedToolSwitches(List<JsonNode> before, List<JsonNode> after) {
+        List<Map<String, Object>> changes = new ArrayList<>();
+        for (int i = 0; i < after.size(); i++) {
+            JsonNode tool = after.get(i);
+            boolean enabled = AssistantQueryTools.toolEnabled(tool);
+            boolean wasEnabled = i < before.size() && AssistantQueryTools.toolEnabled(before.get(i));
+            if (enabled == wasEnabled) continue;
+            Map<String, Object> change = new LinkedHashMap<>();
+            for (String field : List.of("id", "code", "name", "title")) {
+                if (tool.hasNonNull(field)) change.put(field, tool.get(field).asText());
+            }
+            change.put("before", wasEnabled);
+            change.put("after", enabled);
+            changes.add(change);
+        }
+        return changes;
     }
 
     private static void setToolEnabled(List<JsonNode> attached, List<JsonNode> options, String ref, boolean enabled) {

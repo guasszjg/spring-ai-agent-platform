@@ -1492,6 +1492,18 @@ public class KnowledgeBaseService {
     }
 
     @Transactional(readOnly = true)
+    public KnowledgeFaq getFaq(String knowledgeBaseId, String faqId, CurrentActor actor) {
+        KnowledgeBase kb = knowledgeBaseRepository.findById(knowledgeBaseId)
+                .orElseThrow(() -> new IllegalArgumentException("知识库不存在"));
+        if (actor == null || !resourceAuthorizationService.canViewKnowledgeBase(actor, kb)) {
+            throw new IllegalStateException("权限不足：您无权查看该知识库 FAQ");
+        }
+        return faqRepository.findById(faqId)
+                .filter(faq -> knowledgeBaseId.equals(faq.getKnowledgeBaseId()))
+                .orElseThrow(() -> new IllegalArgumentException("FAQ 不存在"));
+    }
+
+    @Transactional(readOnly = true)
     public List<String> getFaqCategories(String knowledgeBaseId) {
         return getFaqCategories(knowledgeBaseId, CurrentActor.get());
     }

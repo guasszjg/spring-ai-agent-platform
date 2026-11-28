@@ -383,10 +383,13 @@ class AssistantWriteToolsTest {
 
         dep.setStatus(AssistantAction.EXECUTED);
         dep.setResourceId("kb-9");
-        when(knowledgeBaseService.createFaq(eq("kb-9"), any(), eq(developer))).thenReturn(new com.shimeta.model.KnowledgeFaq());
+        var createdFaq = new com.shimeta.model.KnowledgeFaq();
+        createdFaq.setId("faq-9");
+        when(knowledgeBaseService.createFaq(eq("kb-9"), any(), eq(developer))).thenReturn(createdFaq);
         assertEquals(null, tools.unmetDependency(faq, developer));
         var result = tools.execute(AssistantWriteTools.ADD_FAQ, faq.getPayload(), developer);
         assertEquals("kb-9", result.resourceId());
+        assertEquals("faq-9", result.uiResult().get("faqId"));
     }
 
     @Test

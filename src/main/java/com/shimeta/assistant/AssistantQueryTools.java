@@ -320,6 +320,15 @@ public class AssistantQueryTools {
         }
     }
 
+    boolean canPrepareAgentForm(CurrentActor actor, Agent agent, boolean copy) {
+        return copy ? authorizationService.canCopyAgent(actor, agent)
+                : authorizationService.canManageAgent(actor, agent);
+    }
+
+    boolean canPrepareKnowledgeForm(CurrentActor actor, KnowledgeBase kb) {
+        return authorizationService.canManageKnowledgeBase(actor, kb);
+    }
+
     // ==================== test_gateway_channel ====================
 
     Map<String, Object> testGatewayChannel(JsonNode args, CurrentActor actor) {
@@ -598,6 +607,7 @@ public class AssistantQueryTools {
                     continue;
                 }
                 Map<String, Object> row = new LinkedHashMap<>();
+                row.put("id", ch.id());
                 row.put("channel", ch.name());
                 row.put("defaultModel", ch.defaultModel());
                 row.put("models", ch.models());

@@ -223,6 +223,17 @@ public class KnowledgeBaseController {
         }
     }
 
+    @GetMapping("/{id}/faqs/{faqId}")
+    public ResponseEntity<ApiResponse<KnowledgeFaq>> getFaq(@PathVariable String id, @PathVariable String faqId) {
+        try {
+            return ResponseEntity.ok(ApiResponse.ok(knowledgeBaseService.getFaq(id, faqId, CurrentActor.get())));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
     @GetMapping("/{id}/faqs/categories")
     public ResponseEntity<ApiResponse<List<String>>> listFaqCategories(@PathVariable String id) {
         try {

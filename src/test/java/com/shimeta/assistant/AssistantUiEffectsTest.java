@@ -171,4 +171,36 @@ class AssistantUiEffectsTest {
         assertEquals("bob", userForm.get("username"));
         assertFalse(userForm.containsKey("password"), "密码绝不能透传到前端 uiEffect");
     }
+    @Test
+    void pendingPreviewKeepsFaqTargetAndExcludesInternalPayload() {
+        AssistantAction pending = new AssistantAction();
+        pending.setId("act-4");
+        pending.setStatus(AssistantAction.PENDING);
+        pending.setToolName("update_faq");
+        pending.setPayload("{\"kbId\":\"kb-4\",\"faqId\":\"faq-2\",\"answer\":\"Edited\",\"baselineSha256\":\"internal\"}");
+
+        var effect = AssistantUiEffects.fromPendingAction(pending);
+        assertEquals("faq_preview", effect.get("kind"));
+        assertEquals("faq-2", effect.get("faqId"));
+        assertEquals(Map.of("answer", "Edited"), effect.get("formData"));
+        assertFalse(effect.containsKey("baselineSha256"));
+    }
+
+    @Test
+    void pendingToolPreviewOnlyRepresentsToolSwitches() {
+        AssistantAction pending = new AssistantAction();
+        pending.setId("act-4");
+        pending.setStatus(AssistantAction.PENDING);
+        pending.setToolName("update_agent_settings");
+        pending.setPayload("{\"agentId\":\"ag-4\",\"baselineSha256\":\"hash\",\"toolsConfig\":\"[]\","
+                + "\"toolChanges\":[{\"code\":\"deepseek_web_search\",\"before\":true,\"after\":false}]}");
+
+        var effect = AssistantUiEffects.fromPendingAction(pending);
+        assertEquals("agent_tools_preview", effect.get("kind"));
+        assertEquals("ag-4", effect.get("agentId"));
+        assertFalse(effect.containsKey("toolsConfig"));
+        pending.setPayload(pending.getPayload().replaceFirst("}$", ",\"temperature\":0.3}"));
+        assertNull(AssistantUiEffects.fromPendingAction(pending));
+    }
+
 }

@@ -86,6 +86,7 @@ public class AssistantActionService {
             throw new DependencyNotMetException(unmet);
         }
         validateHighRiskConfirmation(action, request);
+        String payload = confirmedPayload(action, request);
         if (actionRepository.claim(actionId, actor.getUserId(), LocalDateTime.now()) != 1) {
             // 并发确认、刚好过期或已被取消：以数据库中的最新状态为准
             return card(load(actionId, actor));
@@ -93,15 +94,18 @@ public class AssistantActionService {
 
         Map<String, Object> result = new LinkedHashMap<>();
         String secret = null;
+        Map<String, Object> uiResult = Map.of();
         try {
             AssistantWriteTools.ExecutionResult executed = (extendedWriteTools != null
                     && extendedWriteTools.supports(action.getToolName()))
-                    ? extendedWriteTools.execute(action.getToolName(), action.getPayload(), request, actor)
-                    : writeTools.execute(action.getToolName(), action.getPayload(), actor);
+                    ? extendedWriteTools.execute(action.getToolName(), payload, request, actor)
+                    : writeTools.execute(action.getToolName(), payload, actor);
+            action.setPayload(payload);
             action.setStatus(AssistantAction.EXECUTED);
             action.setResourceType(executed.resourceType());
             action.setResourceId(executed.resourceId());
             secret = executed.secret();
+            uiResult = executed.uiResult();
             result.put("message", executed.message());
             if (executed.readback() != null && !executed.readback().isBlank()) {
                 result.put("readback", executed.readback());
@@ -127,7 +131,7 @@ public class AssistantActionService {
         if (secret != null) {
             card.put("secret", secret);
         }
-        Map<String, Object> uiEffect = AssistantUiEffects.fromExecutedAction(saved, result);
+        Map<String, Object> uiEffect = AssistantUiEffects.fromExecutedAction(saved, uiResult);
         if (uiEffect != null) {
             card.put("uiEffect", uiEffect);
         }
@@ -135,6 +139,52 @@ public class AssistantActionService {
     }
 
     /** D 级高危卡片：校验手输资源名称（必须完全一致）与卡片密码框必填项；不通过抛出异常且不消耗卡片。 */
+    private String confirmedPayload(AssistantAction action, AssistantActionConfirmRequest request) {
+        if (request == null || request.formData() == null || request.formData().isNull()) {
+            return action.getPayload();
+        }
+        JsonNode form = request.formData();
+        if (!(AssistantWriteTools.ADD_FAQ.equals(action.getToolName())
+                || AssistantExtendedWriteTools.UPDATE_FAQ.equals(action.getToolName())) || !form.isObject()) {
+            throw new ConfirmationMismatchException("该操作不支持提交表单草稿");
+        }
+        if (!(readJsonNode(action.getPayload()) instanceof com.fasterxml.jackson.databind.node.ObjectNode payload)) {
+            throw new ConfirmationMismatchException("操作卡片的配置无法读取");
+        }
+        try {
+            for (var field : form.properties()) {
+                String name = field.getKey();
+                JsonNode value = field.getValue();
+                switch (name) {
+                    case "question" -> setFaqText(payload, name, value, AssistantWriteTools.QUESTION_MAX);
+                    case "answer" -> setFaqText(payload, name, value, AssistantWriteTools.ANSWER_MAX);
+                    case "category" -> setFaqText(payload, name, value, 100);
+                    case "imageUrls", "videoUrls" -> {
+                        if (!value.isArray()) throw new IllegalArgumentException("附件必须是链接列表");
+                        boolean image = "imageUrls".equals(name);
+                        var urls = AssistantWriteTools.parseMediaUrls(form, name,
+                                image ? com.shimeta.service.KnowledgeBaseService.MAX_FAQ_IMAGES
+                                        : com.shimeta.service.KnowledgeBaseService.MAX_FAQ_VIDEOS,
+                                image ? "图片" : "视频");
+                        payload.set(name, objectMapper.valueToTree(urls));
+                    }
+                    default -> throw new IllegalArgumentException("FAQ 表单包含不支持的字段");
+                }
+            }
+        } catch (IllegalArgumentException e) {
+            throw new ConfirmationMismatchException(e.getMessage());
+        }
+        return payload.toString();
+    }
+
+    private static void setFaqText(com.fasterxml.jackson.databind.node.ObjectNode payload, String field,
+                                   JsonNode value, int maxLength) {
+        if (!value.isTextual() || value.asText().isBlank() || value.asText().trim().length() > maxLength) {
+            throw new IllegalArgumentException("FAQ 字段格式或长度有误：" + field);
+        }
+        payload.put(field, value.asText().trim());
+    }
+
     private void validateHighRiskConfirmation(AssistantAction action, AssistantActionConfirmRequest request) {
         if (!"D".equalsIgnoreCase(action.getRiskLevel())) {
             return;
@@ -238,6 +288,10 @@ public class AssistantActionService {
         m.put("preview", readJson(action.getPreview()));
         m.put("result", readJson(action.getResult()));
         m.put("dependsOn", writeTools.dependencies(action));
+        if (AssistantAction.PENDING.equals(status)) {
+            Map<String, Object> previewEffect = AssistantUiEffects.fromPendingAction(action);
+            if (previewEffect != null) m.put("previewUiEffect", previewEffect);
+        }
         // 时间统一输出 ISO 字符串：卡片既走 SSE（普通 ObjectMapper）也走 REST，两边格式一致
         m.put("expiresAt", iso(action.getExpiresAt()));
         if (AssistantAction.PENDING.equals(status) && action.getExpiresAt() != null) {

@@ -232,14 +232,28 @@ public class PlatformToolService {
     }
 
     private void seedMissingBuiltins() {
-        for (PlatformTool builtin : PlatformToolCatalog.builtins()) {
-            if (!repository.existsById(builtin.getId()) && repository.findByCode(builtin.getCode()).isEmpty()) {
+        List<PlatformTool> missing = PlatformToolCatalog.builtins().stream()
+                .filter(this::isMissingBuiltin)
+                .toList();
+        if (missing.isEmpty()) {
+            return;
+        }
+        if (entityManager != null) {
+            // The first parallel requests can both see an empty catalog before either transaction commits.
+            entityManager.createNativeQuery("select 1 from pg_advisory_xact_lock(2129871303, 1)").getSingleResult();
+        }
+        for (PlatformTool builtin : missing) {
+            if (isMissingBuiltin(builtin)) {
                 repository.save(builtin);
             }
         }
         if (entityManager != null) {
             entityManager.flush();
         }
+    }
+
+    private boolean isMissingBuiltin(PlatformTool tool) {
+        return !repository.existsById(tool.getId()) && repository.findByCode(tool.getCode()).isEmpty();
     }
 
     @Transactional(readOnly = true)

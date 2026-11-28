@@ -160,6 +160,7 @@
 
     { "id": "agent.list", "menu": "构建 › 智能体", "tabId": "agents", "action": "查询可见智能体列表与运行状态", "handling": "READ", "tool": "list_agents", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/智能体列表" },
     { "id": "assistant.navigate.page", "menu": "构建 › 智能体", "tabId": "agents", "action": "跨页面跳转到指定智能体调试页、知识库详情或控制台模块", "handling": "READ", "tool": "navigate_to_page", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "AI 助手" },
+    { "id": "assistant.prepare.console_action", "menu": "构建 › 智能体", "tabId": "agents", "action": "打开智能体、知识库、模板、技能、HTTP 工具、MCP、模型网关或平台管理的操作表单，在对应页面核对后提交，也可定位概览、对话日志和评测", "handling": "READ", "tool": "prepare_console_action", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "AI 助手" },
     { "id": "agent.detail", "menu": "构建 › 智能体", "tabId": "agents", "action": "查看单个智能体完整配置摘要", "handling": "READ", "tool": "get_agent_detail", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "智能体/编排与调试" },
     { "id": "agent.diagnose", "menu": "构建 › 智能体", "tabId": "agents", "action": "诊断智能体无回复、回答不准或工具/知识库失效问题", "handling": "READ", "tool": "diagnose_agent", "roles": ["SUPER_ADMIN", "DEVELOPER", "VIEWER"], "docAnchor": "常见问题/智能体调试时没有回复" },
     { "id": "agent.create", "menu": "构建 › 智能体", "tabId": "agents", "action": "创建新智能体（或基于模板创建）", "handling": "WRITE", "risk": "A", "tool": "create_agent", "roles": ["SUPER_ADMIN", "DEVELOPER"], "docAnchor": "智能体/创建智能体" },
